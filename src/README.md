@@ -1,7 +1,7 @@
 # src/
 
-GTA-specific glue will live here (sigscan, camera, logging, **OpenVR** helper outside or beside DXVK).
+Hier landet später GTA-spezifisches Glue (Sigscan, Kamera, Logging, OpenVR-Helfer neben/in DXVK).
 
-v0.2: empty on purpose — first milestone is getting the **DXVK submodule** to produce a loadable Win32 `d3d9.dll`, then mono OpenVR `Submit`.
+v0.3: absichtlich leer — erster Meilenstein ist ladebare Win32-`d3d9.dll` aus dem Submodule, dann Mono-Submit.
 
-See `docs/ARCHITECTURE.md`.
+Siehe `docs/ARCHITECTURE.md` und `docs/HOME_CURSOR.md`.

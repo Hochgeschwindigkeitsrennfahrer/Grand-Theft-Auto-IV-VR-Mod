@@ -1,53 +1,57 @@
 # gtaiv-dxvk-vr
 
-**Phase B** pivot project: GTA IV Complete Edition VR via a **VR-patched DXVK `d3d9.dll`**, oriented on [sd805/l4d2vr](https://github.com/sd805/l4d2vr) and HL2VR.
-
-**Phase A** (sibling, OpenXR/D3D11 path): `../gtaiv-openxr` — keep until you fully pivot.
-
-## Target stack (L4D2VR / HL2VR-shaped)
+Eigenständiges Projekt: **GTA IV Complete Edition in VR** über eine VR-fähige DXVK-`d3d9.dll` und **OpenVR (SteamVR)** — nach dem Muster von [L4D2VR](https://github.com/sd805/l4d2vr) / HL2VR.
 
 ```
-GTAIV.exe (Win32, speaks D3D9)
-  → custom d3d9.dll  (forked DXVK + VR mailbox + async)
-       → Vulkan eye textures
-  → OpenVR Submit  (SteamVR)     ← primary, like L4D2VR/HL2VR
-  → headset (Reverb G2 via SteamVR)
+GTAIV.exe (32-bit, D3D9)
+  → unsere d3d9.dll  (VR-DXVK-Fork + GTA-Glue)
+       → Vulkan-Augenbilder
+  → OpenVR Submit (SteamVR)
+  → Headset (z. B. HP Reverb G2)
 ```
 
-**OpenVR first** — same compositor path as L4D2VR/HL2VR, so we can copy their `GetVRDesc` → `IVRCompositor::Submit` pattern.  
-OpenXR stays optional later (Phase A / openRBRVR lessons); not required for Phase B v0.
+**Status:** Scaffold **0.3.0** — Doku & Build-Hinweise. Noch keine fertige VR-`d3d9.dll`.
 
-Reverb G2: run **SteamVR** (WMR for SteamVR / SteamVR driver). That is normal for OpenVR mods.
+---
 
-## Status
+## Für dich (kein Programmierer)
 
-Scaffold **0.2.0** — OpenVR-first strategy locked. **No working VR `d3d9.dll` yet.**  
-Init DXVK submodule at home: `.\scripts\init-submodules.ps1`
+1. **Zuhause komplett starten:** → [`docs/HOME_CURSOR.md`](docs/HOME_CURSOR.md)  
+2. **Kurzfragen (Fork, FusionFix, …):** → [`docs/FAQ.md`](docs/FAQ.md)  
+3. **Cursor-Chat starten:** Prompt aus [`AGENTS.md`](AGENTS.md) pasten  
+4. **Fortschritt:** → [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md)
 
-## Relation to L4D2VR
+---
 
-| L4D2VR | This project |
-|--------|----------------|
-| Source engine hooks + DXVK VR fork | RAGE/GTA IV — game-specific RE still required |
-| Builds `d3d9.dll` (x86) | Same deliverable shape |
-| **OpenVR** | **OpenVR** (same) |
-| `sd805/dxvk` submodule (async) | IronWolf `tiw-rel` / `vr-dx9-rel` or sd805 — see `docs/IRONWOLF_DXVK.md` |
-| VAC / `-insecure` | Singleplayer / offline only while developing |
+## Ziel-Meilensteine
 
-**Do not** drop L4D2VR’s release `d3d9.dll` into GTA IV and expect VR — still needs **game-side** glue.
+| # | Ziel |
+|---|------|
+| 1 | Submodule holen, **x86**-`d3d9.dll` bauen |
+| 2 | Flach unter FusionFix starten (Monitor, noch kein VR) |
+| 3 | Mono-Bild → OpenVR `Submit` → sichtbar in der Brille |
+| 4 | Stereo + First-Person-Kamera |
+| 5 | Später: Motion Controls / Komfort |
 
-## Quick links
+---
 
-| Doc | Purpose |
-|-----|---------|
-| [HANDOFF.md](HANDOFF.md) | Human pivot guide |
-| [AGENTS.md](AGENTS.md) | Cursor agent contract |
-| [docs/CURRENT-STATE.md](docs/CURRENT-STATE.md) | Status ledger |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Intended modules |
-| [docs/IRONWOLF_DXVK.md](docs/IRONWOLF_DXVK.md) | IronWolf VR-DXVK (plain language) |
-| [docs/LESSONS_FROM_PHASE_A.md](docs/LESSONS_FROM_PHASE_A.md) | Constraints from gtaiv-openxr |
-| [docs/RELATION_TO_PHASE_A.md](docs/RELATION_TO_PHASE_A.md) | When to switch |
+## Docs
 
-## License
+| Datei | Inhalt |
+|-------|--------|
+| [docs/HOME_CURSOR.md](docs/HOME_CURSOR.md) | **Komplette Anleitung Cursor zu Hause** |
+| [AGENTS.md](AGENTS.md) | Vertrag für den Cursor-Agenten |
+| [docs/CURRENT-STATE.md](docs/CURRENT-STATE.md) | Status / nächste Schritte |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Technik-Überblick |
+| [docs/CONSTRAINTS.md](docs/CONSTRAINTS.md) | Harte Regeln (Win32, OpenVR, …) |
+| [docs/REFERENCES.md](docs/REFERENCES.md) | Alle externen Links |
+| [docs/IRONWOLF_DXVK.md](docs/IRONWOLF_DXVK.md) | Was der IronWolf-DXVK-Fork macht |
+| [docs/FAQ.md](docs/FAQ.md) | Häufige Fragen |
+| [docs/BUILD.md](docs/BUILD.md) | Build-Notizen |
+| [HANDOFF.md](HANDOFF.md) | Kurze Übergabe (zeigt auf HOME_CURSOR) |
 
-MIT for *our* scaffolding. DXVK / L4D2VR / third-party code keep their own licenses when submodules are added.
+---
+
+## Lizenz
+
+MIT für *unsere* Scaffolding-Dateien. DXVK / L4D2VR / OpenVR behalten ihre Lizenzen (Submodule).

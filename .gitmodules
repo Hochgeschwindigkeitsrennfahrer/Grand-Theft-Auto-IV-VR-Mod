@@ -1,6 +1,5 @@
-# Prefer IronWolf tiw-rel (current VR mailbox + OpenXR helpers). vr-dx9-rel = older OpenVR-era.
-# master = default GitHub branch but lacks d3d9_vr.h — do not use for Phase B VR.
-# L4D2VR reference fork: https://github.com/sd805/dxvk
+# Prefer IronWolf tiw-rel (VR mailbox). Use OpenVR only for this project v0.
+# Do not use bare master (no d3d9_vr.h). Alternatives: vr-dx9-rel, sd805/dxvk.
 [submodule "dxvk"]
 	path = dxvk
 	url = https://github.com/TheIronWolfModding/dxvk.git

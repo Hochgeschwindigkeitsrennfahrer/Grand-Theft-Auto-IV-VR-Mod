@@ -2,38 +2,37 @@
 
 ## Version
 
-Scaffold **0.2.0** — **OpenVR-first** (L4D2VR/HL2VR-shaped); still no built `d3d9.dll`.
+**0.3.0** — eigenständiges Projektpaket (HOME_CURSOR, FAQ, REFERENCES). Noch keine gebaute VR-`d3d9.dll`.
 
-## Goal
+## Ziel
 
-L4D2VR-shaped pipeline for GTA IV CE: **VR-patched DXVK → Vulkan eyes → OpenVR Submit (SteamVR)** on Reverb G2.
+GTA IV Complete Edition: **VR-DXVK → Vulkan-Augen → OpenVR Submit (SteamVR)** auf Reverb G2 (L4D2VR/HL2VR-Muster).
 
-## Done
+## Erledigt
 
-| Item | Status |
-|------|--------|
-| Repo + HANDOFF / AGENTS | Done |
-| Lessons from Phase A | Done |
-| IronWolf fork summary | Done (`docs/IRONWOLF_DXVK.md`) |
-| Strategy: OpenVR primary | Done (0.2.0) |
-| Submodule script | Done (fetch at home) |
-| Build / VR hooks / Submit | **Not started** |
+| Punkt | Status |
+|-------|--------|
+| Repo-Scaffold, Lizenz, .gitignore | Done |
+| Eigenständige Doku (HOME_CURSOR, FAQ, …) | Done |
+| IronWolf / Branch-Erklärung | Done |
+| OpenVR-first Strategie | Done |
+| Submodule-Script | Done (ausführen zu Hause) |
+| x86-Build / Submit-Glue | **Offen** |
 
-## Next (home)
+## Als Nächstes (Zuhause)
 
-1. `.\scripts\init-submodules.ps1`
-2. Confirm x86 build of baseline `d3d9.dll` loads in GTA IV CE + FusionFix (flat Vulkan OK)
-3. Study L4D2VR OpenVR submit points (`GetVRDesc` → `Submit`)
-4. Minimal GTA glue: mono backbuffer → eye → OpenVR `Submit`; log heavily
-5. Only then: camera / stereo
-6. OpenXR: defer (Phase A or later Phase B)
+1. Cursor: Ordner `gtaiv-dxvk-vr` öffnen, Prompt aus `AGENTS.md`  
+2. `.\scripts\init-submodules.ps1`  
+3. x86-`d3d9.dll` flach unter FusionFix booten  
+4. Mono OpenVR `Submit`  
+5. Stereo + Kamera später  
 
-## Failure ledger
+## Failure-Ledger
 
-| Date | Symptom | Hypothesis | Result | Action |
-|------|---------|------------|--------|--------|
-| (empty) | | | | |
+| Datum | Symptom | Hypothese | Ergebnis | Aktion |
+|-------|---------|-----------|----------|--------|
+| (leer) | | | | |
 
-## Phase A pointer
+## Deploy-Hinweis
 
-Sibling: `../gtaiv-openxr` (ASI + D3D11 + OpenXR). Do not abandon until pivot criteria in `RELATION_TO_PHASE_A.md`.
+Bei aktiver eigener `d3d9.dll`: FusionFix-**Vulkan/DXVK-Toggle aus**. Backup der Original-DLL behalten.

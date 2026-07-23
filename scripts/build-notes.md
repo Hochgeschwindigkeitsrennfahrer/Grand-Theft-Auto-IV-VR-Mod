@@ -1,28 +1,11 @@
-# Build notes — Phase B
+# Build-Notizen → kanonisch: docs/BUILD.md
 
-## Reference (L4D2VR)
+Siehe **[docs/BUILD.md](../docs/BUILD.md)**.
 
-From https://github.com/sd805/l4d2vr :
+Kurz:
 
-```text
-git clone --recurse-submodules https://github.com/sd805/l4d2vr.git
-Open l4d2vr.sln → x86 Debug/Release → Build
+```powershell
+.\scripts\init-submodules.ps1
 ```
 
-Output: `d3d9.dll` copied toward the game dir.
-
-## This repo
-
-1. `.\scripts\init-submodules.ps1`
-2. Inspect `dxvk\` — confirm it is the VR/async-oriented fork
-3. Prefer bringing up an **x86** DXVK `d3d9.dll` that at least runs GTA IV flat (FusionFix)
-4. Then graft **OpenVR** eye submit (study L4D2VR: `GetVRDesc` → `IVRCompositor::Submit`)
-5. Log file next to `GTAIV.exe`
-6. OpenXR: skip for v0
-
-Exact VS/meson steps will be filled after first successful submodule sync at home.
-
-## Conflicts
-
-- FusionFix may ship its own Vulkan/DXVK toggle — disable or rename per Gillian guide before dropping our `d3d9.dll`
-- Never mix x64 DXVK into GTA IV
+Dann mit dem Cursor-Agenten den x86-Build der `d3d9.dll` durchgehen.

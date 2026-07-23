@@ -1,46 +1,49 @@
-# Architecture — Phase B (DXVK + OpenVR)
+# Architektur
 
-## Inspired by
+## Laufzeit
 
-- [sd805/l4d2vr](https://github.com/sd805/l4d2vr) — game hooks + DXVK as `d3d9.dll` + **OpenVR Submit**
-- [TheIronWolfModding/dxvk](https://github.com/TheIronWolfModding/dxvk) — DX9→VK + OpenVR mailbox (`docs/IRONWOLF_DXVK.md`)
-- HL2VR — custom DXVK + OpenVR Submit + async (closed; lessons only)
-- [Detegr/openRBRVR](https://github.com/Detegr/openRBRVR) — optional later (OpenXR / 32-bit); **not** Phase B v0
+```
+GTAIV.exe (Win32)
+    │  D3D9 API
+    ▼
+d3d9.dll          ← unser Deliverable (VR-DXVK-Fork + optional Glue)
+    │  Vulkan images
+    ▼
+OpenVR (openvr_api / SteamVR)
+    ▼
+Headset (z. B. Reverb G2)
+```
 
-## Intended layout (after submodule init)
+FusionFix: lädt ASI-Mods und stabilisiert CE; **ersetzt nicht** unsere `d3d9.dll`. Bei Konflikt: FusionFix-Vulkan aus.
+
+## Geplante Ordner
 
 ```
 gtaiv-dxvk-vr/
-  dxvk/                 # git submodule (IronWolf tiw-rel or vr-dx9-rel / sd805)
-  src/gtaiv/            # GTA-specific glue (camera, sigscan, ini) — future
-  thirdparty/           # openvr_api / MinHook if needed outside DXVK
-  scripts/
+  dxvk/              # git submodule (IronWolf tiw-rel / vr-dx9-rel oder sd805)
+  src/gtaiv/         # GTA-Glue (Kamera, Sigscan, Logs) — später
+  thirdparty/        # openvr headers/libs falls nötig
+  config/            # dxvk.conf.example
+  scripts/           # init-submodules, später deploy
   docs/
 ```
 
-Deliverable: **`d3d9.dll` (Win32)** into `GTAIV\`.
+## Module
 
-## Runtime choice
+1. **DXVK-Kern** — D3D9→Vulkan  
+2. **VR-Mailbox** — `IDirect3DVR9` / `GetVRDesc` / Submit-Sync (IronWolf)  
+3. **OpenVR-Submit** — `IVRCompositor::Submit` (L4D2VR-Muster)  
+4. **Async (optional)** — weniger Shader-Stutter  
+5. **GTA-Adapter** — Timing, RTs, später Kamera  
+6. **Logging** — Datei neben `GTAIV.exe`
 
-| Runtime | Role here |
-|---------|-----------|
-| **OpenVR via SteamVR** | **Primary** — same as L4D2VR / HL2VR |
-| WMR OpenXR | Phase A / optional later — not required for first HMD frame |
-| SteamVR OpenXR | Avoid for Phase B v0 (Phase A 32-bit pain); OpenVR is enough |
+## Nicht-Ziele (v0)
 
-Reverb G2: use SteamVR as the OpenVR runtime (same as other OpenVR mods).
+- OpenXR  
+- Fertiger Motion-Control-Mod  
+- Multiplayer / VAC  
+- 1:1-Port von L4D2VR-Source-Hooks  
 
-## Modules (planned)
+## Referenzen (Technik)
 
-1. **DXVK core** — D3D9→Vulkan (submodule)
-2. **VR present path** — `GetVRDesc` / Begin·End submit → OpenVR `IVRCompositor::Submit`
-3. **Async** — keep/port dxvk-async / gplasync ideas for stutter
-4. **GTA adapter** — FusionFix coexistence; Present/RT sizing; later camera AOB/natives
-5. **Logging** — `gtaiv_dxvk_vr.log` next to exe (Phase A lesson: pasteable logs)
-
-## Explicit non-goals (v0)
-
-- OpenXR session / swapchains in Phase B
-- Shipping a full copy of L4D2VR game code
-- Supporting multiplayer / VAC
-- Replacing Phase A until you decide to pivot
+Siehe `docs/REFERENCES.md` und `docs/IRONWOLF_DXVK.md`.
