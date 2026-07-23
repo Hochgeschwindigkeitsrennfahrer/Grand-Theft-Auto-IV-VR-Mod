@@ -10,28 +10,16 @@ GTAIV.exe (32-bit, D3D9)
   → Headset (z. B. HP Reverb G2)
 ```
 
-**Status:** Scaffold **0.3.0** — Doku & Build-Hinweise. Noch keine fertige VR-`d3d9.dll`.
+**Status:** Scaffold **0.3.1** — Doku, Glue-Stubs, `deploy.ps1`. Noch keine fertige VR-`d3d9.dll`.
 
 ---
 
 ## Für dich (kein Programmierer)
 
 1. **Zuhause komplett starten:** → [`docs/HOME_CURSOR.md`](docs/HOME_CURSOR.md)  
-2. **Kurzfragen (Fork, FusionFix, …):** → [`docs/FAQ.md`](docs/FAQ.md)  
-3. **Cursor-Chat starten:** Prompt aus [`AGENTS.md`](AGENTS.md) pasten  
+2. **Kurzfragen:** → [`docs/FAQ.md`](docs/FAQ.md)  
+3. **Cursor-Chat:** Prompt aus [`AGENTS.md`](AGENTS.md)  
 4. **Fortschritt:** → [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md)
-
----
-
-## Ziel-Meilensteine
-
-| # | Ziel |
-|---|------|
-| 1 | Submodule holen, **x86**-`d3d9.dll` bauen |
-| 2 | Flach unter FusionFix starten (Monitor, noch kein VR) |
-| 3 | Mono-Bild → OpenVR `Submit` → sichtbar in der Brille |
-| 4 | Stereo + First-Person-Kamera |
-| 5 | Später: Motion Controls / Komfort |
 
 ---
 
@@ -39,16 +27,27 @@ GTAIV.exe (32-bit, D3D9)
 
 | Datei | Inhalt |
 |-------|--------|
-| [docs/HOME_CURSOR.md](docs/HOME_CURSOR.md) | **Komplette Anleitung Cursor zu Hause** |
-| [AGENTS.md](AGENTS.md) | Vertrag für den Cursor-Agenten |
-| [docs/CURRENT-STATE.md](docs/CURRENT-STATE.md) | Status / nächste Schritte |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Technik-Überblick |
-| [docs/CONSTRAINTS.md](docs/CONSTRAINTS.md) | Harte Regeln (Win32, OpenVR, …) |
-| [docs/REFERENCES.md](docs/REFERENCES.md) | Alle externen Links |
-| [docs/IRONWOLF_DXVK.md](docs/IRONWOLF_DXVK.md) | Was der IronWolf-DXVK-Fork macht |
-| [docs/FAQ.md](docs/FAQ.md) | Häufige Fragen |
-| [docs/BUILD.md](docs/BUILD.md) | Build-Notizen |
-| [HANDOFF.md](HANDOFF.md) | Kurze Übergabe (zeigt auf HOME_CURSOR) |
+| [docs/HOME_CURSOR.md](docs/HOME_CURSOR.md) | **Anleitung Cursor zu Hause** |
+| [AGENTS.md](AGENTS.md) | Agent-Vertrag |
+| [docs/CURRENT-STATE.md](docs/CURRENT-STATE.md) | Status |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Technik |
+| [docs/CONSTRAINTS.md](docs/CONSTRAINTS.md) | Harte Regeln |
+| [docs/REFERENCES.md](docs/REFERENCES.md) | Links |
+| [docs/IRONWOLF_DXVK.md](docs/IRONWOLF_DXVK.md) | IronWolf-Fork erklärt |
+| [docs/IRONWOLF_API.md](docs/IRONWOLF_API.md) | `IDirect3DVR9` Submit-API |
+| [docs/L4D2VR_MAP.md](docs/L4D2VR_MAP.md) | L4D2VR-Dateien zum Abgucken |
+| [docs/FAQ.md](docs/FAQ.md) | FAQ |
+| [docs/BUILD.md](docs/BUILD.md) | Build |
+| [HANDOFF.md](HANDOFF.md) | Kurze Übergabe |
+
+---
+
+## Scripts
+
+| Script | Zweck |
+|--------|--------|
+| `scripts/init-submodules.ps1` | DXVK-Submodule holen |
+| `scripts/deploy.ps1` | `d3d9.dll` nach GTAIV kopieren (+ Backup) |
 
 ---
 

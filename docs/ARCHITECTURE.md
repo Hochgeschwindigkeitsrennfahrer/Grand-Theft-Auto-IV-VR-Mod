@@ -20,22 +20,21 @@ FusionFix: lädt ASI-Mods und stabilisiert CE; **ersetzt nicht** unsere `d3d9.dl
 
 ```
 gtaiv-dxvk-vr/
-  dxvk/              # git submodule (IronWolf tiw-rel / vr-dx9-rel oder sd805)
-  src/gtaiv/         # GTA-Glue (Kamera, Sigscan, Logs) — später
-  thirdparty/        # openvr headers/libs falls nötig
-  config/            # dxvk.conf.example
-  scripts/           # init-submodules, später deploy
+  dxvk/                 # git submodule (nach init-submodules)
+  src/gtaiv/            # Glue-Stubs (Log/Config/Submit-Platzhalter)
+  thirdparty/ironwolf/  # API-Referenz-Header (Snapshot)
+  config/               # dxvk.conf + ini examples
+  scripts/              # init-submodules, deploy
   docs/
 ```
 
-## Module
+## Modules (planned)
 
-1. **DXVK-Kern** — D3D9→Vulkan  
-2. **VR-Mailbox** — `IDirect3DVR9` / `GetVRDesc` / Submit-Sync (IronWolf)  
-3. **OpenVR-Submit** — `IVRCompositor::Submit` (L4D2VR-Muster)  
-4. **Async (optional)** — weniger Shader-Stutter  
-5. **GTA-Adapter** — Timing, RTs, später Kamera  
-6. **Logging** — Datei neben `GTAIV.exe`
+1. **DXVK-Kern** — D3D9→Vulkan (submodule)
+2. **VR-Mailbox** — `IDirect3DVR9` (`docs/IRONWOLF_API.md`)
+3. **OpenVR-Submit** — Muster aus L4D2VR `vr.cpp` (`docs/L4D2VR_MAP.md`)
+4. **GTA-Adapter** — `src/gtaiv/` stubs → echte Verdrahtung
+5. **Logging** — `gtaiv_dxvk_vr.log`
 
 ## Nicht-Ziele (v0)
 

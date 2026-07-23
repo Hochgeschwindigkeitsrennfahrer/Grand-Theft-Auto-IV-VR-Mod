@@ -1,0 +1,11 @@
+# Beispiel-Ini (später neben GTAIV.exe oder plugins/)
+# Noch nicht von laufendem Code gelesen — Vorlage für Glue.
+
+[openvr]
+enabled=1
+verbose=1
+mono_submit=1
+
+[debug]
+log_to_file=1
+log_name=gtaiv_dxvk_vr.log

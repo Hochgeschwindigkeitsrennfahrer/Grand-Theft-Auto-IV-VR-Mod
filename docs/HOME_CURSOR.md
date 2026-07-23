@@ -15,6 +15,9 @@ Ein VR-Mod für **GTA IV Complete Edition**:
 
 Als Nächstes (Reihenfolge fest): Submodule → flache DLL → Mono in der Brille → später Kamera.
 
+Offline schon vorbereitet: Glue-Stubs (`src/gtaiv/`), `deploy.ps1`, `docs/IRONWOLF_API.md`, `docs/L4D2VR_MAP.md`.
+
+
 ---
 
 ## 1. Einmalig: Software installieren

@@ -1,7 +1,10 @@
 # src/
 
-Hier landet später GTA-spezifisches Glue (Sigscan, Kamera, Logging, OpenVR-Helfer neben/in DXVK).
+| Ordner | Inhalt |
+|--------|--------|
+| `gtaiv/` | Unser Glue (Stubs) |
+| (später) | Optional ASI oder Integration in DXVK-Build |
 
-v0.3: absichtlich leer — erster Meilenstein ist ladebare Win32-`d3d9.dll` aus dem Submodule, dann Mono-Submit.
+Deliverable v0 bleibt die **x86-`d3d9.dll`** aus dem DXVK-Submodule; Glue wird daneben oder hinein verdrahtet.
 
-Siehe `docs/ARCHITECTURE.md` und `docs/HOME_CURSOR.md`.
+Siehe `docs/HOME_CURSOR.md`, `docs/ARCHITECTURE.md`.
