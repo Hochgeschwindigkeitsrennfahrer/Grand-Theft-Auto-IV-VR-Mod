@@ -45,7 +45,8 @@ Init DXVK submodule at home: `.\scripts\init-submodules.ps1`
 | [AGENTS.md](AGENTS.md) | Cursor agent contract |
 | [docs/CURRENT-STATE.md](docs/CURRENT-STATE.md) | Status ledger |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Intended modules |
-| [docs/LESSONS_FROM_PHASE_A.md](docs/LESSONS_FROM_PHASE_A.md) | Constraints learned in gtaiv-openxr |
+| [docs/IRONWOLF_DXVK.md](docs/IRONWOLF_DXVK.md) | **What IronWolf VR-DXVK does (plain language)** |
+| [docs/LESSONS_FROM_PHASE_A.md](docs/LESSONS_FROM_PHASE_A.md) | Constraints from gtaiv-openxr |
 | [docs/RELATION_TO_PHASE_A.md](docs/RELATION_TO_PHASE_A.md) | When to switch |
 
 ## License

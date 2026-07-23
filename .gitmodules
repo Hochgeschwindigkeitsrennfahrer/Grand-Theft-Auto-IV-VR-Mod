@@ -1,4 +1,6 @@
+# Prefer IronWolf VR mailbox as documented base; sd805 fork remains L4D2VR reference.
+# At home you may retarget: git submodule set-url dxvk https://github.com/TheIronWolfModding/dxvk.git
 [submodule "dxvk"]
 	path = dxvk
-	url = https://github.com/sd805/dxvk.git
-	branch = dxvk-async
+	url = https://github.com/TheIronWolfModding/dxvk.git
+	branch = vr-dx9-rel

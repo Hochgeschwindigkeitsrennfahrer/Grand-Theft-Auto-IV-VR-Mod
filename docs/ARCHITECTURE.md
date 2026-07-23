@@ -2,9 +2,9 @@
 
 ## Inspired by
 
-- [sd805/l4d2vr](https://github.com/sd805/l4d2vr) — game hooks + **DXVK submodule** → `d3d9.dll`
-- [sd805/dxvk](https://github.com/sd805/dxvk) (async / VR-oriented fork used by L4D2VR)
-- [Detegr/openRBRVR](https://github.com/Detegr/openRBRVR) + dxvk-openRBRVR — DX9 + **OpenXR** on 32-bit
+- [TheIronWolfModding/dxvk @ vr-dx9-rel](https://github.com/TheIronWolfModding/dxvk/tree/vr-dx9-rel) — **DX9→VK + OpenVR mailbox** (see `docs/IRONWOLF_DXVK.md`)
+- [sd805/l4d2vr](https://github.com/sd805/l4d2vr) — game hooks + DXVK as `d3d9.dll`
+- [Detegr/openRBRVR](https://github.com/Detegr/openRBRVR) / dxvk-openRBRVR — DX9 + **OpenXR** on 32-bit
 - HL2VR — custom DXVK + OpenVR Submit + async (closed; lessons only)
 
 ## Intended layout (after submodule init)

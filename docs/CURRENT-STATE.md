@@ -2,19 +2,20 @@
 
 ## Version
 
-Scaffold **0.1.0** — pivot repo ready; no VR `d3d9.dll` built yet.
+Scaffold **0.1.1** — IronWolf VR-DXVK explained (`docs/IRONWOLF_DXVK.md`); still no built `d3d9.dll`.
 
 ## Goal
 
-L4D2VR-shaped pipeline for GTA IV CE: **VR-patched DXVK → Vulkan eyes → OpenXR** (WMR-first on Reverb G2).
+L4D2VR-shaped pipeline for GTA IV CE: **VR-patched DXVK (IronWolf / openRBRVR family) → Vulkan eyes → OpenXR** (WMR-first on Reverb G2).
 
 ## Done
 
 | Item | Status |
 |------|--------|
 | Repo + HANDOFF / AGENTS | Done |
-| Lessons imported from Phase A | Done (`docs/LESSONS_FROM_PHASE_A.md`) |
-| Submodule script + `.gitmodules` template | Done (fetch at home) |
+| Lessons from Phase A | Done |
+| IronWolf fork summary | Done (`docs/IRONWOLF_DXVK.md`) |
+| Submodule script | Done (fetch at home) |
 | Build / VR hooks / submit | **Not started** |
 
 ## Next (home)
