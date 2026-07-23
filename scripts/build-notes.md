@@ -16,8 +16,9 @@ Output: `d3d9.dll` copied toward the game dir.
 1. `.\scripts\init-submodules.ps1`
 2. Inspect `dxvk\` — confirm it is the VR/async-oriented fork
 3. Prefer bringing up an **x86** DXVK `d3d9.dll` that at least runs GTA IV flat (FusionFix)
-4. Then graft OpenXR eye submit (study openRBRVR + L4D2VR VR texture path)
+4. Then graft **OpenVR** eye submit (study L4D2VR: `GetVRDesc` → `IVRCompositor::Submit`)
 5. Log file next to `GTAIV.exe`
+6. OpenXR: skip for v0
 
 Exact VS/meson steps will be filled after first successful submodule sync at home.
 

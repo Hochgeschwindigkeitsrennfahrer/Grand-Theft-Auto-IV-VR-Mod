@@ -11,9 +11,9 @@ Also used by L4D2VR / related Source VR work; openRBRVR builds on the same famil
 |---------------|------|
 | [`master`](https://github.com/TheIronWolfModding/dxvk/tree/master) | Default GitHub branch + fork README. Newer DXVK base / GTR2 notes. **Does not ship `src/d3d9/d3d9_vr.h`** (mailbox API missing). `dxvk_openxr.*` / `dxvk_openvr.*` here are mostly upstream Wine **extension providers**, not the game submit mailbox. |
 | [`vr-dx9-rel`](https://github.com/TheIronWolfModding/dxvk/tree/vr-dx9-rel) | **Older** VR mailbox (OpenVR-era `IDirect3DVR9`). What L4D2VR/sd805 leaned on. Author: Vulkan 1.2 / fewer features. |
-| [`tiw-rel-241-*`](https://github.com/TheIronWolfModding/dxvk/tree/tiw-rel-241-260612) | **Current** VR-capable release line (DXVK ~2.4.1 / Vulkan 1.3). Has `d3d9_vr.h` with OpenVR helpers **and** `GetOXRVkDeviceDesc` (OpenXR), plus Multi-View/SPS (detegr). Prefer this for Phase B. |
+| [`tiw-rel-241-*`](https://github.com/TheIronWolfModding/dxvk/tree/tiw-rel-241-260612) | **Current** VR-capable release line (DXVK ~2.4.1 / Vulkan 1.3). OpenVR helpers **and** optional OpenXR (`GetOXRVkDeviceDesc`) + Multi-View. Fine for Phase B; we only need the **OpenVR** mailbox for v0. |
 
-OpenXR is a **feature inside `tiw-rel-*` / newer READMEs**, not a separate Git branch named `openxr`.
+OpenXR helpers exist on `tiw-rel-*` — **Phase B v0 ignores them** and uses OpenVR like L4D2VR. There is no branch named `openxr`.
 
 ---
 
@@ -41,15 +41,15 @@ Author’s own warning (README / repo):
 | **GTR2-specific hacks** | Racing-engine tweaks — **ignore for GTA** (`GTR2_SPECIFIC`). |
 | Extra AA / depth options | Nice-to-have; not the VR core. |
 
-### The VR “handshake” (conceptual)
+### The VR “handshake” (Phase B = OpenVR, like L4D2VR)
 
 Game / mod code roughly does:
 
-1. Init VR runtime (OpenVR or OpenXR).  
-2. Ask DXVK for Vulkan image info for the eye texture (`GetVRDesc`-style).  
-3. Tell DXVK “about to submit” (`Presubmit`) → lock/sync.  
-4. `IVRCompositor::Submit` / `xrEndFrame` with those Vulkan images.  
-5. `Postsubmit` → unlock.
+1. Init **OpenVR** (`VR_Init` / SteamVR).  
+2. Ask DXVK for Vulkan image info (`GetVRDesc`).  
+3. Lock / begin submit (`BeginVRSubmit` / `LockDevice` — names vary by branch).  
+4. `IVRCompositor::Submit` with those Vulkan textures (left/right or mono).  
+5. Unlock / end submit.
 
 So **who decides “this is the left eye frame”?** → still the **game or our glue**, not IronWolf alone.
 
@@ -72,33 +72,34 @@ Same split we must respect for GTA IV.
 GTAIV.exe (still talks D3D9)
     │
     ▼
-d3d9.dll = IronWolf/openRBRVR-class VR-DXVK (Win32)   ← translator + VR mailbox
+d3d9.dll = IronWolf / sd805 VR-DXVK (Win32)   ← translator + VR mailbox
     │
     ▼
 Our GTA glue (ASI and/or code inside/beside the fork)
     • head pose → camera
     • left/right (or mono) eye targets
-    • call Presubmit / GetVRDesc / Submit / Postsubmit
+    • GetVRDesc → IVRCompositor::Submit → unlock
     • later: motion controls
     │
     ▼
-OpenXR (prefer WMR on Reverb G2)  or  OpenVR if needed
+OpenVR (SteamVR)  →  Reverb G2
 ```
 
 ### Practical steps for `gtaiv-dxvk-vr`
 
-1. **Base fork:** start from IronWolf **`tiw-rel-241-*`** (not bare `master`) **or** [dxvk-openRBRVR](https://github.com/Detegr/dxvk-openRBRVR). Prefer OpenXR for G2.  
+1. **Base fork:** IronWolf **`tiw-rel-241-*`** or **`vr-dx9-rel`**, or [sd805/dxvk](https://github.com/sd805/dxvk) (L4D2VR + async). Not bare `master`.  
 2. Build **x86** `d3d9.dll`.  
 3. Prove flat boot under FusionFix (no VR yet).  
-4. Add **minimal GTA glue**: mono “mirror game backbuffer → one/both eyes → Submit” (same milestone as Phase A’s first pixels).  
+4. Add **minimal GTA glue**: mono backbuffer → OpenVR `Submit` (copy L4D2VR pattern).  
 5. Only then stereo + camera RE.  
-6. Keep **async/gplasync** ideas for stutter (HL2VR lesson) if the fork allows.
+6. Keep **async/gplasync** ideas for stutter (HL2VR lesson) if the fork allows.  
+7. OpenXR: later / optional — not v0.
 
 ### What we do **not** do
 
-- Drop IronWolf DLL into GTA and expect VR.  
+- Drop IronWolf/L4D2VR DLL into GTA and expect VR.  
 - Port GTR2-only flags.  
-- Assume SteamVR OpenXR works in Win32 (use WMR first — Phase A lesson).
+- Require OpenXR for Phase B first pixels.
 
 ---
 
@@ -107,7 +108,7 @@ OpenXR (prefer WMR on Reverb G2)  or  OpenVR if needed
 | | Phase A (`gtaiv-openxr`) | Phase B + IronWolf |
 |--|-------------------------|---------------------|
 | Where VR lives | Our ASI + companion D3D11 | Inside/next to VR-DXVK |
-| Submit API | OpenXR D3D11 swapchains | OpenVR/OpenXR **Vulkan** images via DXVK |
-| First pixels | D3D9 blit → D3D11 → XR | D3D9→VK inside DXVK → Submit |
+| Submit API | OpenXR D3D11 swapchains | **OpenVR** Vulkan `Submit` via DXVK |
+| First pixels | D3D9 blit → D3D11 → XR | D3D9→VK inside DXVK → OpenVR |
 
-Same **product** goal; different **mailbox**. IronWolf teaches the mailbox shape for Phase B.
+Same **product** goal; different **mailbox**. Phase B mirrors L4D2VR/HL2VR.

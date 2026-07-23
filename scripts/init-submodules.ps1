@@ -14,6 +14,6 @@ if (-not (Test-Path "dxvk\.git") -and -not (Test-Path "dxvk\src")) {
   git submodule update --init --recursive
 }
 
-Write-Host "Done. Read docs/IRONWOLF_DXVK.md (master vs vr-dx9-rel vs tiw-rel)."
-Write-Host "L4D2VR (hooks reference): https://github.com/sd805/l4d2vr"
-Write-Host "Optional later: openRBRVR DXVK for OpenXR-heavy 32-bit path."
+Write-Host "Done. Read docs/IRONWOLF_DXVK.md (OpenVR-first Phase B)."
+Write-Host "L4D2VR (hooks + OpenVR Submit reference): https://github.com/sd805/l4d2vr"
+Write-Host "Need SteamVR running for Reverb G2 + OpenVR."
