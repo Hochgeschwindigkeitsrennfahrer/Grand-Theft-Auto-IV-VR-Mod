@@ -16,16 +16,16 @@ if (-not $BackupDir) {
 }
 
 if (-not $BackupDir -or -not (Test-Path $BackupDir)) {
-  Write-Host "Kein Backup gefunden unter: $BackupRoot"
-  Write-Host "Vorhandene Backups:"
+  Write-Host "No backup found under: $BackupRoot"
+  Write-Host "Existing backups:"
   Get-ChildItem $BackupRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { Write-Host "  $($_.FullName)" }
-  Write-Host "Aufruf: .\scripts\restore-rgless.ps1 -BackupDir `"<pfad>`""
+  Write-Host "Usage: .\scripts\restore-rgless.ps1 -BackupDir `"<path>`""
   exit 2
 }
 
 $manifestPath = Join-Path $BackupDir "MANIFEST.json"
 if (-not (Test-Path $manifestPath)) {
-  throw "MANIFEST.json fehlt in $BackupDir"
+  throw "MANIFEST.json missing in $BackupDir"
 }
 
 $manifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
@@ -33,7 +33,7 @@ if ($manifest.gameDir) { $GameDir = [string]$manifest.gameDir }
 
 $running = @(Get-Process -Name "GTAIV", "PlayGTAIV" -ErrorAction SilentlyContinue)
 if ($running.Count -gt 0) {
-  Write-Host "Beende GTA..."
+  Write-Host "Closing GTA..."
   $running | Stop-Process -Force -ErrorAction SilentlyContinue
   Start-Sleep -Seconds 2
 }
@@ -70,9 +70,9 @@ if (Test-Path $PreDir) {
 # Optional: remove empty save folder created by us (do NOT delete if user has progress there)
 $gameSave = Join-Path $GameDir "save"
 Write-Host ""
-Write-Host "Hinweis: Ordner $gameSave wurde NICHT geloescht (falls Saves drin)."
-Write-Host "Documents-Saves wurden bei Install nur kopiert — die liegen noch unter Documents."
+Write-Host "Note: Folder $gameSave was NOT deleted (in case saves are there)."
+Write-Host "Documents saves were only copied during install — they remain under Documents."
 Write-Host ""
-Write-Host "OK — RGLess zurueckgerollt."
-Write-Host "Danach Steam-Start testen (nicht -DirectExe)."
-Write-Host "Falls kaputt: Steam → Eigenschaften → Dateien ueberpruefen, dann ASI/DXVK/FusionFix neu deployen."
+Write-Host "OK — RGLess rolled back."
+Write-Host "Then test Steam launch (not -DirectExe)."
+Write-Host "If broken: Steam → Properties → Verify files, then re-deploy ASI/DXVK/FusionFix."

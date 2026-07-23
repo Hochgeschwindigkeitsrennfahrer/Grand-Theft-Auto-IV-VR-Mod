@@ -1,45 +1,45 @@
 # FAQ
 
-## Warum nicht einfach IronWolf-`d3d9.dll`?
+## Why not just IronWolf `d3d9.dll`?
 
-Auf diesem Setup (RTX 4070 Ti) sind alte VR-Forks (IronWolf ~2.4, FF-DXVK 2.6.2) flach kaputt.  
-**Stock-DXVK 3.0.2** flach ok. Modernes DXVK liefert die Vulkan-Handles über **`ID3D9VkInteropDevice`** — das reicht für OpenVR-Submit. Unser Code steckt in einer **ASI**, nicht zwingend in einem eigenen DXVK-Fork. Details: `docs/VR_STRATEGY.md`.
+On this setup (RTX 4070 Ti), old VR forks (IronWolf ~2.4, FF-DXVK 2.6.2) are broken flat.  
+**Stock-DXVK 3.0.2** works flat. Modern DXVK provides Vulkan handles via **`ID3D9VkInteropDevice`** — that is enough for OpenVR submit. Our code lives in an **ASI**, not necessarily in a custom DXVK fork. Details: `docs/VR_STRATEGY.md`.
 
-## Wozu FusionFix?
+## What is FusionFix for?
 
-FusionFix ist die übliche **CE-Basis**: Fixes + **ASI-Loader**.
+FusionFix is the usual **CE base**: fixes + **ASI loader**.
 
-- Es macht **kein** VR.  
-- Es hilft, Mods zu laden und CE stabiler zu fahren.  
-- Wenn **unsere** `d3d9.dll` aktiv ist: FusionFix-**Vulkan/DXVK-Schalter aus**, sonst kämpfen zwei Vulkan-Pfade.
+- It does **not** do VR.  
+- It helps load mods and run CE more stably.  
+- When **our** `d3d9.dll` is active: turn FusionFix **Vulkan/DXVK switch off**, or two Vulkan paths fight each other.
 
-Theoretisch ginge nur DLL neben der EXE — praktisch ist CE + FusionFix der Standard-Setup.
+Theoretically you could use only a DLL next to the EXE — in practice CE + FusionFix is the standard setup.
 
-## Warum OpenVR statt OpenXR?
+## Why OpenVR instead of OpenXR?
 
-Weil L4D2VR und HL2VR so arbeiten und IronWolfs Mailbox dafür gemacht ist. Weniger Eigenbau für den ersten Brillen-Frame. SteamVR muss laufen (Reverb G2 darüber).
+Because L4D2VR and HL2VR work that way and IronWolf's mailbox is built for it. Less custom work for the first headset frame. SteamVR must be running (Reverb G2 through it).
 
-OpenXR kann später kommen; für v0 nicht nötig.
+OpenXR can come later; not needed for v0.
 
-## Reicht es, IronWolf/sd805-DLL in GTA zu legen?
+## Is it enough to drop IronWolf/sd805 DLL into GTA?
 
-**Nein.** Autor und L4D2VR: ohne **spielseitiges** Glue kein magisches VR. Außerdem sind L4D2-Hacks (Viewport, HUD, …) nicht für GTA gedacht.
+**No.** Author and L4D2VR: without **game-side** glue there is no magic VR. Also, L4D2 hacks (viewport, HUD, …) are not meant for GTA.
 
-## Welchen IronWolf-Branch?
+## Which IronWolf branch?
 
-| Branch | Nutzen |
-|--------|--------|
-| `master` | **Nicht** für VR-Mailbox (`d3d9_vr.h` fehlt) |
-| `vr-dx9-rel` | Klassische OpenVR-Mailbox (gut zum Lernen/Abgucken) |
-| `tiw-rel-241-*` | Aktuellere Linie; OpenVR nutzen, OpenXR-Helfer ignorieren |
+| Branch | Use |
+|--------|-----|
+| `master` | **Not** for VR mailbox (`d3d9_vr.h` missing) |
+| `vr-dx9-rel` | Classic OpenVR mailbox (good for learning/copying) |
+| `tiw-rel-241-*` | Current line; use OpenVR, ignore OpenXR helpers |
 
 Details: `docs/IRONWOLF_DXVK.md`.
 
-## Was ist der erste Erfolg?
+## What is the first success?
 
-Spiel startet mit unserer x86-`d3d9.dll` **flach** (Monitor).  
-Danach: **ein** Bild in der Brille (Mono-Submit). Erst dann Stereo/Kamera.
+Game starts with our x86 `d3d9.dll` **flat** (monitor).  
+Then: **one** image in the headset (Mono-Submit). Only then stereo/camera.
 
-## Wo steht die Cursor-Anleitung zu Hause?
+## Where is the Cursor guide for home?
 
 → [`docs/HOME_CURSOR.md`](HOME_CURSOR.md)

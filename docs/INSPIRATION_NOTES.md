@@ -1,7 +1,7 @@
 # Inspiration — Vice City VR + IV First Person
 
-Stand: 2026-07-23  
-Lokal: `inspiration/vice-city-vr-0.1.0/` (aktuell nur `README.md` — Upstream-Repo hat noch keinen Source-Tree).
+Status: 2026-07-23  
+Local: `inspiration/vice-city-vr-0.1.0/` (currently only `README.md` — upstream repo has no source tree yet).
 
 ---
 
@@ -9,50 +9,50 @@ Lokal: `inspiration/vice-city-vr-0.1.0/` (aktuell nur `README.md` — Upstream-R
 
 Repo: https://github.com/dubrovskiy-yevhen-stakelogic/vice-city-vr  
 Stack: **reVC** (reverse-engineered VC) + **librw** (RenderWare→D3D12) + **OpenXR**  
-Nicht: ASI in die Original-`gta-vc.exe`, sondern eigener `reVC.exe`.
+Not: ASI in the original `gta-vc.exe`, but a separate `reVC.exe`.
 
-### Was sie architektonisch richtig machen (für uns relevant)
+### What they get architecturally right (relevant for us)
 
-| Idee | VC VR | Übertrag auf GTA IV CE |
+| Idea | VC VR | Transfer to GTA IV CE |
 |------|-------|-------------------------|
-| **Single-pass / shared prep stereo** | Eine World-Pass-Vorbereitung (Visibility, Anim, Lighting prep) für beide Augen; Render in **double-wide** Stereo-Target → OpenXR Swapchains | Zielbild statt Alternating-Eye (Mode 4). Bei Rage fehlt uns der Renderer-Besitz — nächster Spike: Phase-Pipeline 2× **im selben Frame**, nicht Frame L / Frame R |
-| **Kein zweites Desktop-World-Render** | Headset aktiv → kein voller Flat-Doppel-Draw | Wir submitten vom DXVK-BB; Monitor-Present bleibt, aber kein extra Game-Tick |
-| **Menü/Cutscene = Theater-Quad** | 2D unverändert, world-locked OpenXR Quad | Später: Pause/Menü nicht mit falscher Stereo-Cam |
-| **HUD = eigene Layer** | Separates OpenXR Quad | Später; jetzt HUD oft unlesbar im Mono-Stretch |
-| **6DoF + Recenter** | OpenXR; Chord recenter | Haben wir (F9 / SteamVR) |
-| **OpenXR statt OpenVR** | Primär Quest Link | Wir bleiben bei **OpenVR/SteamVR** (Reverb G2, vorhandener Pfad), Idee ist portierbar |
+| **Single-pass / shared prep stereo** | One world-pass preparation (visibility, anim, lighting prep) for both eyes; render into **double-wide** stereo target → OpenXR swapchains | Target image instead of alternating-eye (Mode 4). With Rage we lack renderer ownership — next spike: phase pipeline 2× **in the same frame**, not frame L / frame R |
+| **No second desktop world render** | Headset active → no full flat double draw | We submit from the DXVK backbuffer; monitor present remains, but no extra game tick |
+| **Menu/cutscene = theater quad** | 2D unchanged, world-locked OpenXR quad | Later: pause/menu not with wrong stereo cam |
+| **HUD = separate layer** | Separate OpenXR quad | Later; for now HUD is often unreadable in mono stretch |
+| **6DoF + recenter** | OpenXR; chord recenter | We have this (F9 / SteamVR) |
+| **OpenXR instead of OpenVR** | Primarily Quest Link | We stay on **OpenVR/SteamVR** (Reverb G2, existing path); idea is portable |
 
-### Was wir **nicht** 1:1 übernehmen können
+### What we **cannot** adopt 1:1
 
-- Eigenen Engine-Port (reVC) + eigenen Renderer (librw D3D12)  
-- Single-pass Stereo / VRS / DLAA im Backend  
-- ASI/CLEO der Original-Exe sind laut README mit reVC inkompatibel  
+- Custom engine port (reVC) + custom renderer (librw D3D12)  
+- Single-pass stereo / VRS / DLAA in the backend  
+- ASI/CLEO for the original exe are incompatible with reVC per README  
 
-**Fazit:** VC VR bestätigt BotW/L4D2VR: Stereo gehört in den **Renderer**, mit shared prep und zwei Views **pro Frame**. Für CE bleiben wir bei Stock DXVK + ASI und müssen den Rage-Draw-Pfad finden (Mode-5-Phasenprobe).
+**Conclusion:** VC VR confirms BotW/L4D2VR: stereo belongs in the **renderer**, with shared prep and two views **per frame**. For CE we stay on stock DXVK + ASI and must find the Rage draw path (Mode 5 phase probe).
 
 ---
 
-## GTA IV First Person Mod (C06alt) [Legacy / „VR“-Thread]
+## GTA IV First Person Mod (C06alt) [Legacy / "VR" thread]
 
 Forum: https://gtaforums.com/topic/953517-reliv-gta-iv-first-person-mod-by-c06alt-legacy-v11-v122-v13-vr/
 
-| Aspekt | Nutzen für uns |
+| Aspect | Use for us |
 |--------|----------------|
-| FP per ScriptHook / ASI | **Schon abgedeckt** besser: CopyMat + Ped-Eye + HMD |
-| `firstperson.ini` Offsets | Ideen für Eye-Height / Forward (wir: `kEyeHeight`, `kEyeForward`) |
-| Script-Thread Mesh/Head hide | Genau unser geplanter Weg (Natives **nicht** aus EndScene) |
-| Alte „VR“-Builds | Oft SBS/Cinema, kein Rage Dual-Draw — wenig für echtes Stereo |
-| Versionen 1.0.7 / 1.0.8 | CE-Offsets anders; Blind-Install riskant neben FusionFix |
+| FP via ScriptHook / ASI | **Already covered** better: CopyMat + ped eye + HMD |
+| `firstperson.ini` offsets | Ideas for eye height / forward (we use: `kEyeHeight`, `kEyeForward`) |
+| Script-thread mesh/head hide | Exactly our planned path (natives **not** from EndScene) |
+| Old "VR" builds | Often SBS/cinema, not Rage dual draw — little value for true stereo |
+| Versions 1.0.7 / 1.0.8 | CE offsets differ; blind install risky alongside FusionFix |
 
-**Fazit:** Kein Stereo-Vorbild. Nützlich als Referenz für **Skript-seitiges** Head-Hide / Bone-Offsets, sobald wir einen ScriptHook-/Native-Thread haben.
+**Conclusion:** Not a stereo reference. Useful as a reference for **script-side** head hide / bone offsets once we have a ScriptHook/native thread.
 
 ---
 
-## Abgleich mit unserem Stand
+## Alignment with our current status
 
-1. Mode 0 Mono + FP-Cam = Bootstrap (wie vor VC-VR-Stereo).  
-2. Mode 4 Alternating = von VC VR / BotW explizit die schlechtere Klasse → nicht Ziel.  
-3. Mode 5 Phase-Probe = Weg zum „shared prep, two views per frame“ ohne Engine-Fork.  
-4. Theater-Menü + HUD-Layer = später, nach Fusion.
+1. Mode 0 mono + FP cam = bootstrap (like before VC VR stereo).  
+2. Mode 4 alternating = explicitly the worse class per VC VR / BotW → not the goal.  
+3. Mode 5 phase probe = path to "shared prep, two views per frame" without engine fork.  
+4. Theater menu + HUD layer = later, after fusion.
 
-Wenn der VC-VR-**Source** später öffentlich wird: vor allem `src/vr/` + librw Stereo/Swapchain-Pfad lesen — nicht die Controller-Physik zuerst.
+When the VC VR **source** is published later: read `src/vr/` + librw stereo/swapchain path first — not controller physics.

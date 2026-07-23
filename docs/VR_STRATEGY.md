@@ -1,52 +1,52 @@
-# VR-Strategie (ab 0.6)
+# VR Strategy (from 0.6)
 
-## Entscheidung
+## Decision
 
-**Nicht** IronWolf `tiw-rel` (~DXVK 2.4) weiter erzwingen — flach auf diesem PC kaputt.  
-**Stattdessen:** Stock-DXVK **3.0.2** (flach bewiesen) + offizielle **`ID3D9VkInterop*`**-API für OpenVR-Submit.
+**Do not** keep forcing IronWolf `tiw-rel` (~DXVK 2.4) — flat rendering is broken on this PC.  
+**Instead:** Stock DXVK **3.0.2** (flat proven) + official **`ID3D9VkInterop*`** API for OpenVR submit.
 
-IronWolf `IDirect3DVR9` war der Vorläufer; in modernem DXVK heißt das Pendant:
+IronWolf `IDirect3DVR9` was the predecessor; in modern DXVK the equivalent is:
 
-| IronWolf (alt) | Stock DXVK 3.0.2 |
+| IronWolf (legacy) | Stock DXVK 3.0.2 |
 |----------------|------------------|
-| `Direct3DCreateVRImpl` | `QueryInterface(ID3D9VkInteropDevice)` am Device |
-| `GetVRDesc` | `ID3D9VkInteropTexture::GetVulkanImageInfo` + Device/Queue-Handles |
+| `Direct3DCreateVRImpl` | `QueryInterface(ID3D9VkInteropDevice)` on the device |
+| `GetVRDesc` | `ID3D9VkInteropTexture::GetVulkanImageInfo` + device/queue handles |
 | `BeginVRSubmit` / Lock | `FlushRenderingCommands` + `LockSubmissionQueue` / `LockDevice` |
-| Multi-View / OpenXR-Helfer | **ignorieren** (v0) |
+| Multi-View / OpenXR helpers | **ignore** (v0) |
 
-Referenz-Header (Upstream): `src/d3d9/d3d9_interfaces.h` @ [v3.0.2](https://github.com/doitsujin/dxvk/tree/v3.0.2).  
-Lokale GUID-Kopie: `thirdparty/dxvk/d3d9_vk_interop.h`.
+Reference header (upstream): `src/d3d9/d3d9_interfaces.h` @ [v3.0.2](https://github.com/doitsujin/dxvk/tree/v3.0.2).  
+Local GUID copy: `thirdparty/dxvk/d3d9_vk_interop.h`.
 
-## Architektur v0
+## Architecture v0
 
 ```
 GTAIV.exe
-  → d3d9.dll          = Stock DXVK 3.0.2 (flach ok)
-  → FusionFix (ASI-Loader, CE-Fixes)
-  → gtaiv_dxvk_vr.asi = unser Glue (OpenVR Init + Mono-Submit)
+  → d3d9.dll          = Stock DXVK 3.0.2 (flat ok)
+  → FusionFix (ASI loader, CE fixes)
+  → gtaiv_dxvk_vr.asi = our glue (OpenVR init + mono submit)
        → QI ID3D9VkInteropDevice / Texture
        → IVRCompositor::Submit (TextureType_Vulkan)
   → SteamVR → Reverb G2
 ```
 
-Kein OpenXR in v0. Eine Verhaltensänderung pro Test-Build.
+No OpenXR in v0. One behavior change per test build.
 
-## Meilensteine
+## Milestones
 
-1. **Interop-Probe** — ASI lädt, loggt erfolgreichen QI + VkImage/Device (noch kein Headset-Bild).  
-2. **Mono-Submit** — ein Augenbild in der Brille.  
-3. **Stereo / Kamera** — siehe `docs/VR_MOD_PLAYBOOK.md` (Leitbild BotW BetterVR + L4D2VR).
+1. **Interop probe** — ASI loads, logs successful QI + VkImage/device (no headset image yet).  
+2. **Mono submit** — one eye image in the headset.  
+3. **Stereo / camera** — see `docs/VR_MOD_PLAYBOOK.md` (reference model: BotW BetterVR + L4D2VR).
 
-## Submodule
+## Submodules
 
-| Pfad | Rolle |
+| Path | Role |
 |------|--------|
-| `dxvk/` (bisher IronWolf) | Referenz / optional; **nicht** mehr Deliverable-Basis |
-| Stock 3.0.2 Binary | Deliverable-`d3d9.dll` (wie jetzt im Spiel) |
-| Optional später: `doitsujin/dxvk` @ `v3.0.2` | nur wenn wir DXVK selbst patchen müssen |
+| `dxvk/` (formerly IronWolf) | Reference / optional; **no longer** the deliverable base |
+| Stock 3.0.2 binary | Deliverable `d3d9.dll` (as currently in the game) |
+| Optional later: `doitsujin/dxvk` @ `v3.0.2` | only if we need to patch DXVK ourselves |
 
-## Was du im Spielordner lässt
+## What to keep in the game folder
 
-- `d3d9.dll` = DXVK **3.0.2** x32 (bewährt)  
-- `vulkan.dll` = FF-Original, unangetastet  
-- FusionFix installiert  
+- `d3d9.dll` = DXVK **3.0.2** x32 (proven)  
+- `vulkan.dll` = FF original, untouched  
+- FusionFix installed  

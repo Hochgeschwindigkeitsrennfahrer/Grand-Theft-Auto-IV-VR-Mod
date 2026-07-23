@@ -30,11 +30,11 @@ if (-not $ZipPath) {
 
 if (-not $ZipPath -or -not (Test-Path $ZipPath)) {
   Write-Host ""
-  Write-Host "RGLess-Zip fehlt."
-  Write-Host "1) Guide oeffnen: $GuideUrl"
-  Write-Host "2) Zip herunterladen (Mediafire / Mega / Internet Archive)"
-  Write-Host "3) Ablegen als: $DropDir\RGLess.zip"
-  Write-Host "4) Dieses Script erneut starten"
+  Write-Host "RGLess zip missing."
+  Write-Host "1) Open guide: $GuideUrl"
+  Write-Host "2) Download zip (Mediafire / Mega / Internet Archive)"
+  Write-Host "3) Save as: $DropDir\RGLess.zip"
+  Write-Host "4) Run this script again"
   Write-Host ""
   try { Start-Process $GuideUrl } catch {}
   try { Start-Process explorer.exe $DropDir } catch {}
@@ -42,12 +42,12 @@ if (-not $ZipPath -or -not (Test-Path $ZipPath)) {
 }
 
 if (-not (Test-Path (Join-Path $GameDir "GTAIV.exe"))) {
-  throw "GTAIV.exe nicht gefunden in: $GameDir"
+  throw "GTAIV.exe not found in: $GameDir"
 }
 
 $running = @(Get-Process -Name "GTAIV", "PlayGTAIV" -ErrorAction SilentlyContinue)
 if ($running.Count -gt 0) {
-  Write-Host "Beende GTA..."
+  Write-Host "Closing GTA..."
   $running | Stop-Process -Force -ErrorAction SilentlyContinue
   Start-Sleep -Seconds 2
 }
@@ -59,7 +59,7 @@ $ExtractDir = Join-Path $BackupDir "rgless-extract"
 $SavesBackup = Join-Path $BackupDir "saves-documents"
 New-Item -ItemType Directory -Force -Path $PreDir, $ExtractDir, $SavesBackup | Out-Null
 
-Write-Host "=== RGLess Install (reversibel) ==="
+Write-Host "=== RGLess Install (reversible) ==="
 Write-Host "Zip:     $ZipPath"
 Write-Host "Game:    $GameDir"
 Write-Host "Backup:  $BackupDir"
@@ -67,7 +67,7 @@ Write-Host "Backup:  $BackupDir"
 # Extract zip (Expand-Archive needs .zip)
 $tmpZip = $ZipPath
 if ([IO.Path]::GetExtension($ZipPath) -ieq ".7z") {
-  throw "Bitte als .zip bereitstellen (oder 7z vorher entpacken nach vendor\rgless\extracted)."
+  throw "Please provide as .zip (or extract 7z first to vendor\rgless\extracted)."
 }
 
 Expand-Archive -LiteralPath $tmpZip -DestinationPath $ExtractDir -Force
@@ -81,7 +81,7 @@ if ($top.Count -eq 1 -and $top[0].PSIsContainer) {
 
 $payloadFiles = @(Get-ChildItem $contentRoot -Recurse -File)
 if ($payloadFiles.Count -eq 0) {
-  throw "Zip enthaelt keine Dateien: $ZipPath"
+  throw "Zip contains no files: $ZipPath"
 }
 
 $added = New-Object System.Collections.Generic.List[string]
@@ -112,7 +112,7 @@ foreach ($f in $payloadFiles) {
 # Backup Documents saves (do not delete originals)
 $docsGta = Join-Path $env:USERPROFILE "Documents\Rockstar Games\GTA IV"
 if (Test-Path $docsGta) {
-  Write-Host "Sichere Documents-Saves..."
+  Write-Host "Backing up Documents saves..."
   Copy-Item -LiteralPath $docsGta -Destination (Join-Path $SavesBackup "GTA IV") -Recurse -Force
 }
 
@@ -126,14 +126,14 @@ if (Test-Path $docsProfiles) {
     $dest = Join-Path $gameProfiles $prof.Name
     New-Item -ItemType Directory -Force -Path $dest | Out-Null
     Copy-Item -Path (Join-Path $prof.FullName "*") -Destination $dest -Force
-    Write-Host ("Profile kopiert: {0} -> {1}" -f $prof.Name, $dest)
+    Write-Host ("Profile copied: {0} -> {1}" -f $prof.Name, $dest)
   }
   foreach ($s in @(Get-ChildItem $docsProfiles -Recurse -File -Filter "SGTA*" -ErrorAction SilentlyContinue)) {
     Copy-Item $s.FullName (Join-Path $gameSave $s.Name) -Force
   }
 } elseif (Test-Path $docsGta) {
   Copy-Item -LiteralPath $docsGta -Destination $gameSave -Recurse -Force
-  Write-Host "Documents GTA IV nach game\save gespiegelt (Fallback)."
+  Write-Host "Mirrored Documents GTA IV to game\save (fallback)."
 }
 
 $manifest = [ordered]@{
@@ -156,9 +156,9 @@ $manifest | ConvertTo-Json -Depth 6 | Set-Content -Path $manifestPath -Encoding 
 Set-Content -Path (Join-Path $BackupRoot "LATEST.txt") -Value $BackupDir -Encoding UTF8
 
 Write-Host ""
-Write-Host "OK — RGLess installiert."
+Write-Host "OK — RGLess installed."
 Write-Host "Backup: $BackupDir"
 Write-Host "Restore: .\scripts\restore-rgless.ps1"
 Write-Host "Start test: .\scripts\restart-gtaiv.ps1 -DirectExe"
 Write-Host ""
-Write-Host "Hinweis: Original-Saves in Documents bleiben erhalten (Kopie)."
+Write-Host "Note: Original saves in Documents are preserved (copy only)."

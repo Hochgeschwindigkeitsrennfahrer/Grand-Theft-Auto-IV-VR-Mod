@@ -12,8 +12,8 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $asi = Join-Path $Root "out-asi\gtaiv_dxvk_vr.asi"
 $ovr = Join-Path $Root "out-asi\openvr_api.dll"
-if (-not (Test-Path $asi)) { throw "Build fehlt - .\scripts\build-asi.ps1" }
-if (-not (Test-Path $GameDir)) { throw "GameDir nicht gefunden: $GameDir" }
+if (-not (Test-Path $asi)) { throw "Build missing — run .\scripts\build-asi.ps1" }
+if (-not (Test-Path $GameDir)) { throw "GameDir not found: $GameDir" }
 
 $destAsi = Join-Path $GameDir "gtaiv_dxvk_vr.asi"
 try {

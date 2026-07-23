@@ -1,96 +1,96 @@
-# Spielstart beschleunigen (GTA IV CE + Rockstar Launcher)
+# Faster game startup (GTA IV CE + Rockstar Launcher)
 
-Stand: 2026-07-23. Gilt für **Steam Complete Edition** + FusionFix + unser ASI.
+Status: 2026-07-23. Applies to **Steam Complete Edition** + FusionFix + our ASI.
 
 ---
 
-## Was den Start langsam macht
+## What makes startup slow
 
-Typische Kette:
+Typical chain:
 
 ```
 Steam Play → PlayGTAIV.exe → Rockstar Launcher / Social Club → GTAIV.exe
 ```
 
-Launcher-Login, SocialClubHelper-Prozesse und Online-Checks kosten oft **mehrere Sekunden bis Minuten** — nicht unser ASI.
+Launcher login, SocialClubHelper processes, and online checks often cost **several seconds to minutes** — not our ASI.
 
 ---
 
-## Stufe A — Schneller ohne Bypass (empfohlen zuerst)
+## Level A — Faster without bypass (recommended first)
 
-1. **Steam + Rockstar Launcher einmal angemeldet offen lassen**  
-   Nicht bei jedem Restart `Launcher` / `RockstarService` killen.  
-   Unser Script: `scripts\restart-gtaiv.ps1` killt die **nicht** (außer `-KillRockstarStack`).
+1. **Keep Steam + Rockstar Launcher logged in and open**  
+   Do not kill `Launcher` / `RockstarService` on every restart.  
+   Our script: `scripts\restart-gtaiv.ps1` does **not** kill them (except with `-KillRockstarStack`).
 
-2. **Steam Offline** (Steam → Offline gehen), nachdem das Spiel einmal online gestartet hat.  
-   Rockstar oft parallel: Launcher-Einstellungen → Offline, soweit angeboten.
+2. **Steam offline** (Steam → Go Offline), after the game has started online once.  
+   Rockstar in parallel: Launcher settings → Offline, where offered.
 
-3. **VR-Stack vorher warm:** SteamVR schon laufen, Dashboard zu.
+3. **Warm VR stack beforehand:** SteamVR already running, dashboard closed.
 
-4. **Antivirus-Ausnahme** für  
+4. **Antivirus exception** for  
    `...\steamapps\common\Grand Theft Auto IV\`  
-   (sonst langsames Scannen von `d3d9.dll` / ASI).
+   (otherwise slow scanning of `d3d9.dll` / ASI).
 
-5. Restart nur über Desktop-Shortcut / `restart-gtaiv.bat` — nicht jedes Mal den ganzen Rockstar-Stack neu.
+5. Restart only via desktop shortcut / `restart-gtaiv.bat` — do not restart the entire Rockstar stack every time.
 
-Erwartung: spürbar schneller, Launcher bleibt aber in der Kette.
-
----
-
-## Stufe B — Offline-Modus (Launcher bleibt, weniger Online-Hänger)
-
-1. Steam → **Offline gehen**.  
-2. GTA starten; ggf. Offline-Social-Club-Account anlegen (einmalig).  
-3. Saves liegen unter Profil-Ordnern — Offline-Account ≠ Online-Account (Saves ggf. kopieren).  
-   Siehe Steam-Guides zu „CE Offline with saves“.
-
-Kein echter Bypass: Launcher/Social Club können trotzdem kurz aufpoppen.
+Expected result: noticeably faster; launcher still in the chain.
 
 ---
 
-## Stufe C — Rockstar Launcher komplett weg (RGLess, reversibel)
+## Level B — Offline mode (launcher remains, fewer online stalls)
 
-TJGM-Guide: https://tjgm.dev/guides/gtaiv/Removing-Rockstar-Games-Launcher-from-GTA-IV/
+1. Steam → **Go Offline**.  
+2. Start GTA; create offline Social Club account if needed (one-time).  
+3. Saves live under profile folders — offline account ≠ online account (copy saves if needed).  
+   See Steam guides on "CE Offline with saves".
 
-### Installation mit Backup (empfohlen)
+Not a real bypass: Launcher/Social Club may still pop up briefly.
+
+---
+
+## Level C — Remove Rockstar Launcher entirely (RGLess, reversible)
+
+TJGM guide: https://tjgm.dev/guides/gtaiv/Removing-Rockstar-Games-Launcher-from-GTA-IV/
+
+### Installation with backup (recommended)
 
 ```powershell
-# 1) Zip nach vendor\rgless\RGLess.zip legen (Guide oeffnen / Download)
-# 2) GTA zu
+# 1) Place zip in vendor\rgless\RGLess.zip (open guide / download)
+# 2) GTA path
 cd C:\Users\Henning\Documents\cursor\gtaiv-dxvk-vr
 .\scripts\install-rgless.ps1
 ```
 
-Das Script:
+The script:
 
-- beendet GTA falls noetig  
-- sichert **jede ueberschriebene Datei** nach `backups\rgless\<zeitstempel>\pre-replace\`  
-- listet neu hinzugefuegte Dateien im `MANIFEST.json`  
-- kopiert Documents-Saves (loescht sie **nicht**) nach `GTAIV\save\...`  
-- schreibt `backups\rgless\LATEST.txt`
+- terminates GTA if needed  
+- backs up **every overwritten file** to `backups\rgless\<timestamp>\pre-replace\`  
+- lists newly added files in `MANIFEST.json`  
+- copies Documents saves (does **not** delete them) to `GTAIV\save\...`  
+- writes `backups\rgless\LATEST.txt`
 
-### Spaeter alles wiederherstellen
+### Restore everything later
 
 ```powershell
 .\scripts\restore-rgless.ps1
-# oder: .\scripts\restore-rgless.ps1 -BackupDir "...\backups\rgless\<stempel>"
+# or: .\scripts\restore-rgless.ps1 -BackupDir "...\backups\rgless\<stamp>"
 ```
 
-Restore stellt ersetzte Dateien zurueck und loescht nur die von RGLess **neu** hinzugefuegten.  
-Nuclear-Fallback: Steam → Dateien ueberpruefen → danach ASI/DXVK/FusionFix neu deployen.
+Restore puts replaced files back and deletes only files **newly** added by RGLess.  
+Nuclear fallback: Steam → Verify files → then redeploy ASI/DXVK/FusionFix.
 
-### Start nach RGLess
+### Start after RGLess
 
 ```powershell
 .\scripts\restart-gtaiv.ps1 -DirectExe
 ```
 
-**Downgrade 1.0.8.0:** fuer dieses VR-Projekt **nicht** (CE-AOBs).
+**Downgrade 1.0.8.0:** **not** for this VR project (CE AOBs).
 
 ---
 
-## Empfehlung fuer dich (VR-Dev-Loop)
+## Recommendation for you (VR dev loop)
 
-1. Stufe A (Launcher warm).  
-2. RGLess mit `install-rgless.ps1` + spaeter `restore-rgless.ps1`.  
-3. Kein Downgrade.
+1. Level A (launcher warm).  
+2. RGLess with `install-rgless.ps1` + later `restore-rgless.ps1`.  
+3. No downgrade.

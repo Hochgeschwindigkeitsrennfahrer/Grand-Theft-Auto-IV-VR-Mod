@@ -50,7 +50,7 @@ bool LoadConfig(const char* path, Config* out) {
 }
 
 bool OpenVrInit() {
-  LogWrite("OpenVrInit: STUB — next: openvr_api + SteamVR (flach DXVK 3.0.2 already ok)");
+  LogWrite("OpenVrInit: STUB — next: openvr_api + SteamVR (flat DXVK 3.0.2 already ok)");
   return false;
 }
 

@@ -1,29 +1,29 @@
 ﻿$ErrorActionPreference = "Stop"
 $docs = "C:\Users\amien.krause\Documents"
 $stamp = Get-Date -Format "yyyyMMdd-HHmm"
-# Prefer stable FULL folder; also keep stamp in LIESMICH for traceability
+# Prefer stable FULL folder; also keep stamp in README for traceability
 $dest = Join-Path $docs "gtaiv-vr-handoff-FULL"
 New-Item -ItemType Directory -Force -Path $dest | Out-Null
 
 $readme = @"
-GTA IV VR - Handoff-Paket FULL ($stamp)
+GTA IV VR - Handoff package FULL ($stamp)
 
-Enthalten:
-  gtaiv-openxr.zip     Phase A - OpenXR + ASI (WMR)  inkl. .git
-  gtaiv-dxvk-vr.zip    Phase B - VR-DXVK + OpenVR    inkl. .git
+Included:
+  gtaiv-openxr.zip     Phase A - OpenXR + ASI (WMR)  incl. .git
+  gtaiv-dxvk-vr.zip    Phase B - VR-DXVK + OpenVR    incl. .git
 
-Zuhause:
-1. Beide Zips nach Documents entpacken (Ordnernamen beibehalten).
+At home:
+1. Extract both zips to Documents (keep folder names).
 2. Phase A: Cursor -> Open Folder -> gtaiv-openxr -> docs\HOME_CURSOR.md
 3. Phase B: Cursor -> Open Folder -> gtaiv-dxvk-vr -> docs\HOME_CURSOR.md
-4. Phase B danach: .\scripts\init-submodules.ps1 (Internet noetig)
+4. After Phase B: .\scripts\init-submodules.ps1 (internet required)
 
-Hinweis:
-- .git IST enthalten (volle Historie; auch versteckte Dateien).
-- Ausgeschlossen: .vs, out, build, bin, dxvk sowie *.user *.suo *.obj *.pdb *.dll *.exe *.asi *.log
-- dxvk-Submodule zu Hause neu holen/bauen.
+Notes:
+- .git IS included (full history; hidden files too).
+- Excluded: .vs, out, build, bin, dxvk as well as *.user *.suo *.obj *.pdb *.dll *.exe *.asi *.log
+- Fetch/build dxvk submodule at home.
 "@
-Set-Content -Path (Join-Path $dest "LIESMICH.txt") -Value $readme -Encoding UTF8
+Set-Content -Path (Join-Path $dest "README.txt") -Value $readme -Encoding UTF8
 
 function Add-ZipTree([System.IO.Compression.ZipArchive]$archive, [string]$rootDir, [string]$relativePrefix) {
   # Include hidden/system files (.git etc.)

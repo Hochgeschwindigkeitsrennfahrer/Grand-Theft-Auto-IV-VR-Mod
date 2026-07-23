@@ -1,73 +1,73 @@
-# IronWolf DXVK — verständlich
+# IronWolf DXVK — explained
 
 Upstream: [TheIronWolfModding/dxvk](https://github.com/TheIronWolfModding/dxvk)
 
 ---
 
-## Zweige (wichtig: kein Branch namens `openxr`)
+## Branches (important: no branch named `openxr`)
 
-| Zweig | Rolle |
+| Branch | Role |
 |-------|--------|
-| [`master`](https://github.com/TheIronWolfModding/dxvk/tree/master) | GitHub-Default. **Keine** Spiel-VR-Mailbox (`d3d9_vr.h` fehlt). |
-| [`vr-dx9-rel`](https://github.com/TheIronWolfModding/dxvk/tree/vr-dx9-rel) | Ältere **OpenVR**-Mailbox. Basis für L4D2VR/sd805. |
-| [`tiw-rel-241-*`](https://github.com/TheIronWolfModding/dxvk/tree/tiw-rel-241-260612) | Aktuellere VR-Linie. OpenVR + optionale OpenXR-Helfer. Für uns: **nur OpenVR** nutzen. |
+| [`master`](https://github.com/TheIronWolfModding/dxvk/tree/master) | GitHub default. **No** game VR mailbox (`d3d9_vr.h` missing). |
+| [`vr-dx9-rel`](https://github.com/TheIronWolfModding/dxvk/tree/vr-dx9-rel) | Older **OpenVR** mailbox. Base for L4D2VR/sd805. |
+| [`tiw-rel-241-*`](https://github.com/TheIronWolfModding/dxvk/tree/tiw-rel-241-260612) | Newer VR line. OpenVR + optional OpenXR helpers. For us: use **OpenVR only**. |
 
 ---
 
-## In Alltagssprache
+## In plain terms
 
-Normales DXVK: Spiel denkt D3D9 → GPU bekommt Vulkan → **Monitor**.
+Normal DXVK: game thinks D3D9 → GPU gets Vulkan → **monitor**.
 
-IronWolf VR-Linien: zusätzlich ein **Briefkasten**, damit ein Mod Vulkan-Augenbilder an **OpenVR** (SteamVR) geben kann.
+IronWolf VR lines: additionally a **mailbox** so a mod can give Vulkan eye images to **OpenVR** (SteamVR).
 
-Die DLL allein ist **kein** fertiger VR-Mod. Autor:
+The DLL alone is **not** a finished VR mod. Author:
 
 > Game-side changes needed… dropping this `.dll` into a random game **won't magically** add Vulkan VR.
 
 ---
 
-## Nützliche Änderungen
+## Useful changes
 
-| Änderung | Bedeutung |
+| Change | Meaning |
 |----------|-----------|
-| DX9→Vulkan OpenVR-Mailbox | `IDirect3DVR9` / `GetVRDesc` … |
-| OpenXR-Helfer (tiw-rel) | Optional; **dieses Projekt v0 nutzt sie nicht** |
-| Multi-View (detegr) | Stereo-Effizienz; Spiel steuert weiter |
-| GTR2_SPECIFIC | Für GTA **ignorieren** |
-| AA / Depth-Optionen | Nice-to-have |
+| DX9→Vulkan OpenVR mailbox | `IDirect3DVR9` / `GetVRDesc` … |
+| OpenXR helpers (tiw-rel) | Optional; **this project v0 does not use them** |
+| Multi-View (detegr) | Stereo efficiency; game still drives |
+| GTR2_SPECIFIC | **Ignore** for GTA |
+| AA / depth options | Nice-to-have |
 
 ---
 
-## Handshake (unser Weg = OpenVR)
+## Handshake (our path = OpenVR)
 
-1. OpenVR starten (`VR_Init` / SteamVR)  
-2. `GetVRDesc` — Vulkan-Info zur Textur  
-3. Begin/Lock Submit  
+1. Start OpenVR (`VR_Init` / SteamVR)  
+2. `GetVRDesc` — Vulkan info for the texture  
+3. Begin/lock submit  
 4. `IVRCompositor::Submit`  
-5. Unlock/End  
+5. Unlock/end  
 
-**Wer entscheidet „linkes Auge“?** Unser Glue — nicht IronWolf allein.
-
----
-
-## L4D2VR-Aufteilung (Vorbild)
-
-- **DXVK:** Zeichnen + Mailbox  
-- **L4D2VR-Code:** Kamera, Augen, Controls  
-
-Gleiche Trennung für GTA IV.
+**Who decides "left eye"?** Our glue — not IronWolf alone.
 
 ---
 
-## Anwendung hier
+## L4D2VR split (reference model)
+
+- **DXVK:** drawing + mailbox  
+- **L4D2VR code:** camera, eyes, controls  
+
+Same separation for GTA IV.
+
+---
+
+## Application here
 
 ```
 GTAIV.exe
-  → d3d9.dll (IronWolf/sd805-basiert, x86)
-  → GTA-Glue (Submit-Timing, später Kamera)
-  → OpenVR / SteamVR → Brille
+  → d3d9.dll (IronWolf/sd805-based, x86)
+  → GTA glue (submit timing, camera later)
+  → OpenVR / SteamVR → headset
 ```
 
-Schritte: Fork-Basis → x86 bauen → flach booten → Mono-Submit → Stereo/Kamera.
+Steps: fork base → build x86 → flat boot → mono submit → stereo/camera.
 
-Siehe `docs/FAQ.md`, `docs/REFERENCES.md`, `docs/HOME_CURSOR.md`.
+See `docs/FAQ.md`, `docs/REFERENCES.md`, `docs/HOME_CURSOR.md`.

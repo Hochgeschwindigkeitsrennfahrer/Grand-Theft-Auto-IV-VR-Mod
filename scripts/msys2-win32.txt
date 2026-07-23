@@ -1,5 +1,5 @@
 # Meson cross-file for MSYS2 MINGW32 (i686).
-# IronWolf build-win32.txt erwartet i686-w64-mingw32-ar — unter MSYS2 heißt das Tool oft nur "ar".
+# IronWolf build-win32.txt expects i686-w64-mingw32-ar — under MSYS2 that tool is often just "ar".
 
 [binaries]
 c = 'i686-w64-mingw32-gcc'

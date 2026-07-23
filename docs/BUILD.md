@@ -1,62 +1,62 @@
 # Build — x86 `d3d9.dll` (Win32)
 
-Ziel Schritt 1: **32-bit** `d3d9.dll` aus dem IronWolf-Submodule, die GTA IV CE **flach** (Monitor) unter FusionFix startet.  
-Noch **kein** OpenVR-Submit in diesem Schritt.
+Goal step 1: **32-bit** `d3d9.dll` from the IronWolf submodule that starts GTA IV CE **flat** (monitor) under FusionFix.  
+**No** OpenVR submit in this step yet.
 
-Submodule-Branch: `tiw-rel-241-260612` (siehe `.gitmodules`).  
-Compositor später: **OpenVR / SteamVR** — nicht OpenXR.
-
----
-
-## 0. Einmalig: Tools prüfen
-
-| Tool | Pflicht? | Check in PowerShell |
-|------|----------|---------------------|
-| Git for Windows | ja (Submodule) | `git --version` |
-| Visual Studio 2022 + **Desktopentwicklung mit C++** | empfohlen | VS Installer |
-| [MSYS2](https://www.msys2.org/) | ja (DXVK baut mit MinGW/Meson) | Startmenü → **MSYS2 UCRT64** |
-| Vulkan SDK | oft nötig (glslang) | `C:\VulkanSDK\...` |
-| Python 3 | oft schon mit Meson | `python --version` |
-
-Wenn `git` nicht gefunden wird: [Git for Windows](https://git-scm.com/download/win) installieren, **neuen** Cursor-/PowerShell-Tab öffnen, erneut prüfen.
+Submodule branch: `tiw-rel-241-260612` (see `.gitmodules`).  
+Compositor later: **OpenVR / SteamVR** — not OpenXR.
 
 ---
 
-## 1. Submodule holen (Internet)
+## 0. One-time: check tools
 
-In Cursor: Terminal `` Ctrl+` ``, dann:
+| Tool | Required? | Check in PowerShell |
+|------|-----------|---------------------|
+| Git for Windows | yes (submodules) | `git --version` |
+| Visual Studio 2022 + **Desktop development with C++** | recommended | VS Installer |
+| [MSYS2](https://www.msys2.org/) | yes (DXVK builds with MinGW/Meson) | Start menu → **MSYS2 UCRT64** |
+| Vulkan SDK | often needed (glslang) | `C:\VulkanSDK\...` |
+| Python 3 | often already with Meson | `python --version` |
+
+If `git` is not found: install [Git for Windows](https://git-scm.com/download/win), open a **new** Cursor/PowerShell tab, check again.
+
+---
+
+## 1. Fetch submodules (internet)
+
+In Cursor: Terminal `` Ctrl+` ``, then:
 
 ```powershell
 cd C:\Users\Henning\Documents\cursor\gtaiv-dxvk-vr
 .\scripts\init-submodules.ps1
 ```
 
-**Erfolg:** Ordner `dxvk\src` existiert und ist nicht leer.  
-Zusätzlich prüfen:
+**Success:** folder `dxvk\src` exists and is not empty.  
+Also verify:
 
 ```powershell
 Test-Path .\dxvk\src\d3d9\d3d9_vr.h
 ```
 
-Muss `True` sein. Wenn `False`: falscher Branch / leeres Submodule → komplette Terminal-Ausgabe an den Agenten pasten.
+Must be `True`. If `False`: wrong branch / empty submodule → paste full terminal output to the agent.
 
 ---
 
-## 2. MSYS2-Pakete (einmalig)
+## 2. MSYS2 packages (one-time)
 
-`build-win32.txt` verlangt Compiler namens `i686-w64-mingw32-gcc` → dafür die **MINGW32**-Umgebung.
+`build-win32.txt` expects a compiler named `i686-w64-mingw32-gcc` → use the **MINGW32** environment for that.
 
-1. **MSYS2** installieren: https://www.msys2.org/ (Standardpfad `C:\msys64` ok).  
-2. Startmenü → **„MSYS2 MINGW32“** öffnen (nicht UCRT64 für diesen Build).  
-3. Aktualisieren:
+1. Install **MSYS2**: https://www.msys2.org/ (default path `C:\msys64` ok).  
+2. Start menu → open **"MSYS2 MINGW32"** (not UCRT64 for this build).  
+3. Update:
 
 ```bash
 pacman -Syu
 ```
 
-Fenster kann sich schließen → **MINGW32** erneut öffnen, ggf. nochmal `pacman -Syu`.
+Window may close → open **MINGW32** again, possibly run `pacman -Syu` once more.
 
-4. Build-Tools (**ohne** `i686-glslang` — Paket existiert nicht mehr):
+4. Build tools (**without** `i686-glslang` — package no longer exists):
 
 In **MINGW32**:
 
@@ -69,13 +69,13 @@ pacman -S --needed \
   git
 ```
 
-In **MINGW64** (eigenes Fenster — nur fürs Shader-Tool):
+In **MINGW64** (separate window — only for shader tool):
 
 ```bash
 pacman -S --needed mingw-w64-x86_64-glslang
 ```
 
-5. Kurz prüfen (wieder in **MINGW32**):
+5. Quick check (back in **MINGW32**):
 
 ```bash
 export PATH="/mingw32/bin:/mingw64/bin:$PATH"
@@ -85,20 +85,20 @@ meson --version
 ninja --version
 ```
 
-Erwartung: `gcc -dumpmachine` enthält `i686`; `glslangValidator` gefunden.  
-Wenn `i686-w64-mingw32-gcc` fehlt, aber `gcc` da ist: `which gcc` + `gcc -dumpmachine` pasten.
+Expected: `gcc -dumpmachine` contains `i686`; `glslangValidator` found.  
+If `i686-w64-mingw32-gcc` missing but `gcc` present: paste `which gcc` + `gcc -dumpmachine`.
 
 ---
 
-## 3. x86-Build (Meson + Ninja)
+## 3. x86 build (Meson + Ninja)
 
-In **MSYS2 UCRT64** (Pfade anpassen, falls dein User anders heißt):
+In **MSYS2 UCRT64** (adjust paths if your username differs):
 
 ```bash
 cd /c/Users/Henning/Documents/cursor/gtaiv-dxvk-vr/dxvk
 
-# Build-Verzeichnis nur für Win32
-# MSYS2: scripts/msys2-win32.txt (nicht IronWolf build-win32.txt — ar-Namen)
+# Build directory for Win32 only
+# MSYS2: scripts/msys2-win32.txt (not IronWolf build-win32.txt — ar names)
 meson setup \
   --cross-file ../scripts/msys2-win32.txt \
   --buildtype release \
@@ -110,39 +110,39 @@ ninja
 ninja install
 ```
 
-**Erwartete DLL:**
+**Expected DLL:**
 
 ```text
 C:\Users\Henning\Documents\cursor\gtaiv-dxvk-vr\out-win32\bin\d3d9.dll
 ```
 
-(Exakter Unterordner kann `bin` oder ähnlich sein — nach `ninja install` im Explorer `out-win32` öffnen und `d3d9.dll` suchen.)
+(Exact subfolder may be `bin` or similar — after `ninja install` open `out-win32` in Explorer and search for `d3d9.dll`.)
 
-### Wenn `build-win32.txt` fehlt oder fehlschlägt
+### If `build-win32.txt` is missing or fails
 
-1. Im Ordner `dxvk\` nach `build-win*.txt` / `BUILD` / `README` schauen.  
-2. Komplette Fehlerausgabe an den Agenten pasten.  
-3. Alternative-Vorbild (nur lesen, nicht deren DLL nach GTA kopieren):  
-   [L4D2VR Build](https://github.com/sd805/l4d2vr) → `l4d2vr.sln` → Plattform **x86**.
+1. In folder `dxvk\` look for `build-win*.txt` / `BUILD` / `README`.  
+2. Paste full error output to the agent.  
+3. Alternative reference (read only, do not copy their DLL to GTA):  
+   [L4D2VR Build](https://github.com/sd805/l4d2vr) → `l4d2vr.sln` → platform **x86**.
 
 ---
 
-## 4. Prüfen: wirklich 32-bit?
+## 4. Verify: really 32-bit?
 
-In PowerShell (Developer PowerShell for VS oder normales PowerShell mit VS-Tools):
+In PowerShell (Developer PowerShell for VS or normal PowerShell with VS tools):
 
 ```powershell
 dumpbin /headers "C:\Users\Henning\Documents\cursor\gtaiv-dxvk-vr\out-win32\bin\d3d9.dll" | Select-String "machine"
 ```
 
-Erwartung: etwas mit **`8664` ist falsch (x64)** — gesucht wird **`14C` / x86**.  
-Ohne `dumpbin`: Agent kann später ein kleines Check-Skript ergänzen; grob: Datei darf **nicht** aus einem `x64`/`win64`-Build kommen.
+Expected: anything with **`8664` is wrong (x64)** — want **`14C` / x86**.  
+Without `dumpbin`: agent can add a small check script later; roughly: file must **not** come from an `x64`/`win64` build.
 
 ---
 
-## 5. Deploy nach GTA IV
+## 5. Deploy to GTA IV
 
-Spielordner = Ordner mit `GTAIV.exe` (oft `...\Grand Theft Auto IV\GTAIV`).
+Game folder = folder containing `GTAIV.exe` (often `...\Grand Theft Auto IV\GTAIV`).
 
 ```powershell
 cd C:\Users\Henning\Documents\cursor\gtaiv-dxvk-vr
@@ -151,16 +151,16 @@ cd C:\Users\Henning\Documents\cursor\gtaiv-dxvk-vr
   -DllPath ".\out-win32\bin\d3d9.dll"
 ```
 
-`-GameDir` auf **deinen** echten Pfad setzen.
+Set `-GameDir` to **your** actual path.
 
-Dann:
+Then:
 
-1. FusionFix-**Vulkan/DXVK-Toggle aus**  
-2. Spiel **offline / Singleplayer** starten  
-3. Monitor-Bild ok? → Erfolg für Schritt „flach“  
-4. Log neben der EXE (DXVK legt oft `GTAIV_d3d9.log` o. Ä. an) bei Problemen pasten  
+1. FusionFix **Vulkan/DXVK toggle off**  
+2. Start game **offline / Singleplayer**  
+3. Monitor image ok? → success for "flat" step  
+4. On problems paste log next to EXE (DXVK often creates `GTAIV_d3d9.log` or similar)  
 
-Zurückrollen:
+Rollback:
 
 ```powershell
 copy "…\GTAIV\d3d9.dll.gtaiv-dxvk-vr.bak" "…\GTAIV\d3d9.dll"
@@ -168,26 +168,26 @@ copy "…\GTAIV\d3d9.dll.gtaiv-dxvk-vr.bak" "…\GTAIV\d3d9.dll"
 
 ---
 
-## 6. Reihenfolge danach (noch nicht jetzt)
+## 6. Order after that (not yet)
 
-1. Flache DLL ok  
-2. L4D2VR `vr.cpp` Submit-Muster lesen (`docs/L4D2VR_MAP.md`)  
-3. Glue an `GetVRDesc` + `IVRCompositor::Submit`  
-4. SteamVR + Reverb G2 → **Mono** in der Brille  
+1. Flat DLL ok  
+2. Read L4D2VR `vr.cpp` submit pattern (`docs/L4D2VR_MAP.md`)  
+3. Glue to `GetVRDesc` + `IVRCompositor::Submit`  
+4. SteamVR + Reverb G2 → **Mono** in headset  
 
-Eine Verhaltensänderung pro Test-Build.
+One behavior change per test build.
 
 ---
 
-## Konflikte / Fallstricke
+## Conflicts / pitfalls
 
-| Problem | Aktion |
+| Problem | Action |
 |---------|--------|
-| `git` unbekannt | Git installieren, Terminal neu |
-| `dxvk\src` leer | `init-submodules.ps1` erneut; Log pasten |
-| `d3d9_vr.h` fehlt | Branch muss `tiw-rel-*` sein, nicht `master` |
-| Spiel startet nicht | Backup zurück; FusionFix-Vulkan aus; Log pasten |
-| x64-DLL in GTA | Neu mit `build-win32` / i686 bauen |
-| Antivirus | Neue `d3d9.dll` ggf. freigeben |
+| `git` unknown | Install Git, new terminal |
+| `dxvk\src` empty | Run `init-submodules.ps1` again; paste log |
+| `d3d9_vr.h` missing | Branch must be `tiw-rel-*`, not `master` |
+| Game won't start | Restore backup; FusionFix Vulkan off; paste log |
+| x64 DLL in GTA | Rebuild with `build-win32` / i686 |
+| Antivirus | May need to allow new `d3d9.dll` |
 
-Siehe auch `config/dxvk.conf.example`, `docs/HOME_CURSOR.md`, `docs/CONSTRAINTS.md`.
+See also `config/dxvk.conf.example`, `docs/HOME_CURSOR.md`, `docs/CONSTRAINTS.md`.

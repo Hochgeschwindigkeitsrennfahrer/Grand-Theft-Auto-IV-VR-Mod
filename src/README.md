@@ -1,10 +1,10 @@
 # src/
 
-| Ordner | Inhalt |
-|--------|--------|
-| `gtaiv/` | Unser Glue (Stubs) |
-| (später) | Optional ASI oder Integration in DXVK-Build |
+| Folder | Contents |
+|--------|----------|
+| `gtaiv/` | Our glue (stubs) |
+| (later) | Optional ASI or integration into DXVK build |
 
-Deliverable v0 bleibt die **x86-`d3d9.dll`** aus dem DXVK-Submodule; Glue wird daneben oder hinein verdrahtet.
+Deliverable v0 remains the **x86 `d3d9.dll`** from the DXVK submodule; glue will be wired alongside or into it.
 
-Siehe `docs/HOME_CURSOR.md`, `docs/ARCHITECTURE.md`.
+See `docs/HOME_CURSOR.md`, `docs/ARCHITECTURE.md`.

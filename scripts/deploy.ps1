@@ -1,5 +1,5 @@
-# Deploy eine gebaute x86-d3d9.dll nach GTAIV.
-# Nutzung:
+# Deploy a built x86 d3d9.dll to GTAIV.
+# Usage:
 #   .\scripts\deploy.ps1 -GameDir "C:\...\Grand Theft Auto IV\GTAIV" -DllPath ".\path\to\d3d9.dll"
 
 param(
@@ -15,15 +15,15 @@ param(
 $ErrorActionPreference = "Stop"
 
 if (-not (Test-Path $GameDir)) {
-  throw "GameDir nicht gefunden: $GameDir"
+  throw "GameDir not found: $GameDir"
 }
 if (-not (Test-Path $DllPath)) {
-  throw "DllPath nicht gefunden: $DllPath"
+  throw "DllPath not found: $DllPath"
 }
 
 $exe = Join-Path $GameDir "GTAIV.exe"
 if (-not (Test-Path $exe)) {
-  Write-Warning "GTAIV.exe nicht in GameDir — bist du im richtigen Ordner?"
+  Write-Warning "GTAIV.exe not in GameDir — are you in the right folder?"
 }
 
 $dest = Join-Path $GameDir "d3d9.dll"
@@ -34,20 +34,20 @@ if ((Test-Path $dest) -and -not $SkipBackup) {
     Copy-Item -LiteralPath $dest -Destination $bak -Force
     Write-Host "Backup: $bak"
   } else {
-    Write-Host "Backup existiert bereits: $bak"
+    Write-Host "Backup already exists: $bak"
   }
 }
 
 Copy-Item -LiteralPath $DllPath -Destination $dest -Force
 Write-Host "Deployed: $dest"
 
-# dxvk.conf bewusst NICHT automatisch kopieren — verunreinigt FusionFix-Vulkan-Tests.
-# Bei Bedarf manuell aus config\dxvk.conf.example anlegen.
+# Intentionally do NOT auto-copy dxvk.conf — pollutes FusionFix Vulkan tests.
+# If needed, create manually from config\dxvk.conf.example.
 
 Write-Host ""
-Write-Host "Checkliste:"
-Write-Host "  [ ] DLL ist Win32/x86 (nicht x64)"
-Write-Host "  [ ] FusionFix Vulkan/DXVK-Toggle AUS"
-Write-Host "  [ ] SteamVR laeuft (fuer OpenVR-Tests)"
+Write-Host "Checklist:"
+Write-Host "  [ ] DLL is Win32/x86 (not x64)"
+Write-Host "  [ ] FusionFix Vulkan/DXVK toggle OFF"
+Write-Host "  [ ] SteamVR running (for OpenVR tests)"
 Write-Host "  [ ] Singleplayer / offline"
-Write-Host "  [ ] Bei Problemen Backup zurueck: copy `"$bak`" `"$dest`""
+Write-Host "  [ ] If problems, restore backup: copy `"$bak`" `"$dest`""

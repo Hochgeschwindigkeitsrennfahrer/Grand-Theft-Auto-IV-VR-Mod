@@ -1,51 +1,51 @@
-# Architektur
+# Architecture
 
-## Laufzeit
+## Runtime
 
 ```
 GTAIV.exe (Win32)
     │  D3D9 API
     ▼
-d3d9.dll          ← Stock DXVK 3.0.2 (flach bewiesen)
+d3d9.dll          ← Stock DXVK 3.0.2 (proven flat)
     │  Vulkan images + ID3D9VkInterop*
     ▼
-gtaiv_dxvk_vr.asi ← unser Glue (OpenVR Submit)
+gtaiv_dxvk_vr.asi ← our glue (OpenVR Submit)
     ▼
 OpenVR (openvr_api / SteamVR)
     ▼
-Headset (z. B. Reverb G2)
+Headset (e.g. Reverb G2)
 ```
 
-FusionFix: ASI-Loader + CE-Fixes. `vulkan.dll` von FF unangetastet lassen, wenn `d3d9.dll` = Stock 3.0.2.
+FusionFix: ASI loader + CE fixes. Leave FF `vulkan.dll` untouched when `d3d9.dll` = Stock 3.0.2.
 
-## Ordner
+## Folders
 
 ```
 gtaiv-dxvk-vr/
-  dxvk/                 # altes IronWolf-Submodule (Referenz, nicht Deliverable)
-  src/gtaiv/            # Glue / bald ASI
-  thirdparty/dxvk/      # ID3D9VkInterop Snapshot (v3.0.2)
-  thirdparty/ironwolf/  # historische IDirect3DVR9-Referenz
+  dxvk/                 # old IronWolf submodule (reference, not deliverable)
+  src/gtaiv/            # glue / soon ASI
+  thirdparty/dxvk/      # ID3D9VkInterop snapshot (v3.0.2)
+  thirdparty/ironwolf/  # historical IDirect3DVR9 reference
   config/
   scripts/
-  docs/                 # inkl. VR_STRATEGY.md
+  docs/                 # incl. VR_STRATEGY.md
 ```
 
 ## Modules
 
-1. **DXVK 3.0.2** — flache `d3d9.dll` (Binary oder später eigener Build)
+1. **DXVK 3.0.2** — flat `d3d9.dll` (binary or later own build)
 2. **Interop** — `ID3D9VkInteropDevice` / `Texture` (`docs/VR_STRATEGY.md`)
-3. **OpenVR-Submit** — Muster L4D2VR `vr.cpp`, aber Interop statt IronWolf
-4. **GTA-ASI** — `src/gtaiv/` → Present-Hook + Submit
+3. **OpenVR submit** — pattern from L4D2VR `vr.cpp`, but interop instead of IronWolf
+4. **GTA ASI** — `src/gtaiv/` → Present hook + Submit
 5. **Logging** — `gtaiv_dxvk_vr.log`
 
-## Nicht-Ziele (v0)
+## Non-goals (v0)
 
 - OpenXR  
-- Fertiger Motion-Control-Mod  
+- Finished motion-control mod  
 - Multiplayer / VAC  
-- 1:1-Port von L4D2VR-Source-Hooks  
+- 1:1 port of L4D2VR source hooks  
 
-## Referenzen (Technik)
+## References (technical)
 
-Siehe `docs/REFERENCES.md` und `docs/IRONWOLF_DXVK.md`.
+See `docs/REFERENCES.md` and `docs/IRONWOLF_DXVK.md`.

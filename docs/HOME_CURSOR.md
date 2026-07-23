@@ -1,147 +1,147 @@
-# Cursor zu Hause — komplette Anleitung
+# Cursor at Home — Complete Guide
 
-Dieses Dokument reicht, um **gtaiv-dxvk-vr** allein zu Hause weiterzuführen.  
-Kein Programmierer nötig: Cursor schreibt den Code; du installierst Tools, startest Builds und testest mit Headset.
-
----
-
-## 0. Was du baust
-
-Ein VR-Mod für **GTA IV Complete Edition**:
-
-- Spiel spricht weiter **Direct3D 9**
-- Unsere **`d3d9.dll`** (32-bit) übersetzt nach **Vulkan** und liefert Augenbilder
-- **SteamVR / OpenVR** zeigt das Bild in der Brille (wie L4D2VR / HL2VR)
-
-Bekannt gut flach: Stock-DXVK **3.0.2** als **`d3d9.dll`**; `vulkan.dll` unangetastet.  
-Als Nächstes: **ASI** mit `ID3D9VkInterop*` → Mono in der Brille (siehe `docs/VR_STRATEGY.md`).  
-Flach-Lektionen: `docs/DXVK_FLAT_TROUBLESHOOT.md`.
-
-Offline schon vorbereitet: Glue-Stubs (`src/gtaiv/`), `deploy.ps1`, `docs/IRONWOLF_API.md`, `docs/L4D2VR_MAP.md`.
-
+This document is enough to continue **gtaiv-dxvk-vr** at home on your own.  
+No programming required: Cursor writes the code; you install tools, run builds, and test with the headset.
 
 ---
 
-## 1. Einmalig: Software installieren
+## 0. What you are building
 
-| Tool | Wozu | Hinweis |
-|------|------|---------|
-| [Cursor](https://cursor.com) | KI-Coding | Diesen Ordner öffnen |
-| [Git for Windows](https://git-scm.com/download/win) | Submodule, Commits | „Git from command line“ ok |
-| [Visual Studio 2022](https://visualstudio.microsoft.com/) | C++ x86 bauen | Workload **Desktopentwicklung mit C++** |
-| Vulkan SDK (optional zuerst) | DXVK-Build | Später nachrüsten, wenn Build danach fragt |
-| Meson / Ninja / Python | DXVK-Build (je nach Fork) | Agent hilft bei der Installation |
-| [Steam](https://store.steampowered.com/) + **SteamVR** | OpenVR-Runtime | Reverb G2 darüber anbinden |
-| GTA IV **Complete Edition** | Zielspiel | Singleplayer / offline beim Entwickeln |
-| [FusionFix für GTA IV CE](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix) | ASI-Loader + CE-Fixes | In den Grafikoptionen **Graphics API = DirectX 9**, wenn unsere `d3d9.dll` aktiv ist (nicht FusionFix-Vulkan) |
+A VR mod for **GTA IV Complete Edition**:
 
-**Firmen-PC:** Submodule/GitHub eher zu Hause (Netzwerk). Lokale Builds/Tests ok, wenn Tools schon da sind.
+- Game still speaks **Direct3D 9**
+- Our **`d3d9.dll`** (32-bit) translates to **Vulkan** and delivers eye images
+- **SteamVR / OpenVR** shows the image in the headset (like L4D2VR / HL2VR)
+
+Known good flat: Stock-DXVK **3.0.2** as **`d3d9.dll`**; leave `vulkan.dll` untouched.  
+Next: **ASI** with `ID3D9VkInterop*` → Mono in headset (see `docs/VR_STRATEGY.md`).  
+Flat lessons: `docs/DXVK_FLAT_TROUBLESHOOT.md`.
+
+Offline already prepared: glue stubs (`src/gtaiv/`), `deploy.ps1`, `docs/IRONWOLF_API.md`, `docs/L4D2VR_MAP.md`.
+
 
 ---
 
-## 2. Projekt in Cursor öffnen
+## 1. One-time: install software
 
-1. Cursor starten  
+| Tool | Purpose | Note |
+|------|---------|------|
+| [Cursor](https://cursor.com) | AI coding | Open this folder |
+| [Git for Windows](https://git-scm.com/download/win) | Submodules, commits | "Git from command line" ok |
+| [Visual Studio 2022](https://visualstudio.microsoft.com/) | Build C++ x86 | Workload **Desktop development with C++** |
+| Vulkan SDK (optional at first) | DXVK build | Add later if build asks |
+| Meson / Ninja / Python | DXVK build (depends on fork) | Agent helps with install |
+| [Steam](https://store.steampowered.com/) + **SteamVR** | OpenVR runtime | Connect Reverb G2 through it |
+| GTA IV **Complete Edition** | Target game | Singleplayer / offline while developing |
+| [FusionFix for GTA IV CE](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix) | ASI loader + CE fixes | In graphics options **Graphics API = DirectX 9** when our `d3d9.dll` is active (not FusionFix Vulkan) |
+
+**Work PC:** submodules/GitHub preferably at home (network). Local builds/tests ok if tools are already there.
+
+---
+
+## 2. Open project in Cursor
+
+1. Start Cursor  
 2. **File → Open Folder…**  
-3. Ordner wählen:
+3. Choose folder:
 
 ```text
 C:\Users\Henning\Documents\cursor\gtaiv-dxvk-vr
 ```
 
-4. Warten, bis der Explorer links diesen Projektbaum zeigt (nicht `gtaiv-openxr`, nicht Home).
+4. Wait until Explorer on the left shows this project tree (not `gtaiv-openxr`, not Home).
 
 ---
 
-## 3. Neuen Chat mit dem richtigen Prompt starten
+## 3. Start a new chat with the right prompt
 
-Neuen Agent-Chat öffnen und **genau das** pasten (steht auch in `AGENTS.md`):
+Open a new agent chat and paste **exactly this** (also in `AGENTS.md`):
 
 ```text
-Lies AGENTS.md und docs/CURRENT-STATE.md und docs/HOME_CURSOR.md.
-Projekt: gtaiv-dxvk-vr — GTA IV CE VR via VR-DXVK d3d9.dll + OpenVR (SteamVR), Win32, Reverb G2.
-Wie L4D2VR/HL2VR. Kein OpenXR für den ersten Meilenstein.
-Ich bin kein Programmierer — konkrete Klick-/Befehlsschritte.
-Als Nächstes: Submodule initialisieren und x86-Build-Plan.
+Read AGENTS.md and docs/CURRENT-STATE.md and docs/HOME_CURSOR.md.
+Project: gtaiv-dxvk-vr — GTA IV CE VR via VR-DXVK d3d9.dll + OpenVR (SteamVR), Win32, Reverb G2.
+Like L4D2VR/HL2VR. No OpenXR for the first milestone.
+I am not a programmer — give concrete click/command steps.
+Next: initialize submodules and x86 build plan.
 ```
 
-Der Agent soll danach **einen klaren nächsten Schritt** nennen (nicht zehn parallele Baustellen).
+The agent should then name **one clear next step** (not ten parallel workstreams).
 
 ---
 
-## 4. Submodule holen (Internet nötig)
+## 4. Fetch submodules (internet required)
 
-In Cursor: Terminal öffnen (`` Ctrl+` ``) und:
+In Cursor: open Terminal (`` Ctrl+` ``) and:
 
 ```powershell
 cd C:\Users\Henning\Documents\cursor\gtaiv-dxvk-vr
 .\scripts\init-submodules.ps1
 ```
 
-Erfolg: Ordner `dxvk\` enthält Quellcode (nicht leer).  
-Bei Fehlern: komplette Terminal-Ausgabe an den Agenten pasten.
+Success: folder `dxvk\` contains source (not empty).  
+On errors: paste full terminal output to the agent.
 
 ---
 
-## 5. Ersten Build (noch ohne VR-Logik)
+## 5. First build (still without VR logic)
 
-Ziel: eine **32-bit** `d3d9.dll`, die GTA IV **flach** (Monitor) unter FusionFix startet.
+Goal: a **32-bit** `d3d9.dll` that starts GTA IV **flat** (monitor) under FusionFix.
 
-1. Agent: „Bauplan für x86 d3d9.dll aus dem Submodule schreiben und Schritt für Schritt anleiten.“  
-2. Du folgst den Befehlen / VS-Schritten.  
-3. DLL nach `GTAIV\` kopieren (Backup der alten Datei behalten).  
-4. FusionFix-Vulkan-Toggle **deaktivieren**, falls vorhanden.  
-5. Spiel starten → wenn Monitor-Bild ok: in `docs/CURRENT-STATE.md` vermerken.
+1. Agent: "Write build plan for x86 d3d9.dll from submodule and guide step by step."  
+2. Follow the commands / VS steps.  
+3. Copy DLL to `GTAIV\` (keep backup of old file).  
+4. Turn FusionFix Vulkan toggle **off**, if present.  
+5. Start game → if monitor image ok: note in `docs/CURRENT-STATE.md`.
 
 Details: `docs/BUILD.md`.
 
 ---
 
-## 6. Headset-Test-Schleife (ab Mono-Submit)
+## 6. Headset test loop (from Mono-Submit onward)
 
-Immer dieselbe Reihenfolge:
+Always the same order:
 
-1. **SteamVR** starten, Brille erkannt  
-2. Eine Verhaltensänderung vom Agenten (nur **eine** pro Build)  
-3. Neu bauen → DLL deployen  
-4. GTA starten (offline)  
-5. Log-Datei neben `GTAIV.exe` öffnen (Name legt der Agent fest, z. B. `gtaiv_dxvk_vr.log`)  
-6. In den Chat pasten: Log-Ausschnitt + „Brille: ja/nein, was zu sehen war“
+1. Start **SteamVR**, headset detected  
+2. One behavior change from agent (only **one** per build)  
+3. Rebuild → deploy DLL  
+4. Start GTA (offline)  
+5. Open log file next to `GTAIV.exe` (name set by agent, e.g. `gtaiv_dxvk_vr.log`)  
+6. Paste into chat: log excerpt + "headset: yes/no, what was visible"
 
-Regel: **eine Änderung pro Test** — sonst weißt du nicht, was kaputt ging.
-
----
-
-## 7. Was du dem Agenten nie vergessen solltest
-
-- Spiel ist **32-bit** → alles **x86 / Win32**  
-- Compositor = **OpenVR / SteamVR** (nicht OpenXR)  
-- Fremde `d3d9.dll` (L4D2VR-Release) **nicht** einfach reinwerfen  
-- Kein Multiplayer während der Entwicklung  
-- Nach Tests: `docs/CURRENT-STATE.md` aktualisieren lassen  
+Rule: **one change per test** — otherwise you won't know what broke.
 
 ---
 
-## 8. Checkliste „Zuhause Tag 1“
+## 7. What you should never forget to tell the agent
 
-- [ ] Cursor zeigt Ordner `gtaiv-dxvk-vr`  
-- [ ] VS2022 C++ + Git installiert  
+- Game is **32-bit** → everything **x86 / Win32**  
+- Compositor = **OpenVR / SteamVR** (not OpenXR)  
+- Do **not** drop foreign `d3d9.dll` (L4D2VR release) in blindly  
+- No multiplayer during development  
+- After tests: have agent update `docs/CURRENT-STATE.md`  
+
+---
+
+## 8. "Home Day 1" checklist
+
+- [ ] Cursor shows folder `gtaiv-dxvk-vr`  
+- [ ] VS2022 C++ + Git installed  
 - [ ] SteamVR + Reverb G2 ok  
 - [ ] FusionFix in GTA IV CE  
-- [ ] Chat-Prompt aus Abschnitt 3 benutzt  
-- [ ] `.\scripts\init-submodules.ps1` erfolgreich  
-- [ ] Nächster Agent-Schritt: x86-Build der flachen `d3d9.dll`  
+- [ ] Chat prompt from section 3 used  
+- [ ] `.\scripts\init-submodules.ps1` succeeded  
+- [ ] Next agent step: x86 build of flat `d3d9.dll`  
 
 ---
 
-## 9. Wenn etwas hakt
+## 9. If something goes wrong
 
-| Problem | Aktion |
+| Problem | Action |
 |---------|--------|
-| Falscher Ordner in Cursor | Open Folder → `Documents\gtaiv-dxvk-vr` |
-| Submodule leer | Script erneut; Fehlermeldung pasten |
-| Spiel startet nicht nach DLL | Backup zurück; FusionFix-Vulkan prüfen; Log pasten |
-| SteamVR sieht Brille nicht | Zuerst SteamVR allein fixen, dann GTA |
-| Agent redet von OpenXR | Auf `AGENTS.md` / dieses Doc verweisen: **OpenVR only** für v0 |
+| Wrong folder in Cursor | Open Folder → `Documents\gtaiv-dxvk-vr` |
+| Submodule empty | Run script again; paste error message |
+| Game won't start after DLL | Restore backup; check FusionFix Vulkan; paste log |
+| SteamVR doesn't see headset | Fix SteamVR alone first, then GTA |
+| Agent talks about OpenXR | Point to `AGENTS.md` / this doc: **OpenVR only** for v0 |
 
-Mehr Kontext: `docs/FAQ.md`, `docs/CONSTRAINTS.md`, `docs/REFERENCES.md`.
+More context: `docs/FAQ.md`, `docs/CONSTRAINTS.md`, `docs/REFERENCES.md`.
