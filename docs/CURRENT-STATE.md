@@ -2,7 +2,7 @@
 
 ## Version
 
-Scaffold **0.1.1** — IronWolf VR-DXVK explained (`docs/IRONWOLF_DXVK.md`); still no built `d3d9.dll`.
+Scaffold **0.1.2** — IronWolf branches clarified (`master` ≠ VR mailbox; prefer `tiw-rel-241-*`); still no built `d3d9.dll`.
 
 ## Goal
 

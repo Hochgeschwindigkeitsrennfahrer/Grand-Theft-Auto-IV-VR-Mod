@@ -1,7 +1,19 @@
-# IronWolf DXVK (`vr-dx9-rel`) — what it does & how we use it for GTA IV
+# IronWolf DXVK — what it does & how we use it for GTA IV
 
-Upstream reference: [TheIronWolfModding/dxvk @ vr-dx9-rel](https://github.com/TheIronWolfModding/dxvk/tree/vr-dx9-rel)  
+Upstream: [TheIronWolfModding/dxvk](https://github.com/TheIronWolfModding/dxvk)  
 Also used by L4D2VR / related Source VR work; openRBRVR builds on the same family of ideas.
+
+---
+
+## Branches (important — there is **no** `openxr` branch)
+
+| Branch / line | Role |
+|---------------|------|
+| [`master`](https://github.com/TheIronWolfModding/dxvk/tree/master) | Default GitHub branch + fork README. Newer DXVK base / GTR2 notes. **Does not ship `src/d3d9/d3d9_vr.h`** (mailbox API missing). `dxvk_openxr.*` / `dxvk_openvr.*` here are mostly upstream Wine **extension providers**, not the game submit mailbox. |
+| [`vr-dx9-rel`](https://github.com/TheIronWolfModding/dxvk/tree/vr-dx9-rel) | **Older** VR mailbox (OpenVR-era `IDirect3DVR9`). What L4D2VR/sd805 leaned on. Author: Vulkan 1.2 / fewer features. |
+| [`tiw-rel-241-*`](https://github.com/TheIronWolfModding/dxvk/tree/tiw-rel-241-260612) | **Current** VR-capable release line (DXVK ~2.4.1 / Vulkan 1.3). Has `d3d9_vr.h` with OpenVR helpers **and** `GetOXRVkDeviceDesc` (OpenXR), plus Multi-View/SPS (detegr). Prefer this for Phase B. |
+
+OpenXR is a **feature inside `tiw-rel-*` / newer READMEs**, not a separate Git branch named `openxr`.
 
 ---
 
@@ -9,7 +21,7 @@ Also used by L4D2VR / related Source VR work; openRBRVR builds on the same famil
 
 Normal DXVK = “Game thinks it is Direct3D 9, GPU actually gets Vulkan” → better performance on the **monitor**.
 
-IronWolf’s **VR fork** adds: “And if the **game** asks for VR, hand Vulkan eye images to **SteamVR / OpenVR** (and later OpenXR builds).”
+IronWolf’s **VR lines** add: “And if the **game** asks for VR, hand Vulkan eye images to **OpenVR / OpenXR**.”
 
 It is a **translator + VR mailbox**, not a complete GTA VR mod by itself.
 
@@ -23,10 +35,10 @@ Author’s own warning (README / repo):
 
 | Change | Meaning for humans |
 |--------|---------------------|
-| **DX9 → Vulkan OpenVR** (from Joshua Ashton’s work) | DXVK can expose VR helpers so a mod/game can `Submit` **Vulkan** textures to the headset compositor instead of only presenting to a window. |
-| **OpenXR** (on newer IronWolf builds / notes) | Same idea for OpenXR runtimes (important for us + Reverb G2). |
-| **Multi-view / stereo helpers** (detegr / RBR lineage on some branches) | Engine can draw stereo more efficiently; still needs the **game** to drive two eyes / SPS. |
-| **GTR2-specific hacks** | Racing-engine tweaks — **ignore for GTA** (marked `GTR2_SPECIFIC`). |
+| **DX9 → Vulkan OpenVR** (Joshua Ashton lineage) | `IDirect3DVR9` / `GetVRDesc` so a mod can `Submit` **Vulkan** textures to the headset. |
+| **OpenXR helpers** (on `tiw-rel-*`, e.g. `GetOXRVkDeviceDesc`) | Same mailbox idea for OpenXR (important for us + Reverb G2). **Not** a separate branch. |
+| **Multi-view / stereo helpers** (detegr / RBR) | Draw stereo more efficiently; game still drives eyes / SPS. |
+| **GTR2-specific hacks** | Racing-engine tweaks — **ignore for GTA** (`GTR2_SPECIFIC`). |
 | Extra AA / depth options | Nice-to-have; not the VR core. |
 
 ### The VR “handshake” (conceptual)
@@ -75,7 +87,7 @@ OpenXR (prefer WMR on Reverb G2)  or  OpenVR if needed
 
 ### Practical steps for `gtaiv-dxvk-vr`
 
-1. **Base fork:** start from IronWolf `vr-dx9-rel` **or** [dxvk-openRBRVR](https://github.com/Detegr/dxvk-openRBRVR) (already OpenXR-minded, 32-bit proven on RBR). Prefer OpenXR for G2.  
+1. **Base fork:** start from IronWolf **`tiw-rel-241-*`** (not bare `master`) **or** [dxvk-openRBRVR](https://github.com/Detegr/dxvk-openRBRVR). Prefer OpenXR for G2.  
 2. Build **x86** `d3d9.dll`.  
 3. Prove flat boot under FusionFix (no VR yet).  
 4. Add **minimal GTA glue**: mono “mirror game backbuffer → one/both eyes → Submit” (same milestone as Phase A’s first pixels).  
