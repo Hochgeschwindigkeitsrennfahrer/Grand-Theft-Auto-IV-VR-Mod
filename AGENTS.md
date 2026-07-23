@@ -5,11 +5,11 @@ Eigenständiges Projekt. Kein anderes Repo voraussetzen.
 ## Prompt zum Start eines Chats
 
 ```text
-Lies AGENTS.md und docs/CURRENT-STATE.md und docs/HOME_CURSOR.md.
-Projekt: gtaiv-dxvk-vr — GTA IV CE VR via VR-DXVK d3d9.dll + OpenVR (SteamVR), Win32, Reverb G2.
-Wie L4D2VR/HL2VR. Kein OpenXR für den ersten Meilenstein.
+Lies AGENTS.md und docs/CURRENT-STATE.md und docs/HOME_CURSOR.md und docs/VR_STRATEGY.md.
+Projekt: gtaiv-dxvk-vr — GTA IV CE VR: Stock-DXVK 3.0.2 d3d9.dll + ASI Glue + OpenVR (SteamVR), Win32, Reverb G2.
+Flach mit DXVK 3.0.2 als d3d9.dll ok. Kein OpenXR für v0. Kein IronWolf-tiw-rel als Basis.
 Ich bin kein Programmierer — konkrete Klick-/Befehlsschritte.
-Als Nächstes: Submodule initialisieren und x86-Build-Plan.
+Meilenstein Mono-Submit erreicht. Als Nächstes: Stabilität / Stereo / Kamera (eine Sache pro Session).
 ```
 
 ## Nicht verhandelbar
@@ -26,7 +26,7 @@ Als Nächstes: Submodule initialisieren und x86-Build-Plan.
 
 ## Definition of Done (erster Meilenstein)
 
-x86-`d3d9.dll` baut, lädt unter FusionFix/CE, SteamVR+OpenVR starten, **Mono**-Augenbild in der Brille via `IVRCompositor::Submit`.
+Stock-DXVK **3.0.2** `d3d9.dll` flach ok + ASI Glue: SteamVR/OpenVR, **Mono**-Augenbild via `ID3D9VkInterop*` → `IVRCompositor::Submit`.
 
 ## Doc-Karte
 
@@ -34,9 +34,11 @@ x86-`d3d9.dll` baut, lädt unter FusionFix/CE, SteamVR+OpenVR starten, **Mono**-
 |-------|------------|
 | `docs/HOME_CURSOR.md` | User-Setup zu Hause |
 | `docs/CURRENT-STATE.md` | Status / Next |
+| `docs/VR_STRATEGY.md` | Interop statt IronWolf |
+| `docs/DXVK_FLAT_TROUBLESHOOT.md` | Flach-DXVK Lektionen |
 | `docs/ARCHITECTURE.md` | Module |
 | `docs/CONSTRAINTS.md` | Harte Regeln |
 | `docs/REFERENCES.md` | Links |
-| `docs/IRONWOLF_DXVK.md` | Mailbox-Erklärung |
+| `docs/IRONWOLF_DXVK.md` | Historische Mailbox (Referenz) |
 | `docs/FAQ.md` | User-Fragen |
 | `docs/BUILD.md` | Build |

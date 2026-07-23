@@ -1,15 +1,9 @@
 # FAQ
 
-## Warum müssen wir „einen Fork bauen“?
+## Warum nicht einfach IronWolf-`d3d9.dll`?
 
-Weil **normale** DXVK-`d3d9.dll` nur Vulkan für den **Monitor** macht.
-
-Für VR brauchen wir:
-
-1. eine **VR-Mailbox** (IronWolf/sd805: `GetVRDesc`, Submit-Sync, …)  
-2. **unseren** Code: wann welches Bild, später Kamera  
-
-„Fork bauen“ heißt: diesen VR-fähigen DXVK-Stand **selbst als x86-DLL kompilieren** und für GTA erweitern — nicht DXVK von Null schreiben und nicht einfach L4D2VRs fertige DLL kopieren.
+Auf diesem Setup (RTX 4070 Ti) sind alte VR-Forks (IronWolf ~2.4, FF-DXVK 2.6.2) flach kaputt.  
+**Stock-DXVK 3.0.2** flach ok. Modernes DXVK liefert die Vulkan-Handles über **`ID3D9VkInteropDevice`** — das reicht für OpenVR-Submit. Unser Code steckt in einer **ASI**, nicht zwingend in einem eigenen DXVK-Fork. Details: `docs/VR_STRATEGY.md`.
 
 ## Wozu FusionFix?
 

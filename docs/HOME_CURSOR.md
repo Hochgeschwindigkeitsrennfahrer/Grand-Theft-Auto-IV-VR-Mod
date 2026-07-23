@@ -13,7 +13,9 @@ Ein VR-Mod für **GTA IV Complete Edition**:
 - Unsere **`d3d9.dll`** (32-bit) übersetzt nach **Vulkan** und liefert Augenbilder
 - **SteamVR / OpenVR** zeigt das Bild in der Brille (wie L4D2VR / HL2VR)
 
-Als Nächstes (Reihenfolge fest): Submodule → flache DLL → Mono in der Brille → später Kamera.
+Bekannt gut flach: Stock-DXVK **3.0.2** als **`d3d9.dll`**; `vulkan.dll` unangetastet.  
+Als Nächstes: **ASI** mit `ID3D9VkInterop*` → Mono in der Brille (siehe `docs/VR_STRATEGY.md`).  
+Flach-Lektionen: `docs/DXVK_FLAT_TROUBLESHOOT.md`.
 
 Offline schon vorbereitet: Glue-Stubs (`src/gtaiv/`), `deploy.ps1`, `docs/IRONWOLF_API.md`, `docs/L4D2VR_MAP.md`.
 
@@ -31,7 +33,7 @@ Offline schon vorbereitet: Glue-Stubs (`src/gtaiv/`), `deploy.ps1`, `docs/IRONWO
 | Meson / Ninja / Python | DXVK-Build (je nach Fork) | Agent hilft bei der Installation |
 | [Steam](https://store.steampowered.com/) + **SteamVR** | OpenVR-Runtime | Reverb G2 darüber anbinden |
 | GTA IV **Complete Edition** | Zielspiel | Singleplayer / offline beim Entwickeln |
-| [FusionFix](https://github.com/ThirteenAG/III.VC.SA.FusionFix) (CE-Variante) | ASI-Loader + CE-Fixes | Vulkan-/DXVK-Toggle von FusionFix **aus**, wenn unsere `d3d9.dll` aktiv ist |
+| [FusionFix für GTA IV CE](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix) | ASI-Loader + CE-Fixes | In den Grafikoptionen **Graphics API = DirectX 9**, wenn unsere `d3d9.dll` aktiv ist (nicht FusionFix-Vulkan) |
 
 **Firmen-PC:** Submodule/GitHub eher zu Hause (Netzwerk). Lokale Builds/Tests ok, wenn Tools schon da sind.
 
@@ -44,7 +46,7 @@ Offline schon vorbereitet: Glue-Stubs (`src/gtaiv/`), `deploy.ps1`, `docs/IRONWO
 3. Ordner wählen:
 
 ```text
-C:\Users\amien.krause\Documents\gtaiv-dxvk-vr
+C:\Users\Henning\Documents\cursor\gtaiv-dxvk-vr
 ```
 
 4. Warten, bis der Explorer links diesen Projektbaum zeigt (nicht `gtaiv-openxr`, nicht Home).
@@ -72,7 +74,7 @@ Der Agent soll danach **einen klaren nächsten Schritt** nennen (nicht zehn para
 In Cursor: Terminal öffnen (`` Ctrl+` ``) und:
 
 ```powershell
-cd C:\Users\amien.krause\Documents\gtaiv-dxvk-vr
+cd C:\Users\Henning\Documents\cursor\gtaiv-dxvk-vr
 .\scripts\init-submodules.ps1
 ```
 

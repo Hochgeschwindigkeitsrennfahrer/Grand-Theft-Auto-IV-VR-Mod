@@ -1,8 +1,13 @@
 ## Ignore
 /.vs/
 /out/
+/out-asi/
+/out-win32/
 /build/
 /bin/
+/backups/
+/vendor/
+/inspiration/
 *.user
 *.suo
 *.obj
@@ -13,7 +18,16 @@
 *.log
 .DS_Store
 
+# Local game config overrides (keep examples)
+/config/dxvk.conf.gpl-off
+/config/dxvk.conf.hide-nvidia-off
+
+# Nested clones — use submodules / fetch scripts instead of vendoring blobs
+/thirdparty/openvr/
+/thirdparty/minhook/
+
 # Submodule content is tracked via gitlink; ignore local build artifacts inside dxvk
 /dxvk/build/
 /dxvk/**/Release/
 /dxvk/**/Debug/
+/dxvk/build.w32/

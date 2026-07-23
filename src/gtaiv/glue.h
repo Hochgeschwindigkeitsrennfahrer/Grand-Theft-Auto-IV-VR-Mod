@@ -1,7 +1,7 @@
 #pragma once
 
-// GTA IV CE glue stubs — not linked until DXVK + OpenVR deps exist.
-// Goal: mono OpenVR Submit via IronWolf IDirect3DVR9 (see docs/IRONWOLF_API.md).
+// GTA IV CE glue — OpenVR Submit via Stock-DXVK ID3D9VkInterop* (docs/VR_STRATEGY.md).
+// Not IronWolf IDirect3DVR9 for v0 on this machine.
 
 namespace gtaiv {
 
@@ -16,12 +16,11 @@ struct Config {
 
 bool LoadConfig(const char* path, Config* out);
 
-// Returns false until OpenVR + VR-DXVK mailbox are wired.
 bool OpenVrInit();
 void OpenVrShutdown();
 
-// Call once per frame when we have IDirect3DDevice9* + eye/backbuffer surface.
-// Implementation: TODO after submodule + flat d3d9.dll boot.
+// After ASI hooks Present: QI ID3D9VkInteropDevice, fill VRVulkanTextureData, Submit.
+// Placeholder until ASI is linked.
 bool TryMonoSubmitPlaceholder(/* IDirect3DDevice9* device */);
 
 }  // namespace gtaiv

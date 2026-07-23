@@ -8,7 +8,8 @@ Alle wichtigen externen Links für dieses Projekt.
 |---------|------|----------------------|
 | **L4D2VR** | https://github.com/sd805/l4d2vr | Gesamtform: Hooks + DXVK-`d3d9.dll` + **OpenVR Submit** |
 | **sd805/dxvk** | https://github.com/sd805/dxvk | L4D2VR-DXVK (IronWolf-basiert + async + L4D2-Hacks) |
-| **IronWolf DXVK** | https://github.com/TheIronWolfModding/dxvk | VR-Mailbox (`d3d9_vr.h`); Zweige: siehe `IRONWOLF_DXVK.md` |
+| **doitsujin/dxvk 3.0.2** | https://github.com/doitsujin/dxvk/releases/tag/v3.0.2 | **Flach-Basis** + `ID3D9VkInterop*` |
+| **IronWolf DXVK** | https://github.com/TheIronWolfModding/dxvk | Historische VR-Mailbox; hier flach verworfen |
 | IronWolf `vr-dx9-rel` | https://github.com/TheIronWolfModding/dxvk/tree/vr-dx9-rel | Ältere OpenVR-Mailbox (L4D2VR-Ära) |
 | IronWolf `tiw-rel-241-260612` | https://github.com/TheIronWolfModding/dxvk/tree/tiw-rel-241-260612 | Aktuellere VR-Linie (OpenVR + optionale OpenXR-Helfer) |
 | HL2VR | (geschlossen) | Lektion: custom DXVK + OpenVR + async — nur Konzept |
@@ -25,7 +26,7 @@ Alle wichtigen externen Links für dieses Projekt.
 
 | Ding | Link / Ort |
 |------|------------|
-| FusionFix (CE) | https://github.com/ThirteenAG/III.VC.SA.FusionFix — CE-Build/Docs beachten |
+| FusionFix (GTA IV CE) | https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix |
 | GTA IV CE | Steam / Rockstar Launcher |
 | SteamVR | Steam-Bibliothek |
 | OpenVR | https://github.com/ValveSoftware/openvr |

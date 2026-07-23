@@ -50,7 +50,7 @@ bool LoadConfig(const char* path, Config* out) {
 }
 
 bool OpenVrInit() {
-  LogWrite("OpenVrInit: STUB — wire openvr_api after SteamVR + flat d3d9.dll");
+  LogWrite("OpenVrInit: STUB — next: openvr_api + SteamVR (flach DXVK 3.0.2 already ok)");
   return false;
 }
 
@@ -59,7 +59,7 @@ void OpenVrShutdown() {
 }
 
 bool TryMonoSubmitPlaceholder() {
-  LogWrite("TryMonoSubmitPlaceholder: STUB — need GetVRDesc + IVRCompositor::Submit");
+  LogWrite("TryMonoSubmitPlaceholder: STUB — need ID3D9VkInteropDevice QI + IVRCompositor::Submit");
   return false;
 }
 

@@ -1,7 +1,6 @@
-# Beispiel dxvk.conf — neben GTAIV.exe legen, wenn VR-DXVK-Builds getestet werden.
-# Async braucht einen async-fähigen Build (sd805-Fork / gplasync-Patches).
+# Optional neben GTAIV.exe als dxvk.conf.
+# Für erste Flach-Tests: diese Datei NICHT nötig — lieber weglassen.
+# enableAsync nur mit async-fähigem Fork (sd805) — nicht mit Stock/IronWolf tiw-rel.
 
-dxvk.enableAsync = true
-d3d9.maxFrameLatency = 1
-d3d9.presentInterval = 1
-d3d9.numBackBuffers = 3
+# d3d9.maxFrameLatency = 1
+# d3d9.presentInterval = 1

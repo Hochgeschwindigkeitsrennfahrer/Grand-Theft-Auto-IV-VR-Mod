@@ -41,12 +41,8 @@ if ((Test-Path $dest) -and -not $SkipBackup) {
 Copy-Item -LiteralPath $DllPath -Destination $dest -Force
 Write-Host "Deployed: $dest"
 
-$confSrc = Join-Path $PSScriptRoot "..\config\dxvk.conf.example"
-$confDst = Join-Path $GameDir "dxvk.conf"
-if ((Test-Path $confSrc) -and -not (Test-Path $confDst)) {
-  Copy-Item -LiteralPath $confSrc -Destination $confDst
-  Write-Host "Copied dxvk.conf.example -> dxvk.conf"
-}
+# dxvk.conf bewusst NICHT automatisch kopieren — verunreinigt FusionFix-Vulkan-Tests.
+# Bei Bedarf manuell aus config\dxvk.conf.example anlegen.
 
 Write-Host ""
 Write-Host "Checkliste:"

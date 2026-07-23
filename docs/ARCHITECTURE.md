@@ -6,34 +6,37 @@
 GTAIV.exe (Win32)
     │  D3D9 API
     ▼
-d3d9.dll          ← unser Deliverable (VR-DXVK-Fork + optional Glue)
-    │  Vulkan images
+d3d9.dll          ← Stock DXVK 3.0.2 (flach bewiesen)
+    │  Vulkan images + ID3D9VkInterop*
+    ▼
+gtaiv_dxvk_vr.asi ← unser Glue (OpenVR Submit)
     ▼
 OpenVR (openvr_api / SteamVR)
     ▼
 Headset (z. B. Reverb G2)
 ```
 
-FusionFix: lädt ASI-Mods und stabilisiert CE; **ersetzt nicht** unsere `d3d9.dll`. Bei Konflikt: FusionFix-Vulkan aus.
+FusionFix: ASI-Loader + CE-Fixes. `vulkan.dll` von FF unangetastet lassen, wenn `d3d9.dll` = Stock 3.0.2.
 
-## Geplante Ordner
+## Ordner
 
 ```
 gtaiv-dxvk-vr/
-  dxvk/                 # git submodule (nach init-submodules)
-  src/gtaiv/            # Glue-Stubs (Log/Config/Submit-Platzhalter)
-  thirdparty/ironwolf/  # API-Referenz-Header (Snapshot)
-  config/               # dxvk.conf + ini examples
-  scripts/              # init-submodules, deploy
-  docs/
+  dxvk/                 # altes IronWolf-Submodule (Referenz, nicht Deliverable)
+  src/gtaiv/            # Glue / bald ASI
+  thirdparty/dxvk/      # ID3D9VkInterop Snapshot (v3.0.2)
+  thirdparty/ironwolf/  # historische IDirect3DVR9-Referenz
+  config/
+  scripts/
+  docs/                 # inkl. VR_STRATEGY.md
 ```
 
-## Modules (planned)
+## Modules
 
-1. **DXVK-Kern** — D3D9→Vulkan (submodule)
-2. **VR-Mailbox** — `IDirect3DVR9` (`docs/IRONWOLF_API.md`)
-3. **OpenVR-Submit** — Muster aus L4D2VR `vr.cpp` (`docs/L4D2VR_MAP.md`)
-4. **GTA-Adapter** — `src/gtaiv/` stubs → echte Verdrahtung
+1. **DXVK 3.0.2** — flache `d3d9.dll` (Binary oder später eigener Build)
+2. **Interop** — `ID3D9VkInteropDevice` / `Texture` (`docs/VR_STRATEGY.md`)
+3. **OpenVR-Submit** — Muster L4D2VR `vr.cpp`, aber Interop statt IronWolf
+4. **GTA-ASI** — `src/gtaiv/` → Present-Hook + Submit
 5. **Logging** — `gtaiv_dxvk_vr.log`
 
 ## Nicht-Ziele (v0)

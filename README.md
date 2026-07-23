@@ -1,16 +1,16 @@
 # gtaiv-dxvk-vr
 
-Eigenständiges Projekt: **GTA IV Complete Edition in VR** über eine VR-fähige DXVK-`d3d9.dll` und **OpenVR (SteamVR)** — nach dem Muster von [L4D2VR](https://github.com/sd805/l4d2vr) / HL2VR.
+Eigenständiges Projekt: **GTA IV Complete Edition in VR** — Stock-DXVK **3.0.2** + ASI-Glue + **OpenVR (SteamVR)** (L4D2VR/HL2VR-Muster).
 
 ```
 GTAIV.exe (32-bit, D3D9)
-  → unsere d3d9.dll  (VR-DXVK-Fork + GTA-Glue)
-       → Vulkan-Augenbilder
-  → OpenVR Submit (SteamVR)
-  → Headset (z. B. HP Reverb G2)
+  → d3d9.dll  (DXVK 3.0.2 — flach ok)
+  → gtaiv_dxvk_vr.asi  (OpenVR Submit via ID3D9VkInterop)
+  → SteamVR → Headset (z. B. HP Reverb G2)
 ```
 
-**Status:** Scaffold **0.3.1** — Doku, Glue-Stubs, `deploy.ps1`. Noch keine fertige VR-`d3d9.dll`.
+**Status:** **1.0.0-m1** — Mono-Bild in SteamVR/Reverb G2 funktioniert (DXVK 3.0.2 + ASI).  
+Siehe `docs/CURRENT-STATE.md`, `docs/VR_STRATEGY.md`.
 
 ---
 

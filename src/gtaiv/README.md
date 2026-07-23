@@ -1,10 +1,11 @@
-# src/gtaiv/
+# src/gtaiv/ + src/asi/
 
-GTA-spezifisches Glue (Log, Config, später OpenVR-Submit).
+| Pfad | Rolle |
+|------|--------|
+| `glue.*` | Stubs (Config/OpenVR später) |
+| `../asi/` | **Interop-Probe-ASI** → `out-asi/gtaiv_dxvk_vr.asi` |
 
-| Datei | Status |
-|-------|--------|
-| `glue.h` / `glue.cpp` | Stubs — loggen, noch **kein** Link in eine DLL |
-| Build | Erst nach flacher x86-`d3d9.dll` aus `dxvk/` |
+Build: `.\scripts\build-asi.ps1`  
+Deploy: `.\scripts\deploy-asi.ps1 -GameDir "...\GTAIV"`  
 
-Meilenstein: Stubs an IronWolf-Mailbox + `IVRCompositor::Submit` anbinden (`docs/IRONWOLF_API.md`, `docs/L4D2VR_MAP.md` → `vr.cpp`).
+Strategie: `docs/VR_STRATEGY.md` (DXVK 3.0.2 + `ID3D9VkInterop*`).
