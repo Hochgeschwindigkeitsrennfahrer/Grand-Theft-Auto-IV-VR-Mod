@@ -1,0 +1,7 @@
+# Example dxvk.conf (place next to GTAIV.exe when testing VR-DXVK builds)
+# Async requires an async-capable build (sd805 fork / gplasync patches).
+
+dxvk.enableAsync = true
+d3d9.maxFrameLatency = 1
+d3d9.presentInterval = 1
+d3d9.numBackBuffers = 3

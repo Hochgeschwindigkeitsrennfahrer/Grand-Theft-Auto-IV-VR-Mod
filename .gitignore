@@ -1,0 +1,19 @@
+## Ignore
+/.vs/
+/out/
+/build/
+/bin/
+*.user
+*.suo
+*.obj
+*.pdb
+*.dll
+*.exe
+*.asi
+*.log
+.DS_Store
+
+# Submodule content is tracked via gitlink; ignore local build artifacts inside dxvk
+/dxvk/build/
+/dxvk/**/Release/
+/dxvk/**/Debug/
