@@ -42,4 +42,5 @@ Alle wichtigen externen Links für dieses Projekt.
 
 ## Verwandtes (optional, nicht Voraussetzung)
 
-Ein älteres Experiment mit ASI + D3D11 + OpenXR kann unter `Documents\gtaiv-openxr` liegen. **Dieses Repo ist eigenständig** und braucht das nicht.
+ASI + D3D11 + OpenXR (WMR): `Documents\gtaiv-openxr` — eigener Home-Guide dort: `gtaiv-openxr\docs\HOME_CURSOR.md`.  
+**Dieses Repo ist eigenständig** und braucht das nicht.
