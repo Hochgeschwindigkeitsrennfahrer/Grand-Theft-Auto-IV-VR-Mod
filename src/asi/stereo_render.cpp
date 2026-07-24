@@ -12,6 +12,7 @@
 #include "../../thirdparty/minhook/include/MinHook.h"
 
 #include <d3d9.h>
+#include <windows.h>
 
 #include <algorithm>
 #include <atomic>
@@ -3465,6 +3466,74 @@ bool Mode34IsCcPaddedThiscall0(uintptr_t addr, const char** tagOut) {
   return true;
 }
 
+// Read-only PE scan: static E8 → VsRet(0x2C73E). Logs caller sites + resolved starts
+// with Mode34 ABI gates. No hooks. Feeds next same-frame attempt without Mode34 dual.
+void LogStaticVsRetCallersOnce() {
+  static std::atomic<bool> s_done{false};
+  if (s_done.exchange(true))
+    return;
+
+  HMODULE mod = GetModuleHandleA(nullptr);
+  if (!mod)
+    return;
+  const auto* baseBytes = reinterpret_cast<const uint8_t*>(mod);
+  const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(baseBytes);
+  if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+    return;
+  const auto* nt =
+      reinterpret_cast<const IMAGE_NT_HEADERS*>(baseBytes + dos->e_lfanew);
+  if (nt->Signature != IMAGE_NT_SIGNATURE)
+    return;
+  const uintptr_t base = reinterpret_cast<uintptr_t>(mod);
+  const uintptr_t imgEnd = base + nt->OptionalHeader.SizeOfImage;
+  const uintptr_t target = base + kMode34VsRetRva;
+
+  uint32_t callSites = 0;
+  uint32_t safeStarts = 0;
+  uint32_t logged = 0;
+  // Walk executable sections only (skip IAT/data false positives).
+  const auto* sec = IMAGE_FIRST_SECTION(nt);
+  for (unsigned si = 0; si < nt->FileHeader.NumberOfSections; ++si) {
+    if (!(sec[si].Characteristics & IMAGE_SCN_MEM_EXECUTE))
+      continue;
+    const uintptr_t s0 = base + sec[si].VirtualAddress;
+    uintptr_t s1 = s0 + sec[si].Misc.VirtualSize;
+    if (s1 > imgEnd)
+      s1 = imgEnd;
+    if (s1 < s0 + 5)
+      continue;
+    for (uintptr_t p = s0; p + 5 <= s1; ++p) {
+      if (*reinterpret_cast<const uint8_t*>(p) != 0xE8)
+        continue;
+      const int32_t rel = *reinterpret_cast<const int32_t*>(p + 1);
+      const uintptr_t dest = p + 5 + static_cast<intptr_t>(rel);
+      if (dest != target)
+        continue;
+      ++callSites;
+      const uint32_t callRva = static_cast<uint32_t>(p - base);
+      uintptr_t fn = FindThiscallNear(p, 0x400);
+      if (!fn)
+        fn = FindFnStartNear(p);
+      const uint32_t fnRva = fn ? static_cast<uint32_t>(fn - base) : 0;
+      const char* tag = "no-start";
+      bool safe = false;
+      if (fn) {
+        safe = Mode34IsCcPaddedThiscall0(fn, &tag) && !Mode34ForbiddenRva(fnRva);
+        if (safe)
+          ++safeStarts;
+      }
+      if (logged < 24) {
+        Log("VsRetStatic: E8@0x%X -> 0x2C73E fnRva=0x%X abi=%s safe=%d%s", callRva, fnRva,
+            tag, safe ? 1 : 0, Mode34ForbiddenRva(fnRva) ? " FORBIDDEN" : "");
+        ++logged;
+      }
+    }
+  }
+  Log("VsRetStatic: done callSites=%u safeCcPadStarts=%u (read-only; dual still off; "
+      "Mode30 playable) — next same-frame: prefer safe=1 RVAs",
+      callSites, safeStarts);
+}
+
 void Mode34NoteFrameRva(uint32_t rva) {
   if (Mode34ForbiddenRva(rva))
     return;
@@ -4520,8 +4589,9 @@ bool InstallStereoRenderHooks() {
     g_pairPromoteCount.store(0);
     g_vsPatchOn.store(false);
     g_ok = InstallRootProbeHooks(2);
+    LogStaticVsRetCallersOnce();
     Log("StereoRender: mode 30 PAIR-HOLD (CCam temporal + promote L+R together; "
-        "device-VS dual probed dead mode30dev=0; no 0x2C6AC/0x37BD0) ok=%d",
+        "device-VS dual probed dead mode30dev=0; no 0x2C6AC/0x37BD0; canvas zoom OFF) ok=%d",
         g_ok.load() ? 1 : 0);
     Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 26 or 0");
     return g_ok.load();
@@ -4665,6 +4735,7 @@ bool InstallStereoRenderHooks() {
     g_drawWalkAddr = nullptr;
     g_origDrawWalk = nullptr;
     g_ok = InstallRootProbeHooks(2);
+    LogStaticVsRetCallersOnce();
     Log("StereoRender: mode 34 SAME-FRAME VsRet-caller probe (WAIT ret==0x2C73E stack -> "
         "fn starts; COUNT only; DUAL DISABLED — 0x4DDAD0 proved vsPatch=0; "
         "never 0x2C6AC/0x37BD0/0x1BF010/0x4DDAD0; fail/COUNT-ok writes stereo=30) ok=%d",

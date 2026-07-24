@@ -55,8 +55,22 @@ All important external links for this project.
 
 | Item | Location | What we take |
 |------|----------|--------------|
-| C06alt First Person v1.3 (Oculus ini) | `inspiration/firstperson mod/` | FPX/Y/Z → `camoff`; head hide via `SET_DRAW_PLAYER_COMPONENT` idea → CE SetDraw helper (`pedhide`) |
-| Notes | `docs/INSPIRATION_NOTES.md` | Do **not** adopt FOV 111 / FusionFix FOV for look-up warp |
+| C06alt First Person v1.3 (Oculus ini) | `inspiration/firstperson mod/` | FPX/Y/Z → `camoff`; head hide → CE SetDraw (`pedhide`) |
+| Luke Ross R.E.A.L. VR pack | `inspiration/real vr all mods/` (gitignored) | FOV=HMD, square+FOV, AER lessons, pitch/view overrides — **techniques only**, no binary redistribution |
+| Notes | `docs/INSPIRATION_NOTES.md` | Do **not** adopt FOV 111 / FusionFix FOV / canvas-zoom claimed-FOV warp |
+
+## VR rendering / flat→VR docs (web research 2026-07-24)
+
+| Topic | Link | Takeaway for us |
+|-------|------|-----------------|
+| OpenVR compositor | https://github.com/ValveSoftware/openvr/wiki/IVRCompositor_Overview | `WaitGetPoses` → render L/R → `Submit`; same-thread; serial L then R OK |
+| OpenVR Submit + AER pose | https://github.com/ValveSoftware/openvr/issues/1253 (Luke Ross) | `Submit_TextureWithPose` for alternate-eye; SteamVR historically used last pose for both eyes (WMR/Oculus backends) |
+| Meta / Rift render loop | https://developers.meta.com/horizon/documentation/native/pc/dg-render/ | Predicted eye poses; compositor does distortion + timewarp |
+| Meta compositor / timewarp | https://developers.meta.com/horizon/documentation/spatial-sdk/os-compositor/ | Rotational timewarp; positional needs depth |
+| Asymmetric / parallel projection | https://slugcat.systems/post/25-03-18-virtual-reality-projection-shenanigans/ | Per-eye 4-tangent FOV + eye pose; parallel-projection compat mode for canted panels |
+| Parallel projection (OpenMR) | https://forum.openmr.com/t/why-do-some-games-require-parallel-projection-but-others-dont/29411 | Apps that ignore eye rotation break on canted HMDs |
+| GTA V R.E.A.L. FAQ (public) | https://github.com/LukeRoss00/gta5-real-mod | FOV match HMD; AER; pitch override; body/helmet fixes — inspiration only |
+| Halo MCC VR | https://github.com/pancreations/Halo-MCC-VR | Same-frame stereo + wide FOV priority |
 
 ## Related (optional, not a prerequisite)
 

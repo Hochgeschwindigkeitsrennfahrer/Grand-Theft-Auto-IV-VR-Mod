@@ -68,6 +68,34 @@ Local Inspiration drop (2026-07-24): `inspiration/firstperson mod/`
 
 **Conclusion:** Not a stereo reference. Head hide + eye offsets are the useful bits — now wired without ScriptHook.
 
+---
+
+## Luke Ross R.E.A.L. VR (local Inspiration drop — techniques only)
+
+Local: `inspiration/real vr all mods/` (gitignored). Contains `RealVR.ini`, per-game folders (GTA 5, Elden, CP2077, …), `RealVR64.dll`, ASI/injectors.  
+**Do NOT copy or redistribute closed binaries as our product.** Learn knobs / docs / FAQ ideas only.
+
+### Transferable ideas (from GTA V RealVR.ini + public LukeRoss00/gta5-real-mod FAQ)
+
+| Idea | Luke Ross | Transfer to GTA IV CE (ours) |
+|------|-----------|------------------------------|
+| **FOV must match HMD** | `UniversalFOVFix`; wrong FOV = warp / wrong scale / edge pop-in | Same lesson as Halo. Our Mode 17 hit recompute fight — still deferred. **Never** fake canvas FOV (zoom warp killed 2026-07-24). |
+| **Square render** | GTA5 `commandline` `-width 1080 -height 1080` | Useful **with** real engine FOV later; alone shrinks image (we already know). |
+| **Alternate-eye stereo (AER)** | Temporal L/R + compositor timewarp / `Submit_TextureWithPose` | We already run temporal (Mode 14/26/30). Real fix remains **same-frame**. AER+pose is a later comfort spike if OpenVR/WMR cooperates (see OpenVR #1253). |
+| **Override pitch limits** | Game clamps pitch in vehicles → HMD look blocked | Related to wall-collision / look fights below. |
+| **Supplementary view fix at render** | Cam resists Change → fix during draw | Our CopyMat override is the partial analog. |
+| **Hide / fix body at camera** | Helmet/masks / close body coords; neck stump warning | We have **PedHide** (SetDraw). Keep. |
+| **Decoupled 3rd-person look** | Orbit cam vs HMD look separate | FP path different; idea maps to independent VR cam (deferred). |
+| **Cutscene theater / dynamic stereo** | Flat screen or adaptive FOV modes | Later menus/cutscenes. |
+| **Do not multiply scale×IPD** | Separation ≠ world scale | Already our rule (F7 vs F8). |
+
+### Deferred: independent VR camera vs game-camera collision
+
+**User hypothesis (2026-07-24):** inject a VR view independent of the game camera, because the game cam collides with walls when looking sideways/up.
+
+**Opinion (agent):** **Sound, keep deferred.** Rage’s gameplay camera is constrained (collision, pitch clamps, animation takeovers). Driving HMD look through that object will always fight walls/ceilings. Luke Ross’s own FAQ describes the game “wrestling” for camera ownership and needing supplementary render-time view fixes + pitch overrides — same problem class. True VR decoupling = pose for **submit/view**, while game cam stays for AI/culling/collision (or a soft follow). That is invasive (culling, shadows, weapons, HUD). **Do not implement this session.** Spike later only after Mode 30 is solid and same-frame progress exists.
+
+**When to revisit:** after same-frame stereo or when wall-look remains the top headset complaint with PedHide + eyefwd tuned.
 
 ---
 
@@ -77,5 +105,6 @@ Local Inspiration drop (2026-07-24): `inspiration/firstperson mod/`
 2. Mode 4 alternating = explicitly the worse class per VC VR / BotW → not the goal.  
 3. Mode 5 phase probe = path to "shared prep, two views per frame" without engine fork.  
 4. Theater menu + HUD layer = later, after fusion.
+5. **Playable now:** Mode **30** pair-hold + PedHide + ipd≥1. Canvas zoom **OFF**. Independent VR cam = deferred.
 
 When the VC VR **source** is published later: read `src/vr/` + librw stereo/swapchain path first — not controller physics.
