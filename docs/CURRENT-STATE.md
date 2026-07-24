@@ -1,7 +1,8 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~20:30
-**Deployed now:** stereo **`45`** (protected head-owned refresh) +
+**As of:** 2026-07-24 ~20:37
+**Deployed now:** stereo **`47`** (Mode-45 protected head-owned refresh with a
+leveled pitch-sign test) +
 **`fovadd=18`**.
 **Mode 46 is disabled: it froze after the loading screen in the only headset test.** Its full
 OpenVR right/forward/up matrix write is not safe for the RAGE follow-camera path. A request for
@@ -20,6 +21,24 @@ camera overwrite, head turns/leans should now remain owned by the HMD rather tha
 follow-camera view. It cannot bypass physical wall collision, and game motion can still expose
 temporal stereo. Risks are camera/collision, sound-origin, AI-aim, weapon/HUD, and culling desync
 because only the render matrix is refreshed. A real stereo fix still needs same-frame distinct eyes.
+
+### Session 2026-07-24 ~20:37 (Mode 47 leveled pitch-sign test: automated freeze-test PASS)
+
+**Shipped Mode 47:** Mode 45's complete post-CCam refresh stays intact: world-up leveled
+right/up reconstruction, locked 1536×1536 RTs, true-FOV `fovadd=18`, temporal motion guard,
+normal IPD, and no replay/VS/collision write. The **only** camera change is to invert the
+vertical (`z`) component of the converted HMD forward direction before Mode 45's existing yaw
+and world-up basis reconstruction. It does not place OpenVR right/up axes into RAGE, so it
+does not repeat Mode 46's unsafe non-level matrix write. This is a pitch/tilt-direction test,
+not physical roll support and not true same-tick stereo.
+
+**Automated post-load freeze-test PASS:** build `20260724-203453` ran well beyond the required
+two minutes after load. The log continuously advanced through `StereoSubmit: L=1 R=1 mode=47`,
+`Mode47 ... fullBasis=0; leveledPitchFlip=1`, and `Mode44: RT lock 1536x1536 ... recreates=0`.
+No post-load stall was observed. The headset user must still decide whether looking up/down now
+moves the world in the expected direction; if it is reversed or uncomfortable, restore
+**`45`** and restart. Mode 47 cannot correct roll because retaining a full roll basis is the
+Mode-46 freeze path.
 
 ### Session 2026-07-24 ~20:30 (Mode 46 full HMD-basis / roll test: FAILED and disabled)
 

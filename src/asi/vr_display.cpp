@@ -255,7 +255,8 @@ void PublishGameFovFromCCamDegrees(float ccamDeg, float aspectWH) {
   const StereoMode mode = GetStereoMode();
   const float gate = (mode == StereoMode::FovCanvasMotionGuardRtLock ||
                       mode == StereoMode::HeadOwnedCamSpike ||
-                      mode == StereoMode::HeadOwnedCamFullPose)
+                      mode == StereoMode::HeadOwnedCamFullPose ||
+                      mode == StereoMode::HeadOwnedCamLeveledPitchFlip)
                          ? 0.05f
                          : 0.025f;
   const bool changed = !(curH > 0.05f) || std::fabs(tanH - curH) > gate * curH;
