@@ -1,11 +1,11 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~20:15
-**Headset test now:** stereo **`41`** (Mode 40 motion guard + read-only replay-chain probe) +
+**As of:** 2026-07-24 ~19:50
+**Headset test now:** stereo **`42`** (Mode 40 motion guard + read-only indirect-call decode) +
 **`fovadd=18`**.
-Mode 41 is deliberately **not** same-frame distinct-eye stereo. It keeps Mode 40's temporary
-mono guard during a rapid HMD turn, while passively maps the real replay-thread callers behind
-`VsRet=0x2C73E`; it installs no game-function hook and duplicates no draw.
+Mode 42 is deliberately **not** same-frame distinct-eye stereo. It keeps Mode 40's temporary
+mono guard during a rapid HMD turn while passively decoding the replay-thread indirect caller
+behind `VsRet=0x2C73E`; it installs no game-function hook and duplicates no draw.
 Mode 40 is an honest intermediate, not true same-frame stereo: on rapid HMD motion it re-canvases
 the current R game frame to both eye textures for that pair (temporary mono), removing the stale-eye
 disparity during the turn; calm motion returns to normal Mode-37 temporal stereo.
