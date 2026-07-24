@@ -1,14 +1,13 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~20:25
-**Deployed now:** stereo **`46`** (Mode 45 full head-owned refresh + full HMD roll basis) +
+**As of:** 2026-07-24 ~20:30
+**Deployed now:** stereo **`45`** (protected head-owned refresh) +
 **`fovadd=18`**.
-Mode 46 is deliberately **not** same-frame distinct-eye stereo. It retains Mode 44's temporary
-mono guard/direct-submit route, locked 1536×1536 eye RTs, and 5% FOV-publish gate. Its single new
-behavior is to use the complete OpenVR HMD right/forward/up basis for the safe Mode-45 CopyMat
-refresh. The earlier forward-plus-world-up reconstruction discarded physical roll; Mode 46 makes
-head roll tilt the horizon with the head. It does **not** change gameplay collision/culling, add a
-VS offset, replay a draw, or touch 0x309D0.
+**Mode 46 is disabled: it froze after the loading screen in the only headset test.** Its full
+OpenVR right/forward/up matrix write is not safe for the RAGE follow-camera path. A request for
+`46` is remapped to **`45`** at load; do not deploy a `46` stereo file. Mode 45 remains
+deliberately **not** same-frame distinct-eye stereo, but preserves the user-tested stable
+head-owned refresh, temporary-mono motion guard, locked 1536×1536 eye RTs, and 5% FOV-publish gate.
 Mode 40 is an honest intermediate, not true same-frame stereo: on rapid HMD motion it re-canvases
 the current R game frame to both eye textures for that pair (temporary mono), removing the stale-eye
 disparity during the turn; calm motion returns to normal Mode-37 temporal stereo.
@@ -22,26 +21,24 @@ follow-camera view. It cannot bypass physical wall collision, and game motion ca
 temporal stereo. Risks are camera/collision, sound-origin, AI-aim, weapon/HUD, and culling desync
 because only the render matrix is refreshed. A real stereo fix still needs same-frame distinct eyes.
 
-### Session 2026-07-24 ~20:25 (Mode 46 full HMD-basis / roll test: deployed)
+### Session 2026-07-24 ~20:30 (Mode 46 full HMD-basis / roll test: FAILED and disabled)
 
-**Shipped Mode 46:** Mode 45 is preserved as a kill baseline. Mode 46 changes only the orientation
+**Mode 46 result:** Mode 45 was preserved as the kill baseline. Mode 46 changed only the orientation
 part of the existing late post-CCam CopyMat refresh: instead of reconstructing camera right/up from
 HMD forward plus GTA world-up (which levels out roll), it maps OpenVR's HMD right, up, and forward
 columns through the established Ovr→GTA basis, then applies controller/vehicle yaw to all three
-axes together. This is the correct rigid head pose for roll/pitch and prevents a roll from becoming
-a counter-moving game-camera effect. Its F9-relative translation remains `ΔOpenVRPose × WorldScale`;
-higher F7 WorldScale means a larger in-game head translation and therefore a smaller-feeling world.
+axes together. Despite being mathematically rigid, that non-level camera matrix freezes GTA IV
+after the loading screen. The most likely seam is a RAGE follow-camera/render consumer that assumes
+a world-up-derived right/up pair; a blocking/infinite loop was not established from the ASI log.
+Do not retry the direct full-basis write without an isolated post-load freeze test.
 
-**Launch-log verified** (`ASI_BUILD_ID 20260724-202420`): `StereoMode: 46`,
-`mode 46 HEAD-OWNED FULL-POSE`, `fullHmdBasis=1`, `Mode46: late head-owned CopyMat refresh ...
-fullBasis=1`, `Mode44: RT lock ... recreates=0`, and paired `StereoSubmit: L=1 R=1 mode=46`.
-**Headset comfort/correctness proof remains required.**
+**Recovery shipped:** `stereo=45` is restored and launched with `fovadd=18`. The config parser now
+maps a requested `46` to Mode 45 and logs `requested 46 is DISABLED`; the deployment file itself
+must stay `45`. Mode 45 log proof after recovery must show continuing
+`StereoSubmit: L=1 R=1 mode=45` after load.
 
-**Test:** F9 while seated; slowly tilt left/right. The horizon must roll in the same physical
-direction as the headset, while world objects stay fixed in space. Look up/down and lean left/right;
-the render view should follow head orientation/translation without inverted counter-motion. If
-wrong, unstable, or uncomfortable, write **`45`** to `gtaiv_dxvk_vr.stereo` and restart—this is the
-known good user baseline. Other kills: **`44`**, **`37`**, or **`30`** + delete `fovadd`.
+**Do not test Mode 46.** Test Mode 45 only: F9 while seated, then look/lean normally. If it ever
+regresses, write **`44`**, **`37`**, or **`30`** + delete `fovadd`; Mode 45 is the primary kill.
 
 ### Session 2026-07-24 ~20:25 (Mode 45 head-owned view spike: shipped)
 

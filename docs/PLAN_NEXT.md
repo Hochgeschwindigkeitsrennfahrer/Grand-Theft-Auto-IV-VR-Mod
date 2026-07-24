@@ -6,6 +6,19 @@ Read with `docs/CURRENT-STATE.md` and `docs/HANDOFF_GROK.md`.
 
 ## Session note 2026-07-24 ~20:25 — Mode 46 full HMD-basis / tilt test
 
+### Correction ~20:30 — Mode 46 froze after loading and is disabled
+
+The only headset test of Mode 46 froze after the loading screen. Mode 45 immediately recovered
+and then passed a two-minute post-load run with advancing `StereoSubmit: L=1 R=1 mode=45`.
+The direct OpenVR right/up/forward matrix passed to the late RAGE camera path is therefore unsafe
+despite its nominally correct rigid basis. `46` now maps to protected `45` in the config parser;
+the deployed stereo file remains `45`. Do not use or re-arm 46, and do not start a Mode 47
+translation/WorldScale experiment from that broken pose path.
+
+For every later mode, deploy with its intended stereo file, restart, and require continuing
+post-load paired submits over at least two minutes. If the log stalls or the game hangs, write
+`45`, restart, verify continuing Mode-45 submits, and document the failure before any new work.
+
 Mode 45 is the protected user-tested stability baseline: no bars, no jitter/jumping, stable
 performance. The remaining immediate camera symptom is head tilt appearing to move the world in
 the inverse direction. Inspection found that `ApplyHmdToCam` preserved only the HMD forward vector,
