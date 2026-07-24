@@ -4,6 +4,25 @@ Read with `docs/CURRENT-STATE.md` and `docs/HANDOFF_GROK.md`.
 
 ---
 
+## Session note 2026-07-24 ~19:45 — Mode 39 rejected; Mode 37 restored
+
+**User feedback:** Mode 39 brought black bars back and did not improve jumping or FPS. This is
+consistent with the log: Mode 39 actively capped the requested `fovadd=18` to **12°**
+(`FovSite ... add=12`), so it necessarily reduced the true-FOV fill while keeping the same
+alternating-eye pair-hold renderer.
+
+**Deployed next headset baseline:** `stereo=37`, `fovadd=18`. It restores the no-bars geometry
+that Mode 39 removed, while retaining the locked 1536 canvas, pair-latched tangents, and no
+CanvasZoom. This is a geometry restoration, **not** a jump or FPS cure.
+
+**Research decision:** L4D2VR/HL2VR render both engine views in one simulation tick; UEVR also
+labels alternating/AFR as its last-resort, nausea-prone path. GTA's remaining true-VR gap is
+therefore a safe same-tick Rage replay/render seam with distinct L/R view/projection data. Do
+not spend another build on a compositor-pose or FOV-cap variation. Independent VR camera stays
+after that seam is understood and has a hard fallback to 30/37/38.
+
+---
+
 ## Session note 2026-07-24 ~19:15 — Mode 38 AER pose submit
 
 User: Mode 37 still monitor/huge/jump/FPS; F7 ≠ presence; Luke AER v2 Patreon.  

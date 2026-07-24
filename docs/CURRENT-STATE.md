@@ -1,10 +1,37 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~19:30
-**Headset test now:** stereo **`39`** (Mode 37 pair-hold/true canvas, but `fovadd` is capped at **12°**) + file **`fovadd=18`**.
-**Kill:** stereo **`38`** (restore AER pose + full `fovadd`), **`37`** (full `fovadd`, no pose), or **`30`** + delete **`fovadd`**. Protected: **`36`/`35`**.
+**As of:** 2026-07-24 ~19:45
+**Headset test now:** stereo **`37`** (pair-hold + true-FOV canvas) + **`fovadd=18`**.
+Mode 39 was rejected: its 12° cap brought the black bars back but did not improve jump/FPS.
+**Kill:** stereo **`38`** (AER pose + full `fovadd`), **`37`** (no pose, full FOV), or
+**`30`** + delete **`fovadd`**. Protected: **`36`/`35`**.
 Keep **`ipd`≥1**, canvas **zoom DISABLED**. F7 = 6DoF only (does **not** create “inside VR” alone).  
-**Expectation:** Mode 38's accepted pose submit did not reduce the severe jump. Mode 39 is a conservative comfort A/B: lower true-FOV fill/crop and less canvas stress may improve FPS and reduce FOV-amplified ghost, but it cannot remove inherent temporal L/R motion. A real fix still needs same-frame rendering. AER v2 optical-flow **not** implemented.
+**Expectation:** the bars should be gone again. Mode 37 cannot remove the severe temporal jump or
+restore mono-level FPS: L/R are still different game frames. A real fix needs same-frame distinct
+eye rendering; independent head-owned view remains a later, risky camera/collision spike. AER v2
+optical-flow is **not** implemented.
+
+### Session 2026-07-24 ~19:45 (reject Mode 39 / restore Mode 37)
+
+**User feedback:** black bars returned in Mode 39; performance remained poor; jumping remained strong.
+The existing live log proves the configuration: `StereoMode: 39`, `StereoSubmit ... mode=39`, and
+`FovSite ... add=12` with requested `fovadd=18`. Mode 39 therefore reduced the true engine FOV
+that removed the bars, while leaving the temporal pair-hold schedule intact.
+
+**Deployed configuration:** changed `gtaiv_dxvk_vr.stereo` from **39** to **37**; kept
+`fovadd=18`, IPD/scale files untouched, CanvasZoom off, and no forbidden hooks. Mode 37 uses the
+locked 1536 canvas and pair-latched true FOV, so it is the honest no-bars baseline. **Fresh log
+proof** (`ASI_BUILD_ID 20260724-192011`): `StereoMode: 37`, Mode 37 `ok=1 fovSite=1`,
+`Config: fovadd=18`, 1536×1536 submit+hold RTs, promoted L/R pairs, and
+`StereoSubmit ... mode=37`. Steam launched more slowly than the restart script's process-wait
+window, but the new ASI session did start and logged cleanly.
+
+**Research conclusion:** L4D2VR/HL2VR own an engine `RenderView` and render both eye views within
+one simulation tick. UEVR similarly treats alternating/AFR as a last resort because game time
+advances between eyes. Their transferable requirements (one pose epoch, coherent per-eye
+view/projection/texture geometry, stable RTs) are already applied where Rage permits. The missing
+Rage same-frame render seam—not another pose-submit/FOV cap—is the root work before an independent
+VR camera.
 
 ### Session 2026-07-24 ~19:30 (Mode 39 low-motion FOV comfort)
 

@@ -121,3 +121,28 @@ Local: `inspiration/real vr all mods/` (gitignored). Contains `RealVR.ini`, per-
 | FusionFix fixes.ixx | `CCam+0x60 += n*5` after cam process | N/A | **Mode 35 chain-hook** |
 
 When the VC VR **source** is published later: read `src/vr/` + librw stereo/swapchain path first — not controller physics.
+
+---
+
+## Cross-mod research reconciliation (2026-07-24 ~19:45)
+
+- **L4D2VR / HL2VR-style Source mods:** own the engine's `RenderView` seam. They make two
+  `CViewSetup`s (eye origin, HMD-cover FOV, per-eye RT) and render left then right before the
+  next simulation tick. Their `GetProjectionRaw`-derived texture bounds keep the engine FOV and
+  submitted texture geometry consistent. Rage currently gives us no equivalent safe render-view
+  hook, so copying that hook is not an option.
+- **UEVR:** explicitly ranks native stereo first, synchronized sequential second, and
+  alternating/AFR last because AFR advances game time between eyes and causes eye desync/nausea.
+  This exactly matches the Mode 30/37/38 temporal jump. A pose-aware `Submit` can improve
+  rotational reprojection, but cannot make an old eye a same-tick eye.
+- **Transferable now:** sample one pose epoch on the submit/render thread; keep each eye's view,
+  projection/tangents, canvas placement, and submit bounds coherent; render only once per eye;
+  allocate eye RTs once and keep their size stable. Mode 37 already does the stable pair-held,
+  true-tangent parts. Mode 39 changed only engine FOV and therefore cannot solve temporal jump.
+- **Not transferable to stock GTA IV CE:** Source `RenderView`, UE native stereo interfaces,
+  Vulkan multiview, hidden-area masks, and engine-owned per-eye culling. They require renderer
+  ownership we do not have through the DXVK interop submit path.
+- **Real remaining path to true VR:** find a safe Rage replay-thread seam that renders both
+  camera views from one game tick with distinct view/projection data. Only after that should an
+  independent head-owned render camera be spiked; it otherwise risks culling, collision, weapon,
+  HUD, and shadow bugs.
