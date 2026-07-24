@@ -1,4 +1,4 @@
-# Install RGLess with full rollback support.
+﻿# Install RGLess with full rollback support.
 # 1) Download RGLess zip (TJGM guide) into: vendor\rgless\RGLess.zip
 # 2) Close GTA
 # 3) Run: .\scripts\install-rgless.ps1
@@ -156,7 +156,7 @@ $manifest | ConvertTo-Json -Depth 6 | Set-Content -Path $manifestPath -Encoding 
 Set-Content -Path (Join-Path $BackupRoot "LATEST.txt") -Value $BackupDir -Encoding UTF8
 
 Write-Host ""
-Write-Host "OK — RGLess installed."
+Write-Host "OK - RGLess installed."
 Write-Host "Backup: $BackupDir"
 Write-Host "Restore: .\scripts\restore-rgless.ps1"
 Write-Host "Start test: .\scripts\restart-gtaiv.ps1 -DirectExe"

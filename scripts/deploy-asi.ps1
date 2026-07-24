@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory = $true)]
   [string] $GameDir,
 
@@ -12,14 +12,14 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $asi = Join-Path $Root "out-asi\gtaiv_dxvk_vr.asi"
 $ovr = Join-Path $Root "out-asi\openvr_api.dll"
-if (-not (Test-Path $asi)) { throw "Build missing — run .\scripts\build-asi.ps1" }
+if (-not (Test-Path $asi)) { throw "Build missing - run .\scripts\build-asi.ps1" }
 if (-not (Test-Path $GameDir)) { throw "GameDir not found: $GameDir" }
 
 $destAsi = Join-Path $GameDir "gtaiv_dxvk_vr.asi"
 try {
   Copy-Item -LiteralPath $asi -Destination $destAsi -Force
 } catch {
-  Write-Host "ASI locked — stopping GTAIV and retrying..."
+  Write-Host "ASI locked - stopping GTAIV and retrying..."
   & "$PSScriptRoot\restart-gtaiv.ps1" -NoStart -NoPause
   Start-Sleep -Seconds 1
   Copy-Item -LiteralPath $asi -Destination $destAsi -Force
@@ -38,5 +38,5 @@ if ($Launch) {
   if ($DirectExe) { $args.DirectExe = $true }
   & "$PSScriptRoot\restart-gtaiv.ps1" @args
 } else {
-  Write-Host "Checklist: SteamVR running, DXVK 3.0.2 d3d9.dll — or use -Launch / build-deploy-run.ps1"
+  Write-Host "Checklist: SteamVR running, DXVK 3.0.2 d3d9.dll - or use -Launch / build-deploy-run.ps1"
 }

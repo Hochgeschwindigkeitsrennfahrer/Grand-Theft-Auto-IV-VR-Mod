@@ -1,4 +1,4 @@
-# Quick restart after GTA IV crash.
+﻿# Quick restart after GTA IV crash.
 # Default: only clear game/crash processes, then Steam-launch. No dashboard hacks.
 # See docs/STARTUP_SPEED.md for offline / RGLess / DirectExe.
 param(

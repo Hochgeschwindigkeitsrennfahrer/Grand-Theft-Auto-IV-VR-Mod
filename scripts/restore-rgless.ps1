@@ -1,4 +1,4 @@
-# Undo RGLess install from a backup created by install-rgless.ps1
+﻿# Undo RGLess install from a backup created by install-rgless.ps1
 param(
   [string] $BackupDir = "",
   [string] $GameDir = "C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV"
@@ -71,8 +71,8 @@ if (Test-Path $PreDir) {
 $gameSave = Join-Path $GameDir "save"
 Write-Host ""
 Write-Host "Note: Folder $gameSave was NOT deleted (in case saves are there)."
-Write-Host "Documents saves were only copied during install — they remain under Documents."
+Write-Host "Documents saves were only copied during install - they remain under Documents."
 Write-Host ""
-Write-Host "OK — RGLess rolled back."
+Write-Host "OK - RGLess rolled back."
 Write-Host "Then test Steam launch (not -DirectExe)."
-Write-Host "If broken: Steam → Properties → Verify files, then re-deploy ASI/DXVK/FusionFix."
+Write-Host "If broken: Steam -> Properties -> Verify files, then re-deploy ASI/DXVK/FusionFix."

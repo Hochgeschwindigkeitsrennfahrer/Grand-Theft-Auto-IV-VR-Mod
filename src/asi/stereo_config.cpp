@@ -146,6 +146,21 @@ void ReloadIpdScale() {
     Log("StereoSep: %d cm (file gtaiv_dxvk_vr.ipd) — F8 cycles", cm);
 }
 
+// Read a small text config file next to the ASI. Returns bytes read (0 = absent).
+size_t ReadSmallFile(const char* name, char* buf, size_t bufLen) {
+  char path[MAX_PATH]{};
+  if (!GetAsiDir(path, MAX_PATH))
+    return 0;
+  strcat_s(path, name);
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "rb") != 0 || !f)
+    return 0;
+  const size_t n = fread(buf, 1, bufLen - 1, f);
+  fclose(f);
+  buf[n] = 0;
+  return n;
+}
+
 bool KeyPressedEdge(int vk, bool* wasDown) {
   const bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
   const bool edge = down && !*wasDown;
@@ -154,9 +169,9 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  if (n >= 2 && buf[0] == '1' && buf[1] >= '0' && buf[1] <= '9') {
-    const int v = 10 + (buf[1] - '0');
-    if (v <= 13)
+  if (n >= 2 && buf[0] >= '1' && buf[0] <= '2' && buf[1] >= '0' && buf[1] <= '9') {
+    const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
+    if (v <= 24)
       return v;
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
@@ -185,7 +200,7 @@ void ReloadStereoMode() {
   if (n > 0)
     v = ParseModeFile(buf, n);
   int prev = g_mode.load();
-  if (v >= 0 && v <= 13) {
+  if (v >= 0 && v <= 24) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -206,7 +221,14 @@ StereoMode GetStereoMode() {
 }
 
 bool IsTemporalStereoMode(StereoMode mode) {
-  return mode == StereoMode::DualRtSubmit || mode == StereoMode::StereoFusion;
+  return mode == StereoMode::DualRtSubmit ||
+         (mode >= StereoMode::StereoFusion && mode <= StereoMode::CamFovWrite);
+}
+
+bool UsesAngleCorrectCanvas(StereoMode mode) {
+  return (mode >= StereoMode::GeometryCanvas && mode <= StereoMode::CamFovWrite) ||
+         mode == StereoMode::SameFrameRootDual || mode == StereoMode::ExecViewDual ||
+         mode == StereoMode::ExecViewPhaseDual || mode == StereoMode::ExecViewConstDual;
 }
 
 float GetStereoSepMeters() {
@@ -244,6 +266,84 @@ void PollIpdScaleHotkey() {
   SetSepCm(cm);
   SaveIpdFile(cm);
   Log("StereoSep: %d cm (F8) — L4D2 IpdScale knob", cm);
+}
+
+float GetEyeForwardMeters() {
+  static std::atomic<int> s_cm{-1};
+  int cm = s_cm.load();
+  if (cm < 0) {
+    cm = 38;  // legacy default (see past the ped skull without natives)
+    char buf[16]{};
+    int v = 0;
+    if (ReadSmallFile("gtaiv_dxvk_vr.eyefwd", buf, sizeof(buf)) > 0 &&
+        sscanf_s(buf, "%d", &v) == 1 && v >= 0 && v <= 100) {
+      cm = v;
+      Log("Config: eyeForward=%d cm (gtaiv_dxvk_vr.eyefwd)", cm);
+    }
+    s_cm.store(cm);
+  }
+  return static_cast<float>(cm) / 100.f;
+}
+
+bool IsFreeMoveEnabled() {
+  static std::atomic<int> s_mode{-1};
+  int m = s_mode.load();
+  if (m < 0) {
+    m = 0;
+    char buf[16]{};
+    int v = 0;
+    if (ReadSmallFile("gtaiv_dxvk_vr.movemode", buf, sizeof(buf)) > 0 &&
+        sscanf_s(buf, "%d", &v) == 1 && v >= 0 && v <= 1) {
+      m = v;
+      if (m == 1)
+        Log("Config: FREE MOVE on (gtaiv_dxvk_vr.movemode=1) — ped heading not forced");
+    }
+    s_mode.store(m);
+  }
+  return m == 1;
+}
+
+int GetVehicleFollowMode() {
+  static std::atomic<int> s_mode{-1};
+  int m = s_mode.load();
+  if (m < 0) {
+    m = 0;
+    char buf[16]{};
+    int v = 0;
+    if (ReadSmallFile("gtaiv_dxvk_vr.vehfollow", buf, sizeof(buf)) > 0 &&
+        sscanf_s(buf, "%d", &v) == 1 && v >= 0 && v <= 2) {
+      m = v;
+      if (m != 0)
+        Log("Config: vehicle heading-follow %s (gtaiv_dxvk_vr.vehfollow=%d)",
+            m == 2 ? "on INVERTED" : "on", m);
+    }
+    s_mode.store(m);
+  }
+  return m;
+}
+
+bool GetFovPatchConfig(int* offsetBytes, float* scale) {
+  if (!offsetBytes || !scale)
+    return false;
+  static std::atomic<bool> s_read{false};
+  static std::atomic<int> s_off{0};
+  static std::atomic<float> s_scale{0.f};
+  if (!s_read.exchange(true)) {
+    char buf[32]{};
+    int off = 0, pct = 0;
+    if (ReadSmallFile("gtaiv_dxvk_vr.fovpatch", buf, sizeof(buf)) > 0 &&
+        sscanf_s(buf, "%d %d", &off, &pct) == 2 && off >= -512 && off <= 512 && pct >= 50 &&
+        pct <= 300) {
+      s_off.store(off);
+      s_scale.store(static_cast<float>(pct) / 100.f);
+      Log("Config: fovpatch off=%d scale=%.2f (gtaiv_dxvk_vr.fovpatch)", off, pct / 100.f);
+    }
+  }
+  if (s_scale.load() <= 0.f)
+    return false;
+  *offsetBytes = s_off.load();
+  *scale = s_scale.load();
+  return true;
 }
 
 void PollWorldScaleHotkey() {

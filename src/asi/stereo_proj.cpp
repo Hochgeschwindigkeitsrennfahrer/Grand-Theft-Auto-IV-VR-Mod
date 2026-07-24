@@ -3,6 +3,7 @@
 #include "log.h"
 #include "stereo_config.h"
 #include "stereo_eye.h"
+#include "stereo_render.h"
 #include "vr_display.h"
 
 #include "../../thirdparty/minhook/include/MinHook.h"
@@ -26,12 +27,21 @@ std::atomic<bool> g_hooksOk{false};
 std::atomic<bool> g_logged{false};
 std::atomic<uint32_t> g_patchCount{0};
 
-// Cover-FOV widen + TextureBounds felt like a broken in-game FOV slider (User 2026-07-24).
-// Mode 7 at ~90 FPS without that stack was the good baseline — keep widen OFF until
-// we can match Rage projection properly (L4D2 sets engine FOV; we were patching D3D wrong).
+// Legacy VS-constant-scan stack (BeginScene scans 0..60 every frame) — cost ~45 FPS
+// and felt like a broken FOV slider. Keep OFF permanently.
 bool ModeWantsCoverFov() {
   return false;
 }
+
+// Mode 15: widen ONLY the projection the game pushes via SetTransform. Zero per-frame
+// cost. Mode 14's canvas reads the widened tangents back (GetTransform) and adapts.
+// Outcome tells us if Rage consumes D3DTS_PROJECTION: border shrinks with correct
+// proportions = yes; image vertically stretched = no (then mode 15 is dead, use 14).
+bool ModeWantsProjWiden() {
+  return GetStereoMode() == StereoMode::CanvasWide;
+}
+
+std::atomic<uint32_t> g_widenCount{0};
 
 bool LooksLikeProjectionScales(const float* m) {
   return m && m[0] > 0.1f && m[0] < 8.f && m[5] > 0.1f && m[5] < 8.f;
@@ -75,10 +85,15 @@ bool WidenToCoverFov(float* m16) {
 
 HRESULT STDMETHODCALLTYPE HookSetTransform(IDirect3DDevice9* self, D3DTRANSFORMSTATETYPE state,
                                            const D3DMATRIX* matrix) {
-  if (state == D3DTS_PROJECTION && matrix && ModeWantsCoverFov() && IsCamMatrixOverrideEnabled()) {
+  if (state == D3DTS_PROJECTION && matrix &&
+      (ModeWantsCoverFov() || ModeWantsProjWiden()) && IsCamMatrixOverrideEnabled()) {
     D3DMATRIX m = *matrix;
-    if (WidenToCoverFov(&m.m[0][0]))
+    if (WidenToCoverFov(&m.m[0][0])) {
+      const uint32_t n = ++g_widenCount;
+      if (n <= 3 || (n % 600) == 0)
+        Log("StereoProj: widen SetTransform #%u (mode 15)", n);
       return g_origSetTransform(self, state, &m);
+    }
   }
   return g_origSetTransform(self, state, matrix);
 }
@@ -88,6 +103,114 @@ HRESULT STDMETHODCALLTYPE HookBeginScene(IDirect3DDevice9* self) {
   if (SUCCEEDED(hr) && ModeWantsCoverFov())
     StereoProjApplyForCurrentEye(self);
   return hr;
+}
+
+// ---- Mode 24: view-translate in SetVertexShaderConstantF during the R pass ----
+// Rage bakes the view/viewProj into shader constants at BUILD time; re-executing
+// the draw lists replays those uploads through this D3D9 entry point. During the
+// RIGHT pass we detect any 4x4 block that maps the build camera position onto the
+// view axis (x'=y'=0 -> it is a view or viewProj matrix) and pre-multiply the
+// world-space eye translation. Detection is convention-agnostic (row-vector and
+// column-vector layouts).
+using SetVSConstF_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, const float*, UINT);
+SetVSConstF_t g_origSetVSConstF = nullptr;
+std::atomic<uint32_t> g_vsTransCount{0};
+std::atomic<uint32_t> g_vsRightCalls{0};
+
+struct VsSeenReg {
+  UINT reg;
+  UINT cnt;
+  int interp;  // 0 = seen only, 1 = row-vector match, 2 = column-vector match
+};
+VsSeenReg g_vsSeen[24]{};
+int g_vsSeenN = 0;
+
+void NoteVsReg(UINT reg, UINT cnt, int interp) {
+  for (int i = 0; i < g_vsSeenN; ++i) {
+    if (g_vsSeen[i].reg == reg && g_vsSeen[i].interp == interp)
+      return;
+  }
+  if (g_vsSeenN >= 24)
+    return;
+  g_vsSeen[g_vsSeenN++] = {reg, cnt, interp};
+  Log("VsPatch: %s reg=%u cnt=%u",
+      interp == 1   ? "MATCH rowvec"
+      : interp == 2 ? "MATCH colvec"
+                    : "seen",
+      reg, cnt);
+}
+
+HRESULT STDMETHODCALLTYPE HookSetVSConstF(IDirect3DDevice9* self, UINT startReg,
+                                          const float* data, UINT cnt) {
+  float cam[3], d[3];
+  if (!data || cnt < 4 || cnt > 256 || !StereoVsGetPatchParams(cam, d))
+    return g_origSetVSConstF(self, startReg, data, cnt);
+
+  ++g_vsRightCalls;
+  float buf[1024];
+  std::memcpy(buf, data, cnt * 16u);
+  const float cx = cam[0], cy = cam[1], cz = cam[2];
+  const float dx = d[0], dy = d[1], dz = d[2];
+  int patched = 0;
+
+  for (UINT b = 0; b + 4 <= cnt; b += 4) {
+    float* f = buf + b * 4;
+
+    // Row-vector layout (p' = p*M): rows contiguous in memory.
+    const float xa = cx * f[0] + cy * f[4] + cz * f[8] + f[12];
+    const float ya = cx * f[1] + cy * f[5] + cz * f[9] + f[13];
+    const float za = cx * f[2] + cy * f[6] + cz * f[10] + f[14];
+    const float wa = cx * f[3] + cy * f[7] + cz * f[11] + f[15];
+    const float gxa = std::fabs(cx * f[0]) + std::fabs(cy * f[4]) + std::fabs(cz * f[8]) +
+                      std::fabs(f[12]);
+    const float gya = std::fabs(cx * f[1]) + std::fabs(cy * f[5]) + std::fabs(cz * f[9]) +
+                      std::fabs(f[13]);
+    // Column-vector layout (p' = M*p): memory rows are matrix rows.
+    const float xb = cx * f[0] + cy * f[1] + cz * f[2] + f[3];
+    const float yb = cx * f[4] + cy * f[5] + cz * f[6] + f[7];
+    const float zb = cx * f[8] + cy * f[9] + cz * f[10] + f[11];
+    const float wb = cx * f[12] + cy * f[13] + cz * f[14] + f[15];
+    const float gxb = std::fabs(cx * f[0]) + std::fabs(cy * f[1]) + std::fabs(cz * f[2]) +
+                      std::fabs(f[3]);
+    const float gyb = std::fabs(cx * f[4]) + std::fabs(cy * f[5]) + std::fabs(cz * f[6]) +
+                      std::fabs(f[7]);
+
+    // "Maps cam pos to the axis" with float-cancellation tolerance; reject the
+    // zero matrix by requiring a nonzero z' (viewProj) or w' (affine view).
+    const bool matchA = std::fabs(xa) < 2e-3f * gxa + 1e-3f &&
+                        std::fabs(ya) < 2e-3f * gya + 1e-3f &&
+                        (std::fabs(za) > 1e-3f || std::fabs(wa) > 0.5f) && gxa > 1e-3f;
+    const bool matchB = std::fabs(xb) < 2e-3f * gxb + 1e-3f &&
+                        std::fabs(yb) < 2e-3f * gyb + 1e-3f &&
+                        (std::fabs(zb) > 1e-3f || std::fabs(wb) > 0.5f) && gxb > 1e-3f;
+
+    if (matchA) {
+      // V' = T(-delta) * V  (camera moved +delta => world moved -delta)
+      f[12] -= dx * f[0] + dy * f[4] + dz * f[8];
+      f[13] -= dx * f[1] + dy * f[5] + dz * f[9];
+      f[14] -= dx * f[2] + dy * f[6] + dz * f[10];
+      f[15] -= dx * f[3] + dy * f[7] + dz * f[11];
+      ++patched;
+      NoteVsReg(startReg + b, cnt, 1);
+    } else if (matchB) {
+      // V' = V * T_col(-delta)
+      f[3] -= dx * f[0] + dy * f[1] + dz * f[2];
+      f[7] -= dx * f[4] + dy * f[5] + dz * f[6];
+      f[11] -= dx * f[8] + dy * f[9] + dz * f[10];
+      f[15] -= dx * f[12] + dy * f[13] + dz * f[14];
+      ++patched;
+      NoteVsReg(startReg + b, cnt, 2);
+    }
+  }
+
+  if (!patched) {
+    // Layout intel for the log even when nothing matches (first uploads only).
+    if (g_vsRightCalls.load() <= 40)
+      NoteVsReg(startReg, cnt, 0);
+    return g_origSetVSConstF(self, startReg, data, cnt);
+  }
+  g_vsTransCount.fetch_add(static_cast<uint32_t>(patched));
+  return g_origSetVSConstF(self, startReg, buf, cnt);
 }
 
 }  // namespace
@@ -145,6 +268,10 @@ void StereoProjApplyForCurrentEye(IDirect3DDevice9* device) {
     Log("StereoProj: coverFOV eye=%s vsPatches=%d #%u", right ? "R" : "L", patched, n);
 }
 
+unsigned StereoVsTranslateCount() {
+  return g_vsTransCount.load();
+}
+
 void InstallStereoProjHooks(IDirect3DDevice9* device) {
   if (!device || g_hooksOk.load())
     return;
@@ -161,8 +288,15 @@ void InstallStereoProjHooks(IDirect3DDevice9* device) {
     Log("StereoProj: BeginScene hook FAIL");
     return;
   }
+  // vt[94] = SetVertexShaderConstantF (mode 24 right-pass view translate; the
+  // gate StereoVsGetPatchParams is false everywhere else -> zero overhead).
+  if (MH_CreateHook(vt[94], reinterpret_cast<void*>(&HookSetVSConstF),
+                    reinterpret_cast<void**>(&g_origSetVSConstF)) != MH_OK ||
+      MH_EnableHook(vt[94]) != MH_OK) {
+    Log("StereoProj: SetVertexShaderConstantF hook FAIL (mode 24 unavailable)");
+  }
   g_hooksOk = true;
-  Log("StereoProj: SetTransform+BeginScene OK (L4D2 cover FOV)");
+  Log("StereoProj: SetTransform+BeginScene+SetVSConstF OK");
 }
 
 }  // namespace asi

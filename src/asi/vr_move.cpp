@@ -3,6 +3,7 @@
 #include "cam_matrix.h"
 #include "hmd_pose.h"
 #include "log.h"
+#include "stereo_config.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -187,6 +188,11 @@ void UpdateVrMoveAndStick() {
   // In vehicle: don't force ped heading (car faces road); stick already moves cam via mouse
   void* veh = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(ped) + kVehicleOff);
   if (veh)
+    return;
+
+  // Free move (gtaiv_dxvk_vr.movemode=1): the game maps stick input relative to the
+  // camera we override with the HMD — leave ped heading alone so strafe/backpedal work.
+  if (IsFreeMoveEnabled())
     return;
 
   float fx = 0.f, fy = 1.f;

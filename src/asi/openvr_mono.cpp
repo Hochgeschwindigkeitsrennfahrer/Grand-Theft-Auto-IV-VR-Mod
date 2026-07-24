@@ -201,6 +201,7 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   UpdateHmdPose(poses, vr::k_unMaxTrackedDeviceCount);
 
   StereoRenderOnDevice(device);
+  UpdateGameFovFromDevice(device);
 
   bool stereoSubmitted = false;
   {
@@ -215,7 +216,7 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   vr::EVRCompositorError eL = vr::VRCompositorError_None;
   vr::EVRCompositorError eR = vr::VRCompositorError_None;
   if (!stereoSubmitted) {
-    // Mono cinema: no TextureBounds (narrow game FOV ≠ cover FOV). Bounds only with stereo+coverFOV.
+    // Mode 0: keep nullptr (user liked this FOV). Inset is for temporal stereo only.
     interop->LockSubmissionQueue();
     eL = vr::VRCompositor()->Submit(vr::Eye_Left, &texture, nullptr, vr::Submit_Default);
     eR = vr::VRCompositor()->Submit(vr::Eye_Right, &texture, nullptr, vr::Submit_Default);

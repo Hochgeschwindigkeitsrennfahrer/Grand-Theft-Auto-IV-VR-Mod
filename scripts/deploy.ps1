@@ -1,4 +1,4 @@
-# Deploy a built x86 d3d9.dll to GTAIV.
+﻿# Deploy a built x86 d3d9.dll to GTAIV.
 # Usage:
 #   .\scripts\deploy.ps1 -GameDir "C:\...\Grand Theft Auto IV\GTAIV" -DllPath ".\path\to\d3d9.dll"
 
@@ -23,7 +23,7 @@ if (-not (Test-Path $DllPath)) {
 
 $exe = Join-Path $GameDir "GTAIV.exe"
 if (-not (Test-Path $exe)) {
-  Write-Warning "GTAIV.exe not in GameDir — are you in the right folder?"
+  Write-Warning "GTAIV.exe not in GameDir - are you in the right folder?"
 }
 
 $dest = Join-Path $GameDir "d3d9.dll"
@@ -41,7 +41,7 @@ if ((Test-Path $dest) -and -not $SkipBackup) {
 Copy-Item -LiteralPath $DllPath -Destination $dest -Force
 Write-Host "Deployed: $dest"
 
-# Intentionally do NOT auto-copy dxvk.conf — pollutes FusionFix Vulkan tests.
+# Intentionally do NOT auto-copy dxvk.conf - pollutes FusionFix Vulkan tests.
 # If needed, create manually from config\dxvk.conf.example.
 
 Write-Host ""

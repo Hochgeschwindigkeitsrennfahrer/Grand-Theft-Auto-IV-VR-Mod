@@ -1,33 +1,31 @@
-# Stereo fusion — Mode 13 (L4D2VR / BotW)
+# Stereo FOV notes
 
-## Mode overview
+## Rolled back
 
-| Mode | Role |
-|------|--------|
-| **7** | Original: same-frame RT dual (do not touch) |
-| **4** | Temporal L/R (legacy) |
-| **13** | **StereoFusion** — recommended: temporal + cover-FOV + TextureBounds, L4D2 scale |
+- **Square UV crop on Submit** → black bar, blur, no fusion.  
+- **Engine `commandline.txt` 1080×1080** → desktop OK, VR double + stretched. Disabled for now.  
+  (Luke Ross needs square **plus** his FOV/stereo pipeline; square alone is not enough for us.)
 
-## L4D2VR
+## Current Mode 13
 
-```text
-halfIpd = (IPD * IpdScale * VRScale) / 2
-origin  = HMD ± right*halfIpd + forward*(-EyeZ*VRScale)
-FOV     = cover FOV from GetProjectionRaw (both eyes)
-Submit  = TextureBounds per eye
-```
+- Temporal L/R + IPD  
+- **Soft-inset** TextureBounds (clamped, no square crop)  
+- Game keeps normal resolution (e.g. 2560×1440)
 
-**Higher VRScale** → more offset in game units → world feels **smaller**.  
-Default Mode 13: **VRScale=100%**, Sep = HMD IPD (~6 cm).
+## New: Mode 14 (angle-correct canvas)
 
-## BotW BetterVR
+Why fusion failed with nullptr bounds: the game renders ~70° h / 16:9, but Submit with
+nullptr bounds stretches that image over each eye's FULL asymmetric HMD frustum
+(~94°+, ~1:1). The stretch differs per eye → same object lands at different angles in
+L vs R → diplopia. Mono (Mode 0) fuses because both eyes share the identical error.
 
-- Patch cam per eye, **draw full frame** (for us: temporal Mode 13/4)
-- Patch FOV/projection along with it (for us: cover-FOV + bounds)
-- Alternating is not the end goal — Mode 13 is an intermediate step until same-frame draw
+Mode 14 fixes the mapping instead of the engine: per eye, the game backbuffer is
+StretchRect'ed into the correct angular rectangle of a larger black canvas; the canvas
+is submitted with nullptr bounds (it spans the full frustum by construction).
+Black border = expected. `gtaiv_dxvk_vr.fov` (horizontal degrees) tunes world size.
 
-## Tuning
+## Optional later
 
-- **F7** VRScale (50–300%)
-- **F8** Sep cm
-- Kill switch **0**
+`config/commandline.square-vr.txt` — only with a working FOV pipeline, not alone.
+Once Mode 14 proves fusion, widen the SOURCE FOV (FusionFix/ZolikaPatch-style engine
+FOV, not CCam+0x60) to shrink the black border.

@@ -1,12 +1,25 @@
 #include "vr_display.h"
 #include "log.h"
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <d3d9.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 
 #include <openvr.h>
+
+namespace {
+float Max4(float a, float b, float c, float d) {
+  return (std::max)((std::max)(a, b), (std::max)(c, d));
+}
+}  // namespace
 
 namespace asi {
 namespace {
@@ -17,6 +30,13 @@ vr::VRTextureBounds_t g_boundsL{};
 vr::VRTextureBounds_t g_boundsR{};
 float g_tanHalfH = 0.f;
 float g_tanHalfV = 0.f;
+// Raw per-eye frustum tangents (left/top negative), cached with the bounds.
+float g_rawL[4]{};  // l, r, t, b
+float g_rawR[4]{};
+
+std::atomic<float> g_gameTanH{std::tan(0.5f * 70.f * 3.14159265f / 180.f)};
+std::atomic<float> g_gameTanV{std::tan(0.5f * 70.f * 3.14159265f / 180.f) * 9.f / 16.f};
+std::atomic<bool> g_loggedInset{false};
 
 float FovFromProjectionRaw(float left, float right) {
   const float fovRad = std::atan(right) - std::atan(left);
@@ -35,30 +55,97 @@ void EnsureBoundsCache() {
   sys->GetProjectionRaw(vr::Eye_Left, &lL, &lR, &lT, &lB);
   sys->GetProjectionRaw(vr::Eye_Right, &rL, &rR, &rT, &rB);
 
-  // Exact L4D2VR / OpenVR sample pattern: one shared cover FOV, per-eye UV crop.
-  const float tanH = std::max({-lL, lR, -rL, rR});
-  const float tanV = std::max({-lT, lB, -rT, rB});
+  const float tanH = Max4(-lL, lR, -rL, rR);
+  const float tanV = Max4(-lT, lB, -rT, rB);
   if (!(tanH > 0.05f) || !(tanV > 0.05f))
     return;
 
   g_tanHalfH = tanH;
   g_tanHalfV = tanV;
 
+  g_rawL[0] = lL;
+  g_rawL[1] = lR;
+  g_rawL[2] = lT;
+  g_rawL[3] = lB;
+  g_rawR[0] = rL;
+  g_rawR[1] = rR;
+  g_rawR[2] = rT;
+  g_rawR[3] = rB;
+
+  // L4D2 cover-crop (unused while we submit native FOV).
   g_boundsL.uMin = 0.5f + 0.5f * lL / tanH;
   g_boundsL.uMax = 0.5f + 0.5f * lR / tanH;
   g_boundsL.vMin = 0.5f - 0.5f * lB / tanV;
   g_boundsL.vMax = 0.5f - 0.5f * lT / tanV;
-
   g_boundsR.uMin = 0.5f + 0.5f * rL / tanH;
   g_boundsR.uMax = 0.5f + 0.5f * rR / tanH;
   g_boundsR.vMin = 0.5f - 0.5f * rB / tanV;
   g_boundsR.vMax = 0.5f - 0.5f * rT / tanV;
-
   g_boundsReady.store(true);
-  Log("VrDisplay: TextureBounds L4D2-style tanH=%.3f tanV=%.3f "
-      "L[u=%.3f..%.3f v=%.3f..%.3f] R[u=%.3f..%.3f v=%.3f..%.3f]",
-      tanH, tanV, g_boundsL.uMin, g_boundsL.uMax, g_boundsL.vMin, g_boundsL.vMax, g_boundsR.uMin,
-      g_boundsR.uMax, g_boundsR.vMin, g_boundsR.vMax);
+}
+
+// Optional gtaiv_dxvk_vr.fov next to the ASI: horizontal game FOV in degrees (30..150).
+// Lets the user calibrate world size in Mode 14 without a rebuild. Read once.
+float ReadFovOverrideDegOnce() {
+  static std::atomic<bool> s_read{false};
+  static std::atomic<float> s_deg{0.f};
+  if (s_read.exchange(true))
+    return s_deg.load();
+
+  char path[MAX_PATH]{};
+  HMODULE self = nullptr;
+  GetModuleHandleExA(
+      GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+      reinterpret_cast<LPCSTR>(&ReadFovOverrideDegOnce), &self);
+  if (!GetModuleFileNameA(self, path, MAX_PATH))
+    return 0.f;
+  char* slash = strrchr(path, '\\');
+  if (!slash)
+    slash = strrchr(path, '/');
+  if (!slash)
+    return 0.f;
+  slash[1] = 0;
+  strcat_s(path, "gtaiv_dxvk_vr.fov");
+
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "rb") != 0 || !f)
+    return 0.f;
+  char buf[16]{};
+  const size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+  fclose(f);
+  int deg = 0;
+  if (n > 0 && sscanf_s(buf, "%d", &deg) == 1 && deg >= 30 && deg <= 150) {
+    s_deg.store(static_cast<float>(deg));
+    Log("VrDisplay: game FOV override %d deg horizontal (gtaiv_dxvk_vr.fov)", deg);
+  }
+  return s_deg.load();
+}
+
+// Soft inset: map game FOV into HMD cover FOV without square-crop UV (that broke fusion).
+bool BuildSoftInset(float tanGameH, float tanGameV, vr::VRTextureBounds_t* out) {
+  float tanHmdH = 0.f, tanHmdV = 0.f;
+  if (!GetCoverFovTangents(&tanHmdH, &tanHmdV))
+    return false;
+  if (!(tanGameH > 0.05f) || !(tanGameV > 0.05f))
+    return false;
+
+  // Clamp so we never invent extreme UV (black bars / blur).
+  float rh = tanGameH / tanHmdH;
+  float rv = tanGameV / tanHmdV;
+  if (rh < 0.55f)
+    rh = 0.55f;
+  if (rh > 1.0f)
+    rh = 1.0f;
+  if (rv < 0.55f)
+    rv = 0.55f;
+  if (rv > 1.0f)
+    rv = 1.0f;
+
+  out->uMin = 0.5f - 0.5f / rh;
+  out->uMax = 0.5f + 0.5f / rh;
+  out->vMin = 0.5f - 0.5f / rv;
+  out->vMax = 0.5f + 0.5f / rv;
+  return true;
 }
 
 }  // namespace
@@ -67,12 +154,10 @@ float GetVrHorizontalFovDegrees() {
   vr::IVRSystem* sys = vr::VRSystem();
   if (!sys)
     return 0.f;
-
   float lL = 0.f, lR = 0.f, lT = 0.f, lB = 0.f;
   float rL = 0.f, rR = 0.f, rT = 0.f, rB = 0.f;
   sys->GetProjectionRaw(vr::Eye_Left, &lL, &lR, &lT, &lB);
   sys->GetProjectionRaw(vr::Eye_Right, &rL, &rR, &rT, &rB);
-
   const float fovL = FovFromProjectionRaw(lL, lR);
   const float fovR = FovFromProjectionRaw(rL, rR);
   if (!(fovL > 1.f) || !(fovR > 1.f))
@@ -101,38 +186,127 @@ bool GetCoverFovTangents(float* tanHalfHoriz, float* tanHalfVert) {
   return g_tanHalfH > 0.05f && g_tanHalfV > 0.05f;
 }
 
+void UpdateGameFovFromDevice(IDirect3DDevice9* device) {
+  if (!device)
+    return;
+
+  uint32_t bw = 0, bh = 0;
+  IDirect3DSurface9* bb = nullptr;
+  if (SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
+    D3DSURFACE_DESC d{};
+    if (SUCCEEDED(bb->GetDesc(&d))) {
+      bw = d.Width;
+      bh = d.Height;
+    }
+    bb->Release();
+  }
+
+  D3DMATRIX proj{};
+  if (FAILED(device->GetTransform(D3DTS_PROJECTION, &proj)))
+    return;
+  const float a = proj.m[0][0];
+  const float b = proj.m[1][1];
+  if (!(a > 0.2f) || !(a < 8.f) || !(b > 0.2f) || !(b < 8.f))
+    return;
+
+  // ALWAYS derive tanV from the backbuffer aspect. GetTransform at EndScene can
+  // return a square side-pass projection (mirror/envmap) — trusting m[1][1] made
+  // gameTan flap between 0.562 and 1.0 (2026-07-24: lost bars, wrong proportions,
+  // RT-recreate stutter). Aspect-derivation also stays correct with the Mode 17
+  // FOV patch, because the game derives horizontal FOV from vertical × aspect.
+  float tanH = 1.f / a;
+  float tanV = tanH * 9.f / 16.f;
+  if (bw >= 16 && bh >= 16) {
+    const float aspect = static_cast<float>(bw) / static_cast<float>(bh);
+    if (aspect > 0.5f && aspect < 3.f)
+      tanV = tanH / aspect;
+  }
+  if (!(tanH > 0.05f) || !(tanV > 0.05f) || !(tanH < 5.f) || !(tanV < 5.f))
+    return;
+
+  // Stability gate: only accept a NEW tangent after it has been steady for 30
+  // frames. Prevents per-frame canvas-rect flapping (= objects jumping L/R in
+  // temporal stereo) if the engine FOV oscillates or side passes interfere.
+  const float cur = g_gameTanH.load();
+  if (std::fabs(tanH - cur) <= 0.01f * cur) {
+    return;  // unchanged — keep current
+  }
+  static float s_candidate = 0.f;
+  static int s_stable = 0;
+  if (s_candidate > 0.f && std::fabs(tanH - s_candidate) <= 0.01f * s_candidate) {
+    if (++s_stable >= 30) {
+      g_gameTanH.store(tanH);
+      g_gameTanV.store(tanV);
+      s_candidate = 0.f;
+      s_stable = 0;
+      Log("VrDisplay: gameTan committed (%.3f,%.3f) after stability gate", tanH, tanV);
+    }
+  } else {
+    s_candidate = tanH;
+    s_stable = 1;
+  }
+}
+
+bool GetEyeRawProjection(vr::EVREye eye, float* left, float* right, float* top, float* bottom) {
+  if (!left || !right || !top || !bottom)
+    return false;
+  EnsureBoundsCache();
+  if (!g_boundsReady.load())
+    return false;
+  const float* raw = (eye == vr::Eye_Right) ? g_rawR : g_rawL;
+  *left = raw[0];
+  *right = raw[1];
+  *top = raw[2];
+  *bottom = raw[3];
+  return true;
+}
+
+void GetGameFovTangents(float* tanHalfH, float* tanHalfV) {
+  float tanH = g_gameTanH.load();
+  float tanV = g_gameTanV.load();
+  const float ovrDeg = ReadFovOverrideDegOnce();
+  if (ovrDeg > 0.f) {
+    // Keep the measured aspect ratio, override only the horizontal FOV.
+    const float ratio = (tanH > 0.05f) ? (tanV / tanH) : (9.f / 16.f);
+    tanH = std::tan(0.5f * ovrDeg * 3.14159265f / 180.f);
+    tanV = tanH * ratio;
+  }
+  if (tanHalfH)
+    *tanHalfH = tanH;
+  if (tanHalfV)
+    *tanHalfV = tanV;
+}
+
+bool GetNativeFovInsetBounds(vr::EVREye eye, vr::VRTextureBounds_t* out) {
+  (void)eye;
+  if (!out)
+    return false;
+  if (!BuildSoftInset(g_gameTanH.load(), g_gameTanV.load(), out))
+    return false;
+  if (!g_loggedInset.exchange(true)) {
+    Log("VrDisplay: soft-inset (no square crop) tanH=%.3f tanV=%.3f u=%.3f..%.3f v=%.3f..%.3f",
+        g_gameTanH.load(), g_gameTanV.load(), out->uMin, out->uMax, out->vMin, out->vMax);
+  }
+  return true;
+}
+
 void LogVrDisplayInfo() {
   if (g_loggedInfo.exchange(true))
     return;
-
   vr::IVRSystem* sys = vr::VRSystem();
   if (!sys) {
     Log("VrDisplay: VRSystem null");
     return;
   }
-
   uint32_t rw = 0, rh = 0;
   sys->GetRecommendedRenderTargetSize(&rw, &rh);
-
-  float lL = 0.f, lR = 0.f, lT = 0.f, lB = 0.f;
-  sys->GetProjectionRaw(vr::Eye_Left, &lL, &lR, &lT, &lB);
-  const float fovH = FovFromProjectionRaw(lL, lR);
-  const float fovV = std::fabs(std::atan(lB) - std::atan(lT)) * (180.f / 3.14159265f);
-
-  vr::HmdMatrix34_t e2h = sys->GetEyeToHeadTransform(vr::Eye_Right);
-  const float ipd = std::fabs(e2h.m[0][3]) * 2.f;
-
-  char model[256]{};
-  sys->GetStringTrackedDeviceProperty(vr::k_unTrackedDeviceIndex_Hmd,
-                                      vr::Prop_ModelNumber_String, model, sizeof(model), nullptr);
-
-  Log("VrDisplay: HMD=\"%s\" recommended=%ux%u FOVh~%.1f FOVv~%.1f IPD~%.1fmm", model, rw, rh,
-      fovH, fovV, ipd * 1000.f);
+  Log("VrDisplay: SteamVR recommended %ux%u (compositor only). Submit = game BB, nullptr bounds.",
+      rw, rh);
   EnsureBoundsCache();
 }
 
 bool InstallVrDisplayHooks() {
-  Log("VrDisplay: FOV hook SKIPPED (CCam write froze) — using CoverFOV+TextureBounds instead");
+  Log("VrDisplay: soft-inset Submit; square is engine commandline only (optional, off by default)");
   LogVrDisplayInfo();
   return false;
 }

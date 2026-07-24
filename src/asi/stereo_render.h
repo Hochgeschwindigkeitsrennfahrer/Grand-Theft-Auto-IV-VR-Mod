@@ -18,4 +18,9 @@ bool StereoInDualPass();
 // Broader than dual: Left natural PhaseA..Draw + Right dual (mode 7/8).
 bool StereoProjWindowActive();
 
+// Mode 24: true only during the RIGHT pass of the exec-view dual; outputs the
+// build camera position (left eye) and the world-space L->R eye delta for the
+// SetVertexShaderConstantF view-translate patch. Same-thread (render) only.
+bool StereoVsGetPatchParams(float cam3[3], float delta3[3]);
+
 }  // namespace asi

@@ -1,4 +1,4 @@
-# Build gtaiv_dxvk_vr.asi (Win32 / x86) + OpenVR
+﻿# Build gtaiv_dxvk_vr.asi (Win32 / x86) + OpenVR
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root

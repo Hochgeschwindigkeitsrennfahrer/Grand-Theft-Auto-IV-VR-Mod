@@ -1,4 +1,4 @@
-# Fetch MinHook (x86 ASI hooks)
+﻿# Fetch MinHook (x86 ASI hooks)
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $dest = Join-Path $Root "thirdparty\minhook"

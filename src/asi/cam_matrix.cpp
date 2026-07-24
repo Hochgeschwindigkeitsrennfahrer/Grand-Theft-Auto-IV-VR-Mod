@@ -9,6 +9,7 @@
 #include <d3d9.h>
 #include <windows.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -39,11 +40,14 @@ std::atomic<bool> g_hooksOk{false};
 std::atomic<bool> g_gameplayActive{false};  // false until past title (avoids blackscreen)
 std::atomic<uint32_t> g_applyCount{0};
 
-// Eye placement. No toggles — always on when FP cam is active.
-// Script natives from EndScene crash CE — push eyes past skull/hair instead.
-constexpr float kEyeHeight = 0.70f;   // along ped "at" (world up)
-constexpr float kEyeForward = 0.38f;  // past mouth/hair (no EndScene natives)
+// Eye placement. Script natives from EndScene crash CE — push eyes past skull/hair.
+// Forward offset is configurable via gtaiv_dxvk_vr.eyefwd (cm, default 38): smaller
+// = less camera swing on head rotation (comfort) but the skull may block the view.
+constexpr float kEyeHeight = 0.70f;  // along ped "at" (world up)
 constexpr float kPosScale = 1.0f;
+
+constexpr uint32_t kPedVehicleOff = 0xB30;  // CPed::m_pVehicle (CE)
+constexpr uint32_t kEntityMatrixOff = 0x20; // CEntity::m_pMatrix
 
 bool g_havePosBaseline = false;
 float g_basePx = 0.f, g_basePy = 0.f, g_basePz = 0.f;
@@ -118,6 +122,53 @@ bool TryGetPedEyePos(Vec4* outEye) {
   return true;
 }
 
+// Vehicle heading-follow (gtaiv_dxvk_vr.vehfollow): camera yaw tracks the vehicle's
+// yaw delta since entry/recenter, HMD free look stays on top. Baseline resets on
+// exit and on F9.
+float g_vehYawBase = 0.f;
+bool g_haveVehYawBase = false;
+
+float WrapPi(float a) {
+  while (a > 3.14159265f)
+    a -= 6.2831853f;
+  while (a < -3.14159265f)
+    a += 6.2831853f;
+  return a;
+}
+
+float ComputeVehicleYawOffset() {
+  const int mode = GetVehicleFollowMode();
+  if (mode == 0 || !g_FindPlayerPed)
+    return 0.f;
+  void* ped = g_FindPlayerPed(0);
+  if (!ped) {
+    g_haveVehYawBase = false;
+    return 0.f;
+  }
+  void* veh = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(ped) + kPedVehicleOff);
+  if (!veh) {
+    g_haveVehYawBase = false;
+    return 0.f;
+  }
+  auto* m = *reinterpret_cast<Matrix44**>(reinterpret_cast<uint8_t*>(veh) + kEntityMatrixOff);
+  if (!m)
+    return 0.f;
+  const float fx = m->up.x;  // RAGE: "up" row = forward
+  const float fy = m->up.y;
+  if (fx * fx + fy * fy < 1e-6f)
+    return 0.f;
+  const float yaw = std::atan2(-fx, fy);
+  if (!g_haveVehYawBase) {
+    g_vehYawBase = yaw;
+    g_haveVehYawBase = true;
+    Log("VehFollow: baseline yaw=%.1f deg", yaw * 57.2957795f);
+  }
+  float d = WrapPi(yaw - g_vehYawBase);
+  if (mode == 2)
+    d = -d;
+  return d;
+}
+
 bool SaneWorldPos(const Vec4& p) {
   if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
     return false;
@@ -163,9 +214,9 @@ void ApplyHmdToCam(Matrix44* mat) {
   OvrToGta(-h.m[0][2], -h.m[1][2], -h.m[2][2], &fx, &fy, &fz);
   Normalize(&fx, &fy, &fz);
 
-  // Right-stick yaw offset (controller camera L/R) on top of HMD
+  // Right-stick yaw offset (controller camera L/R) + optional vehicle follow, on top of HMD
   {
-    const float yawOff = GetControllerYawOffset();
+    const float yawOff = GetControllerYawOffset() + ComputeVehicleYawOffset();
     const float c = std::cos(yawOff);
     const float s = std::sin(yawOff);
     const float nfx = fx * c - fy * s;
@@ -195,9 +246,10 @@ void ApplyHmdToCam(Matrix44* mat) {
   float uz = rx * fy - ry * fx;
   Normalize(&ux, &uy, &uz);
 
-  eye.x += fx * kEyeForward;
-  eye.y += fy * kEyeForward;
-  eye.z += fz * kEyeForward;
+  const float eyeFwd = GetEyeForwardMeters();
+  eye.x += fx * eyeFwd;
+  eye.y += fy * eyeFwd;
+  eye.z += fz * eyeFwd;
 
   // Stereo eye origin — L4D2VR GetViewOriginLeft/Right:
   //   origin + forward*(-eyeZ*scale) + right*(±IPD*ipdScale*scale/2)
@@ -263,9 +315,146 @@ void ApplyHmdToCam(Matrix44* mat) {
   }
 }
 
+// ---- Mode 16: read-only FOV probe ------------------------------------------
+// Scan floats around the camera matrix over many frames; report offsets whose
+// value is stable and plausible as a FOV (degrees ~15..120 or radians ~0.3..2.1).
+// The engine FOV should sit near ~58.7 deg vertical (or ~1.02 rad) at 16:9.
+constexpr int kProbeStartOff = -0x80;  // bytes relative to mat
+constexpr int kProbeSlots = 96;        // covers -0x80 .. +0xFC step 4
+
+struct FovProbeState {
+  Matrix44* mat;
+  uint32_t samples;
+  uint32_t reports;
+  bool readable;
+  float mn[kProbeSlots];
+  float mx[kProbeSlots];
+};
+FovProbeState g_probe[kMaxTrackedMats]{};
+
+void ProbeCamFov(Matrix44* mat) {
+  FovProbeState* st = nullptr;
+  for (auto& p : g_probe) {
+    if (p.mat == mat) {
+      st = &p;
+      break;
+    }
+    if (!p.mat) {
+      p.mat = mat;
+      p.samples = 0;
+      p.reports = 0;
+      p.readable = !IsBadReadPtr(reinterpret_cast<uint8_t*>(mat) + kProbeStartOff,
+                                 kProbeSlots * 4);
+      for (int i = 0; i < kProbeSlots; ++i) {
+        p.mn[i] = 1e9f;
+        p.mx[i] = -1e9f;
+      }
+      st = &p;
+      break;
+    }
+  }
+  if (!st || !st->readable || st->reports >= 2)
+    return;
+
+  const float* base = reinterpret_cast<const float*>(reinterpret_cast<uint8_t*>(mat) +
+                                                     kProbeStartOff);
+  for (int i = 0; i < kProbeSlots; ++i) {
+    const float v = base[i];
+    if (!std::isfinite(v))
+      continue;
+    if (v < st->mn[i])
+      st->mn[i] = v;
+    if (v > st->mx[i])
+      st->mx[i] = v;
+  }
+
+  ++st->samples;
+  // First report after 240 samples, second after 2400 (catches aim/vehicle changes).
+  if (st->samples != 240 && st->samples != 2400)
+    return;
+  ++st->reports;
+  Log("FovProbe: mat=%p report#%u (samples=%u) — candidates:", static_cast<void*>(mat),
+      st->reports, st->samples);
+  for (int i = 0; i < kProbeSlots; ++i) {
+    const float mn = st->mn[i], mx = st->mx[i];
+    if (mn > mx)
+      continue;
+    const int off = kProbeStartOff + i * 4;
+    const bool deg = (mn >= 15.f && mx <= 120.f && (mx - mn) <= 8.f);
+    const bool rad = (mn >= 0.30f && mx <= 2.10f && (mx - mn) <= 0.15f &&
+                      std::fabs(mn - 1.f) > 0.002f);
+    if (deg)
+      Log("FovProbe:   off=%+d (0x%X) DEG %.3f..%.3f", off, off & 0xFFF, mn, mx);
+    else if (rad)
+      Log("FovProbe:   off=%+d (0x%X) RAD %.4f..%.4f", off, off & 0xFFF, mn, mx);
+  }
+}
+
+// ---- Mode 17: targeted FOV write (offset verified via Mode 16) ---------------
+// IDEMPOTENT: capture the game's baseline FOV once per cam object, then always
+// write the absolute target = baseline × scale. Multiplying the live value
+// compounded across call sites (45→58.5→76→…112) and made the image pulse/jitter
+// (2026-07-24). Absolute writes pin a constant FOV every frame.
+std::atomic<uint32_t> g_fovWriteCount{0};
+
+struct FovBaseline {
+  Matrix44* mat;
+  float base;
+};
+FovBaseline g_fovBase[kMaxTrackedMats]{};
+
+void ApplyFovPatch(Matrix44* mat) {
+  int off = 0;
+  float scale = 0.f;
+  if (!GetFovPatchConfig(&off, &scale))
+    return;
+  float* f = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(mat) + off);
+  const float v = *f;
+
+  FovBaseline* bl = nullptr;
+  for (auto& b : g_fovBase) {
+    if (b.mat == mat) {
+      bl = &b;
+      break;
+    }
+    if (!b.mat) {
+      // First sighting: only accept a plausible, UNPATCHED value as baseline.
+      if (v >= 15.f && v <= 120.f) {
+        b.mat = mat;
+        b.base = v;
+        Log("FovPatch: baseline mat=%p base=%.3f", static_cast<void*>(mat), v);
+        bl = &b;
+      }
+      break;
+    }
+  }
+  if (!bl)
+    return;
+
+  float target = 0.f;
+  if (bl->base >= 15.f && bl->base <= 120.f)
+    target = (std::min)(bl->base * scale, 130.f);  // degrees
+  else if (bl->base >= 0.30f && bl->base <= 2.10f)
+    target = (std::min)(bl->base * scale, 2.27f);  // radians
+  else
+    return;
+
+  if (std::fabs(v - target) < 0.01f)
+    return;  // already pinned this frame — no write, no log spam
+  *f = target;
+  const uint32_t n = ++g_fovWriteCount;
+  if (n <= 3 || (n % 600) == 0)
+    Log("FovPatch: #%u off=%d %.3f -> %.3f (base=%.3f)", n, off, v, target, bl->base);
+}
+
 void __fastcall HookCopyMat(Matrix44* mat, void* edx, void* arg2) {
   g_origCopyMat(mat, edx, arg2);
   if (mat && g_gameplayActive.load()) {
+    const StereoMode sm = GetStereoMode();
+    if (sm == StereoMode::CamFovProbe)
+      ProbeCamFov(mat);
+    else if (sm == StereoMode::CamFovWrite)
+      ApplyFovPatch(mat);
     g_liveCamMat = mat;
     TrackCamMat(mat);
     ApplyHmdToCam(mat);
@@ -342,6 +531,7 @@ bool IsCamMatrixOverrideEnabled() {
 
 void CamMatrixOnRecenter() {
   g_havePosBaseline = false;
+  g_haveVehYawBase = false;
   Log("CamMatrix: 6DoF baseline reset (F9)");
 }
 
@@ -361,6 +551,26 @@ void RefreshLiveCamForStereoEye() {
   }
   if (g_liveCamMat)
     ApplyHmdToCam(g_liveCamMat);
+}
+
+// Mode 22: world-space delta from LEFT eye to RIGHT eye = hmdRight * sep * scale
+// (the -eyeZ forward term in ApplyHmdToCam is identical for both eyes).
+bool GetStereoEyeRightDeltaWorld(float* dx, float* dy, float* dz) {
+  if (!dx || !dy || !dz)
+    return false;
+  vr::HmdMatrix34_t h{};
+  if (!GetHmdPoseMatrix(&h))
+    return false;
+  float hrx, hry, hrz;
+  OvrToGta(h.m[0][0], h.m[1][0], h.m[2][0], &hrx, &hry, &hrz);
+  const float len = std::sqrt(hrx * hrx + hry * hry + hrz * hrz);
+  if (len < 1e-4f)
+    return false;
+  const float d = GetStereoSepMeters() * GetWorldScale() / len;
+  *dx = hrx * d;
+  *dy = hry * d;
+  *dz = hrz * d;
+  return true;
 }
 
 bool GetLastStereoCamPos(float* x, float* y, float* z) {

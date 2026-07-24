@@ -2,22 +2,30 @@
 
 #include <openvr.h>
 
+struct IDirect3DDevice9;
+
 namespace asi {
 
-// FOV call-site hook — currently pass-through only (HMD FOV write froze CE).
 bool InstallVrDisplayHooks();
-
-// Log recommended RT size / FOV / IPD once (safe anytime after VR_Init).
 void LogVrDisplayInfo();
-
-// Horizontal FOV in degrees from HMD projection (0 if unavailable).
 float GetVrHorizontalFovDegrees();
 
-// L4D2VR-style submit bounds: shared cover FOV render → per-eye UV crop.
-// Returns false if OpenVR unavailable (caller should pass nullptr bounds).
+// L4D2 cover-crop (only if we rendered cover FOV — unused for Mode 13).
 bool GetEyeSubmitBounds(vr::EVREye eye, vr::VRTextureBounds_t* out);
-
-// Symmetric cover frustum tangents (max of both eyes) — for game projection widen.
 bool GetCoverFovTangents(float* tanHalfHoriz, float* tanHalfVert);
+
+void UpdateGameFovFromDevice(IDirect3DDevice9* device);
+
+// Mode 13: game BB aspect + optional center-square crop (Luke Ross style) + HMD inset.
+// Does NOT render at SteamVR recommended res — Submit uses the game backbuffer as-is.
+bool GetNativeFovInsetBounds(vr::EVREye eye, vr::VRTextureBounds_t* out);
+
+// Mode 14: raw per-eye HMD frustum tangents (GetProjectionRaw, cached).
+// left/top are negative, right/bottom positive.
+bool GetEyeRawProjection(vr::EVREye eye, float* left, float* right, float* top, float* bottom);
+
+// Game half-FOV tangents (horizontal/vertical). Sources, in priority order:
+// gtaiv_dxvk_vr.fov file (horizontal degrees 30..150), D3D projection probe, 70° fallback.
+void GetGameFovTangents(float* tanHalfH, float* tanHalfV);
 
 }  // namespace asi

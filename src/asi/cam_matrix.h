@@ -27,6 +27,9 @@ void RefreshLiveCamForStereoEye();
 // Last position written by ApplyHmdToCam (for L/R delta logs).
 bool GetLastStereoCamPos(float* x, float* y, float* z);
 
+// World-space delta from LEFT to RIGHT eye (hmdRight * sep * worldScale).
+bool GetStereoEyeRightDeltaWorld(float* dx, float* dy, float* dz);
+
 // Push live Rage cam → D3DTS_VIEW (and log once). Safe no-op if no cam/device.
 void PushLiveCamToD3D(IDirect3DDevice9* device);
 
