@@ -205,6 +205,11 @@ enum class StereoMode : int {
   // before any game-function hook can even be considered. It keeps Mode 40's
   // temporal motion guard; it never calls/replays a game function or changes view.
   ReplayOwnerCountProbe = 42,
+  // Mode 40's same visual safety valve, but when it fires, copy the current R
+  // frame directly into the already-submitted L/R canvases. This avoids the
+  // extra hold-RT recanvas and pair-promotion copies during a rapid HMD turn.
+  // It remains temporary mono, not same-frame distinct-eye stereo. Kill: 40/37/30.
+  FovCanvasMotionGuardFast = 43,
 };
 
 StereoMode GetStereoMode();

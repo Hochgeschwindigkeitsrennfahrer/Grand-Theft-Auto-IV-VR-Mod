@@ -1,15 +1,17 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~19:50
-**Headset test now:** stereo **`42`** (Mode 40 motion guard + read-only indirect-call decode) +
+**As of:** 2026-07-24 ~20:00
+**Deployed now:** stereo **`43`** (Mode 40 motion guard fast path) +
 **`fovadd=18`**.
-Mode 42 is deliberately **not** same-frame distinct-eye stereo. It keeps Mode 40's temporary
-mono guard during a rapid HMD turn while passively decoding the replay-thread indirect caller
-behind `VsRet=0x2C73E`; it installs no game-function hook and duplicates no draw.
+Mode 43 is deliberately **not** same-frame distinct-eye stereo. It keeps Mode 40's temporary
+mono guard but, only when that guard fires, writes the current R frame directly to the two submit
+canvases: three copies rather than Mode 40's five-copy hold/recanvas/promotion route. It installs
+no game-function hook, does not replay a draw, and has no 0x309D0 probe.
 Mode 40 is an honest intermediate, not true same-frame stereo: on rapid HMD motion it re-canvases
 the current R game frame to both eye textures for that pair (temporary mono), removing the stale-eye
 disparity during the turn; calm motion returns to normal Mode-37 temporal stereo.
-**Kill:** stereo **`37`** (always temporal stereo + full FOV) or **`30`** + delete **`fovadd`**.
+**Kill:** stereo **`40`** (conservative guard), **`37`** (always temporal stereo + full FOV),
+or **`30`** + delete **`fovadd`**.
 Protected: **`36`/`35`**.
 Keep **`ipd`≥1**, canvas **zoom DISABLED**. F7 = 6DoF only (does **not** create “inside VR” alone).  
 **Expectation:** the bars remain gone. Rapid head turns should no longer show a stale-eye stereo jump,
@@ -17,6 +19,22 @@ but will briefly lose depth while Mode 40 submits the coherent current-frame mon
 game itself can still expose temporal stereo. A real fix needs same-frame **distinct-eye** rendering;
 independent head-owned view remains a later, risky camera/collision spike. AER v2 optical-flow is
 **not** implemented.
+
+### Session 2026-07-24 ~20:00 (Mode 43 fast motion guard: shipped)
+
+**Shipped Mode 43:** the guard trigger/threshold and submitted visual result are Mode 40's exact
+temporary current-frame mono pair; the sole behavior change is its copy route. Mode 40 first copies
+current R to `holdR`, then re-canvases both hold textures and promotes both to submit textures
+(five full canvas copies in the guarded R epoch). Mode 43 keeps the required `holdR` pose/cadence
+copy but re-canvases directly to the submit L/R textures and skips promotion (three copies).
+Calm temporal pair-hold, 1536×1536 locked true-FOV canvases, FOV latch, and `fovadd=18` remain
+unchanged. It cannot improve normal FOV render cost, cannot create distinct eyes, and needs a
+rapid HMD-turn headset check for its fast path to fire.
+
+**Deployed + launch-log verified** (`ASI_BUILD_ID 20260724-200006`): `StereoMode: 43`,
+`mode 43 FAST MOTION-GUARD ... 3 copies ... 5`, `eye RTs 1536x1536 OK`, locked true-FOV canvas,
+and repeated `StereoSubmit: L=1 R=1 mode=43`. No guard firing was logged while unattended, so
+`directSubmit=1` is not yet live-motion proven. **Kill:** `40`, `37`, or `30` + delete `fovadd`.
 
 ### Session 2026-07-24 ~20:15 (Mode 41 replay-chain probe: shipped)
 

@@ -707,7 +707,7 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
     if (sm == StereoMode::FovRecomputeTrueCanvas || sm == StereoMode::FovCanvasComfort ||
         sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion ||
         sm == StereoMode::FovCanvasMotionGuard || sm == StereoMode::ReplayCallChainProbe ||
-        sm == StereoMode::ReplayOwnerCountProbe)
+        sm == StereoMode::ReplayOwnerCountProbe || sm == StereoMode::FovCanvasMotionGuardFast)
       PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
     const uint32_t n = ++g_fovSiteCalls;
     if (n <= 4 || (n % 600) == 0)
@@ -716,7 +716,7 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
           (sm == StereoMode::FovRecomputeTrueCanvas || sm == StereoMode::FovCanvasComfort ||
            sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion ||
            sm == StereoMode::FovCanvasMotionGuard || sm == StereoMode::ReplayCallChainProbe ||
-           sm == StereoMode::ReplayOwnerCountProbe)
+           sm == StereoMode::ReplayOwnerCountProbe || sm == StereoMode::FovCanvasMotionGuardFast)
               ? 1
               : 0);
   } __except (EXCEPTION_EXECUTE_HANDLER) {

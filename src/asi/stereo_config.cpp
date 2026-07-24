@@ -256,10 +256,10 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  // Two-digit modes 10..42 (Mode 42 = read-only indirect-call decoder). Cap must track enum max.
+  // Two-digit modes 10..43 (Mode 43 = direct-submit motion guard). Cap must track enum max.
   if (n >= 2 && buf[0] >= '1' && buf[0] <= '4' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 42)
+    if (v <= 43)
       return v;
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
@@ -288,7 +288,7 @@ void ReloadStereoMode() {
   if (n > 0)
     v = ParseModeFile(buf, n);
   int prev = g_mode.load();
-  if (v >= 0 && v <= 42) {
+  if (v >= 0 && v <= 43) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -314,7 +314,8 @@ void ReloadStereoMode() {
                            v == static_cast<int>(StereoMode::FovCanvasLowMotion) ||
                            v == static_cast<int>(StereoMode::FovCanvasMotionGuard) ||
                            v == static_cast<int>(StereoMode::ReplayCallChainProbe) ||
-                           v == static_cast<int>(StereoMode::ReplayOwnerCountProbe))) {
+                           v == static_cast<int>(StereoMode::ReplayOwnerCountProbe) ||
+                           v == static_cast<int>(StereoMode::FovCanvasMotionGuardFast))) {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadWorldScale();
@@ -327,7 +328,7 @@ void ReloadStereoMode() {
 }
 
 void WriteStereoModeFile(int mode) {
-  if (mode < 0 || mode > 42)
+  if (mode < 0 || mode > 43)
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -368,7 +369,8 @@ bool UsesAngleCorrectCanvas(StereoMode mode) {
          mode == StereoMode::FovCanvasLowMotion ||
          mode == StereoMode::FovCanvasMotionGuard ||
          mode == StereoMode::ReplayCallChainProbe ||
-         mode == StereoMode::ReplayOwnerCountProbe;
+         mode == StereoMode::ReplayOwnerCountProbe ||
+         mode == StereoMode::FovCanvasMotionGuardFast;
 }
 
 float GetStereoSepMeters() {

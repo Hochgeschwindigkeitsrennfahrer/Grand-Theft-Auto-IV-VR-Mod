@@ -4,6 +4,24 @@ Read with `docs/CURRENT-STATE.md` and `docs/HANDOFF_GROK.md`.
 
 ---
 
+## Session note 2026-07-24 ~20:00 — Mode 43 fast motion guard
+
+**Shipped Mode 43:** keep Mode 40's thresholds, temporary-mono result, pair-held true-FOV geometry,
+and all replay seams untouched. On a guard firing only, the current R frame still first lands in
+`holdR` to preserve the pose/cadence decision, but its L/R current-frame canvases go directly to
+the submit textures. This skips Mode 40's extra recanvas to `holdL`/`holdR` plus the two-texture
+promotion: **3** full canvas copies in a guarded R epoch instead of **5**. Calm frames use the
+unchanged Mode-37 temporal pair-hold path.
+
+**Launch proof:** build `20260724-200006` deployed `StereoMode: 43`, installed the FOV site,
+allocated locked `1536x1536` submit+hold RTs, and repeatedly logged `StereoSubmit: L=1 R=1
+mode=43`. The unattended launch did not produce HMD motion, so `directSubmit=1` is intentionally
+not claimed as live-motion proof yet. It is a rapid-turn overhead reduction, not a same-frame
+distinct-eye solution and not a normal-frame FPS cure. **Kill:** `40` (conservative guard), `37`,
+or `30` + delete `fovadd`.
+
+---
+
 ## Session note 2026-07-24 ~20:15 — Mode 41 replay-chain probe
 
 **Shipped Mode 41:** retain Mode 40's Mode-37 true-FOV pair-hold and its rapid-motion temporary-mono
