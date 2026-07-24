@@ -342,6 +342,42 @@ Mode41FrameNode g_mode41Frame[96]{};
 int g_mode41FrameN = 0;
 Mode41AggNode g_mode41Agg[96]{};
 int g_mode41AggN = 0;
+
+// ---- Mode 64: fixed 0x3187C view-const COUNT-only (Mode 45 renderer) ----
+// Measures avg entries/EndScene at view-const apply (ret 4 stackarg). PASS band [0.8,4] ≈ 1×/frame.
+// Does NOT hook PublishSync 0x30300 or replay dispatch 0x300D0. dual=OFF; auto-reverts to 45.
+constexpr uint32_t kMode64ViewConstRva = 0x3187C;
+constexpr uint32_t kMode64CountEsNeed = 45;
+static const uint8_t kMode64Prologue[] = {0x56, 0x57, 0x8B, 0xF9, 0x8D, 0x44, 0x24, 0x70};
+std::atomic<uint32_t> g_mode64Es{0};
+std::atomic<uint32_t> g_mode64CountEs{0};
+std::atomic<bool> g_mode64CountDone{false};
+uint32_t g_mode64EntrySum = 0;
+
+// ---- Mode 65: read-only [0x17ed8d8] vtable +0x178/+0x1B4 log (Mode 45 renderer) ----
+// EndScene peek only — no game hook. Logs replayGate [0x17ED918] and activeView [0x17F583C]
+// (PublishSync 0x30349 gate). Compare slot178 RVAs with Mode42 OWNER-EDGE @ 0x3010D.
+constexpr uint32_t kMode65DeviceGlobalVa = 0x17ED8D8;
+constexpr uint32_t kMode65ReplayGateVa = 0x17ED918;
+constexpr uint32_t kMode65ActiveViewVa = 0x17F583C;
+constexpr uint32_t kMode65LogEsNeed = 45;
+std::atomic<uint32_t> g_mode65Es{0};
+std::atomic<bool> g_mode65LogDone{false};
+uint32_t g_mode65LastDevice = 0;
+uint32_t g_mode65LastVt178 = 0;
+uint32_t g_mode65LastVt1B4 = 0;
+
+// ---- Mode 66: fixed 0x30300 PublishSync COUNT-only (Mode 45 renderer) ----
+// Measures avg entries/EndScene at PublishSync prologue (thiscall esi=ecx). PASS band [0.8,4].
+// Does NOT call 0x300D0, hook forbidden sites, or arm dual. Auto-reverts to 45 when done.
+constexpr uint32_t kMode66PublishSyncRva = 0x30300;
+constexpr uint32_t kMode66CountEsNeed = 45;
+static const uint8_t kMode66Prologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8, 0x51, 0x56, 0x8B, 0xF1};
+std::atomic<uint32_t> g_mode66Es{0};
+std::atomic<uint32_t> g_mode66CountEs{0};
+std::atomic<bool> g_mode66CountDone{false};
+uint32_t g_mode66EntrySum = 0;
+
 std::atomic<uint32_t> g_mode41VsRetHits{0};
 std::atomic<uint32_t> g_mode41Es{0};
 uint32_t g_mode41VsTid = 0;
@@ -1656,6 +1692,26 @@ void __fastcall HookDrawWalk(void* self, void* edx) {
   if (!g_origDrawWalk)
     return;
   ++g_drawWalkEntries;
+
+  // Mode 64: fixed 0x3187C COUNT-only (no dual).
+  if (GetStereoMode() == StereoMode::ViewConstCountProbe && !g_mode64CountDone.load()) {
+    if (!CallDrawWalkOnceGuarded(self, edx)) {
+      Log("Mode64: EXCEPTION in count passthrough code=0x%08X @exeRva=0x%X",
+          g_execViewExcCode, kMode64ViewConstRva);
+      g_drawWalkEntries.store(0xFFFFFFFFu);
+    }
+    return;
+  }
+
+  // Mode 66: fixed 0x30300 PublishSync COUNT-only (no dual).
+  if (GetStereoMode() == StereoMode::PublishSyncCountProbe && !g_mode66CountDone.load()) {
+    if (!CallDrawWalkOnceGuarded(self, edx)) {
+      Log("Mode66: EXCEPTION in count passthrough code=0x%08X @exeRva=0x%X",
+          g_execViewExcCode, kMode66PublishSyncRva);
+      g_drawWalkEntries.store(0xFFFFFFFFu);
+    }
+    return;
+  }
 
   // Mode 34: VsRet-caller walker (same dual body as Mode 32/33).
   if (GetStereoMode() == StereoMode::SameFrameVsRetCallerDual) {
@@ -4178,6 +4234,311 @@ void Mode41OnEndScene(IDirect3DDevice9* device) {
   Mode41FinishFrame();
 }
 
+bool Mode64VerifyPrologue(uintptr_t start) {
+  const auto* b = reinterpret_cast<const uint8_t*>(start);
+  __try {
+    for (size_t i = 0; i < sizeof(kMode64Prologue); ++i) {
+      if (b[i] != kMode64Prologue[i])
+        return false;
+    }
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+bool Mode64InstallCountHook() {
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  const uintptr_t start = base + kMode64ViewConstRva;
+  const char* tag = "?";
+  if (!Mode64VerifyPrologue(start) || !Mode34IsCcPaddedThiscall0(start, &tag)) {
+    Log("Mode64: REJECT exeRva=0x%X abi=%s bytes=%02X %02X %02X %02X %02X %02X "
+        "(need 56 57 8B F9 + CC-pad thiscall0)",
+        kMode64ViewConstRva, tag, reinterpret_cast<const uint8_t*>(start)[0],
+        reinterpret_cast<const uint8_t*>(start)[1],
+        reinterpret_cast<const uint8_t*>(start)[2],
+        reinterpret_cast<const uint8_t*>(start)[3],
+        reinterpret_cast<const uint8_t*>(start)[4],
+        reinterpret_cast<const uint8_t*>(start)[5]);
+    return false;
+  }
+  Mode34WriteProbe(kMode64ViewConstRva);
+  if (!InstallDrawWalkAt(start)) {
+    Mode34ClearProbe("MH fail");
+    Log("Mode64: InstallDrawWalkAt failed exeRva=0x%X", kMode64ViewConstRva);
+    return false;
+  }
+  g_mode64Es.store(0);
+  g_mode64CountEs.store(0);
+  g_mode64EntrySum = 0;
+  g_mode64CountDone.store(false);
+  g_drawWalkEntries.store(0);
+  Log("Mode64: COUNT armed exeRva=0x%X abi=%s (view-const apply; want avg in [0.8,4] "
+      "over %u EndScenes; dual=OFF SameFrameSeamGate=CLOSED)",
+      kMode64ViewConstRva, tag, kMode64CountEsNeed);
+  return true;
+}
+
+void Mode64OnEndScene(IDirect3DDevice9* device) {
+  TemporalCapturePairHold(device);
+  if (g_mode64CountDone.load())
+    return;
+
+  const uint32_t entries = g_drawWalkEntries.exchange(0);
+  if (entries == 0xFFFFFFFFu) {
+    Log("Mode64: COUNT hook died @exeRva=0x%X — wrote stereo=45 (safe default)",
+        kMode64ViewConstRva);
+    Mode34ClearProbe("count died");
+    if (g_drawWalkAddr) {
+      MH_DisableHook(g_drawWalkAddr);
+      MH_RemoveHook(g_drawWalkAddr);
+      g_origDrawWalk = nullptr;
+      g_drawWalkAddr = nullptr;
+    }
+    g_mode64CountDone.store(true);
+    WriteStereoModeFile(45);
+    return;
+  }
+
+  ++g_mode64CountEs;
+  g_mode64EntrySum += entries;
+  const uint32_t n = g_mode64CountEs.load();
+  if (n <= 6 || (n % 15) == 0)
+    Log("Mode64: COUNT es#%u/%u entries=%u sum=%u exeRva=0x%X", n, kMode64CountEsNeed,
+        entries, g_mode64EntrySum, kMode64ViewConstRva);
+
+  if (n < kMode64CountEsNeed)
+    return;
+
+  const float avg = static_cast<float>(g_mode64EntrySum) / static_cast<float>(n);
+  Mode34ClearProbe("COUNT done");
+  if (g_drawWalkAddr) {
+    MH_DisableHook(g_drawWalkAddr);
+    MH_RemoveHook(g_drawWalkAddr);
+    g_origDrawWalk = nullptr;
+    g_drawWalkAddr = nullptr;
+  }
+  g_mode64CountDone.store(true);
+  const bool okCadence = avg >= 0.8f && avg <= 4.f;
+  Log("Mode64: COUNT done exeRva=0x%X avgEntries=%.2f cadence=%s (want [0.8,4] ~1x/frame; "
+      "ret4 stackarg; 0 static E8 callers) SameFrameSeamGate=CLOSED dual=OFF",
+      kMode64ViewConstRva, avg, okCadence ? "PASS" : "REJECT");
+  if (okCadence)
+    Log("Mode64: next live step — stereo=65 VT178-LOG then stereo=66 PublishSync COUNT");
+  else
+    Log("Mode64: cadence REJECT — not a ~1x/frame replay owner; keep stereo=45");
+  WriteStereoModeFile(45);
+}
+
+bool Mode66VerifyPrologue(uintptr_t start) {
+  const auto* b = reinterpret_cast<const uint8_t*>(start);
+  __try {
+    for (size_t i = 0; i < sizeof(kMode66Prologue); ++i) {
+      if (b[i] != kMode66Prologue[i])
+        return false;
+    }
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+bool Mode66IsHookSafe(uintptr_t start, const char** tagOut) {
+  if (!Mode66VerifyPrologue(start))
+    return false;
+  if (start < 4)
+    return false;
+  const auto* b = reinterpret_cast<const uint8_t*>(start);
+  if (!(b[-1] == 0xCC && b[-2] == 0xCC)) {
+    if (tagOut)
+      *tagOut = "unpadded";
+    return false;
+  }
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  const uint32_t rva = static_cast<uint32_t>(start - base);
+  if (Mode34ForbiddenRva(rva))
+    return false;
+  const char* tag = "?";
+  if (Mode32ClassifyPrologue(start, &tag) != Mode32Abi::Thiscall) {
+    if (tagOut)
+      *tagOut = tag;
+    return false;
+  }
+  if (tagOut)
+    *tagOut = tag;
+  return true;
+}
+
+bool Mode66InstallCountHook() {
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  const uintptr_t start = base + kMode66PublishSyncRva;
+  const char* tag = "?";
+  if (!Mode66IsHookSafe(start, &tag)) {
+    Log("Mode66: REJECT exeRva=0x%X abi=%s bytes=%02X %02X %02X %02X %02X %02X "
+        "(need 55 8B EC 83 E4 F8 51 56 8B F1 CC-pad thiscall PublishSync)",
+        kMode66PublishSyncRva, tag, reinterpret_cast<const uint8_t*>(start)[0],
+        reinterpret_cast<const uint8_t*>(start)[1],
+        reinterpret_cast<const uint8_t*>(start)[2],
+        reinterpret_cast<const uint8_t*>(start)[3],
+        reinterpret_cast<const uint8_t*>(start)[4],
+        reinterpret_cast<const uint8_t*>(start)[5]);
+    return false;
+  }
+  Mode34WriteProbe(kMode66PublishSyncRva);
+  if (!InstallDrawWalkAt(start)) {
+    Mode34ClearProbe("MH fail");
+    Log("Mode66: InstallDrawWalkAt failed exeRva=0x%X", kMode66PublishSyncRva);
+    return false;
+  }
+  g_mode66Es.store(0);
+  g_mode66CountEs.store(0);
+  g_mode66EntrySum = 0;
+  g_mode66CountDone.store(false);
+  g_drawWalkEntries.store(0);
+  Log("Mode66: COUNT armed exeRva=0x%X abi=%s (PublishSync; 12 static E8 callers; want avg in "
+      "[0.8,4] over %u EndScenes; dual=OFF SameFrameSeamGate=CLOSED; no 0x300D0 hook)",
+      kMode66PublishSyncRva, tag, kMode66CountEsNeed);
+  return true;
+}
+
+void Mode66OnEndScene(IDirect3DDevice9* device) {
+  TemporalCapturePairHold(device);
+  if (g_mode66CountDone.load())
+    return;
+
+  const uint32_t entries = g_drawWalkEntries.exchange(0);
+  if (entries == 0xFFFFFFFFu) {
+    Log("Mode66: COUNT hook died @exeRva=0x%X — wrote stereo=45 (safe default)",
+        kMode66PublishSyncRva);
+    Mode34ClearProbe("count died");
+    if (g_drawWalkAddr) {
+      MH_DisableHook(g_drawWalkAddr);
+      MH_RemoveHook(g_drawWalkAddr);
+      g_origDrawWalk = nullptr;
+      g_drawWalkAddr = nullptr;
+    }
+    g_mode66CountDone.store(true);
+    WriteStereoModeFile(45);
+    return;
+  }
+
+  ++g_mode66CountEs;
+  g_mode66EntrySum += entries;
+  const uint32_t n = g_mode66CountEs.load();
+  if (n <= 6 || (n % 15) == 0)
+    Log("Mode66: COUNT es#%u/%u entries=%u sum=%u exeRva=0x%X", n, kMode66CountEsNeed, entries,
+        g_mode66EntrySum, kMode66PublishSyncRva);
+
+  if (n < kMode66CountEsNeed)
+    return;
+
+  const float avg = static_cast<float>(g_mode66EntrySum) / static_cast<float>(n);
+  Mode34ClearProbe("COUNT done");
+  if (g_drawWalkAddr) {
+    MH_DisableHook(g_drawWalkAddr);
+    MH_RemoveHook(g_drawWalkAddr);
+    g_origDrawWalk = nullptr;
+    g_drawWalkAddr = nullptr;
+  }
+  g_mode66CountDone.store(true);
+  const bool okCadence = avg >= 0.8f && avg <= 4.f;
+  Log("Mode66: COUNT done exeRva=0x%X avgEntries=%.2f cadence=%s (want [0.8,4] ~1x/frame; "
+      "PublishSync prologue; active-view 0x300D0 is internal gate @0x30349) "
+      "SameFrameSeamGate=CLOSED dual=OFF",
+      kMode66PublishSyncRva, avg, okCadence ? "PASS" : "REJECT");
+  if (okCadence)
+    Log("Mode66: next live step — stereo=41 1min then stereo=42; compare cadence with Mode64 "
+        "and Mode65 activeView/slot178");
+  else
+    Log("Mode66: cadence REJECT — PublishSync not ~1x/frame on this path; keep stereo=45");
+  WriteStereoModeFile(45);
+}
+
+bool Mode65ReadDeviceVtable(uint32_t* outDevice, uint32_t* outVt, uint32_t* out178,
+                            uint32_t* out1B4, uint32_t* outGate, uint32_t* outActiveView) {
+  __try {
+    const auto* devPtr = reinterpret_cast<const uint32_t*>(kMode65DeviceGlobalVa);
+    const auto* gatePtr = reinterpret_cast<const uint32_t*>(kMode65ReplayGateVa);
+    const auto* activePtr = reinterpret_cast<const uint32_t*>(kMode65ActiveViewVa);
+    const uint32_t device = *devPtr;
+    const uint32_t gate = *gatePtr;
+    const uint32_t activeView = *activePtr;
+    if (outGate)
+      *outGate = gate;
+    if (outActiveView)
+      *outActiveView = activeView;
+    if (!device) {
+      if (outDevice)
+        *outDevice = 0;
+      if (outVt)
+        *outVt = 0;
+      if (out178)
+        *out178 = 0;
+      if (out1B4)
+        *out1B4 = 0;
+      return true;
+    }
+    const auto* vtPtr = reinterpret_cast<const uint32_t*>(device);
+    const uint32_t vt = *vtPtr;
+    const uint32_t slot178 =
+        vt ? *reinterpret_cast<const uint32_t*>(static_cast<uintptr_t>(vt) + 0x178) : 0;
+    const uint32_t slot1B4 =
+        vt ? *reinterpret_cast<const uint32_t*>(static_cast<uintptr_t>(vt) + 0x1B4) : 0;
+    if (outDevice)
+      *outDevice = device;
+    if (outVt)
+      *outVt = vt;
+    if (out178)
+      *out178 = slot178;
+    if (out1B4)
+      *out1B4 = slot1B4;
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+void Mode65OnEndScene(IDirect3DDevice9* device) {
+  TemporalCapturePairHold(device);
+  if (g_mode65LogDone.load())
+    return;
+
+  const uint32_t es = ++g_mode65Es;
+  uint32_t dev = 0, vt = 0, s178 = 0, s1B4 = 0, gate = 0, active = 0;
+  if (!Mode65ReadDeviceVtable(&dev, &vt, &s178, &s1B4, &gate, &active)) {
+    Log("Mode65: READ FAIL @ EndScene es#%u — wrote stereo=45", es);
+    g_mode65LogDone.store(true);
+    WriteStereoModeFile(45);
+    return;
+  }
+
+  const bool changed =
+      dev != g_mode65LastDevice || s178 != g_mode65LastVt178 || s1B4 != g_mode65LastVt1B4;
+  if (es <= 4 || changed || (es % 15) == 0) {
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    const uint32_t devRva = dev ? static_cast<uint32_t>(dev - base) : 0;
+    const uint32_t vtRva = vt ? static_cast<uint32_t>(vt - base) : 0;
+    const uint32_t r178 = s178 ? static_cast<uint32_t>(s178 - base) : 0;
+    const uint32_t r1B4 = s1B4 ? static_cast<uint32_t>(s1B4 - base) : 0;
+    const uint32_t actRva = active ? static_cast<uint32_t>(active - base) : 0;
+    Log("Mode65: VT178-LOG es#%u/%u device=0x%X rva=0x%X vtable=0x%X slot178=0x%X "
+        "slot1B4=0x%X replayGate=%u activeView=0x%X hook=NO",
+        es, kMode65LogEsNeed, dev, devRva, vtRva, r178, r1B4, gate, actRva);
+  }
+  g_mode65LastDevice = dev;
+  g_mode65LastVt178 = s178;
+  g_mode65LastVt1B4 = s1B4;
+
+  if (es < kMode65LogEsNeed)
+    return;
+
+  g_mode65LogDone.store(true);
+  Log("Mode65: VT178-LOG done (%u EndScenes) — compare slot178 RVAs with Mode42 OWNER-EDGE; "
+      "next: stereo=66 PublishSync COUNT then 41/42; SameFrameSeamGate=CLOSED hook=NO",
+      kMode65LogEsNeed);
+  WriteStereoModeFile(45);
+}
+
 void RunExecViewPhaseDual(void* edx) {
   g_inDual.store(true);
   const bool ok = RunExecViewPhaseDualGuarded(edx);
@@ -5097,6 +5458,44 @@ bool InstallStereoRenderHooks() {
             "ok=%d fovSite=%d",
             IsSameFrameSeamGateOpen() ? 1 : 0, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
         Log("StereoRender: kill-switch - stereo=45; see docs/RE_OFFSETS.md forbidden list");
+      } else if (mode == StereoMode::ViewConstCountProbe) {
+        LogRePatternValidationOnce();
+        g_mode64Es.store(0);
+        g_mode64CountEs.store(0);
+        g_mode64EntrySum = 0;
+        g_mode64CountDone.store(false);
+        const bool countOk = Mode64InstallCountHook();
+        Log("StereoRender: mode 64 VIEW-CONST COUNT (Mode45 renderer; hook @0x3187C "
+            "COUNT-only ≥45 ES; dual=OFF; default stereo stays 45) ok=%d fovSite=%d "
+            "countHook=%d",
+            g_ok.load() ? 1 : 0, fovOk ? 1 : 0, countOk ? 1 : 0);
+        Log("StereoRender: how-to — edit gtaiv_dxvk_vr.stereo to 64; play 1 calm minute; "
+            "read Mode64: COUNT lines; file reverts to 45 when done");
+        Log("StereoRender: kill-switch - stereo=45 or delete gtaiv_dxvk_vr.stereo");
+      } else if (mode == StereoMode::ReplayVtable178Log) {
+        LogRePatternValidationOnce();
+        g_mode65Es.store(0);
+        g_mode65LogDone.store(false);
+        g_mode65LastDevice = g_mode65LastVt178 = g_mode65LastVt1B4 = 0;
+        Log("StereoRender: mode 65 VT178-LOG (Mode45 renderer; read-only EndScene peek "
+            "at [0x17ed8d8] vtable +0x178/+0x1B4; NO game hook) ok=%d fovSite=%d",
+            g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+        Log("StereoRender: how-to — edit gtaiv_dxvk_vr.stereo to 65; play ≥45 EndScenes; "
+            "read Mode65: VT178-LOG lines; file reverts to 45 when done");
+        Log("StereoRender: kill-switch - stereo=45 or delete gtaiv_dxvk_vr.stereo");
+      } else if (mode == StereoMode::PublishSyncCountProbe) {
+        LogRePatternValidationOnce();
+        g_mode66Es.store(0);
+        g_mode66CountEs.store(0);
+        g_mode66EntrySum = 0;
+        g_mode66CountDone.store(false);
+        const bool countOk = Mode66InstallCountHook();
+        Log("StereoRender: mode 66 PUBLISHSYNC COUNT (Mode45 renderer; hook @0x30300 "
+            "COUNT-only ≥45 ES; dual=OFF; no 0x300D0 hook) ok=%d fovSite=%d countHook=%d",
+            g_ok.load() ? 1 : 0, fovOk ? 1 : 0, countOk ? 1 : 0);
+        Log("StereoRender: how-to — edit gtaiv_dxvk_vr.stereo to 66; play 1 calm minute; "
+            "read Mode66: COUNT lines; file reverts to 45 when done");
+        Log("StereoRender: kill-switch - stereo=45 or delete gtaiv_dxvk_vr.stereo");
       } else if (mode == StereoMode::HeadOwnedCamSpike) {
         Log("StereoRender: mode 45 HEAD-OWNED CAM SPIKE (Mode44 RT lock + post-CCam "
             "CopyMat HMD reapply; no collision/VS/replay change; not true stereo) ok=%d "
@@ -5499,6 +5898,12 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
       if (mode == StereoMode::ReplayCallChainProbe ||
           mode == StereoMode::ReplayOwnerCountProbe)
         Mode41OnEndScene(device);
+      else if (mode == StereoMode::ViewConstCountProbe)
+        Mode64OnEndScene(device);
+      else if (mode == StereoMode::ReplayVtable178Log)
+        Mode65OnEndScene(device);
+      else if (mode == StereoMode::PublishSyncCountProbe)
+        Mode66OnEndScene(device);
       else
         TemporalCapturePairHold(device);
       return;

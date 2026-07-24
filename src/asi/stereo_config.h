@@ -225,6 +225,15 @@ enum class StereoMode : int {
   RePatternValidate = 62,
   // Mode 45 renderer + logs SameFrameSeamGate=CLOSED until replay owner proven.
   SameFrameSeamGate = 63,
+  // Mode 45 renderer + COUNT-only at view-const apply 0x3187C (opt-in stereo=64).
+  // Logs avg entries/EndScene over 45 ES; never arms dual. Default stereo stays 45.
+  ViewConstCountProbe = 64,
+  // Mode 45 renderer + read-only EndScene log of [0x17ed8d8] vtable slots +0x178/+0x1B4
+  // and active view [0x17F583C]. No game-function hook; opt-in stereo=65; auto-reverts to 45.
+  ReplayVtable178Log = 65,
+  // Mode 45 renderer + COUNT-only @ PublishSync 0x30300 (opt-in stereo=66).
+  // Logs avg entries/EndScene over 45 ES; never arms dual or calls 0x300D0; auto-reverts to 45.
+  PublishSyncCountProbe = 66,
 };
 
 // Mode 45 family: LKG camera + RT lock + motion guard (includes RE scaffold 62/63).

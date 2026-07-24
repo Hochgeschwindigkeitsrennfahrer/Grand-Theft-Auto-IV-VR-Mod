@@ -1,6 +1,50 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-25 ~04:30 (RE offset map + Mode 62/63 scaffold; no game launch)
+## While you were away (2026-07-25 — offline RE, no game launch)
+
+**Built:** `out-asi\gtaiv_dxvk_vr.asi` + `openvr_api.dll` — Mode **45** default path, RE probes **64/65/66** (COUNT-only / read-only peek), F7 **11-step** leanGain to **30.0**. No new risky hooks. SameFrameSeamGate **CLOSED**.
+
+**Config on disk:** stereo **`45`**, **`ipd=3`**, scale **`100`** (leanGain **1.0**), **`fovadd=18`**.  
+**Hotkeys:** F9=SteamVR recenter · F6/F7/F8 stereo scale / world lean / IPD.
+
+### Deploy (before headset)
+
+1. Copy `out-asi\gtaiv_dxvk_vr.asi` + `openvr_api.dll` → GTA IV folder — or run `.\scripts\deploy-asi.ps1`
+2. Start game; log should show `StereoMode: 45` and `StereoSubmit: L=1 R=1 mode=45`
+
+### Test ladder (one mode per session — edit `gtaiv_dxvk_vr.stereo`, restart each step)
+
+| # | stereo | Pass log line |
+|---|--------|---------------|
+| 0 | **45** | `StereoSubmit: L=1 R=1 mode=45` — smooth baseline |
+| 1 | **64** | `Mode64: COUNT done … cadence=PASS` |
+| 2 | **65** | `Mode65: VT178-LOG … slot178=0x… activeView=0x…` |
+| 3 | **66** | `Mode66: COUNT done … cadence=PASS` |
+| 4 | **41** | `Mode41: CHAIN … ret=0x3199A fn=0x3187C` |
+| 5 | **42** | `Mode42: OWNER-EDGE … call=FF/2@0x3010D` |
+
+**F7 leanGain (11 steps):** `eyeDelta = hmdDelta / leanGain` — higher = smaller world when you lean.  
+Cycle: **1.0 → 1.25 → 1.5 → 2.0 → 2.5 → 3.0 → 4.0 → 5.0 → 8.0 → 12.0 → 30.0** (file stores ×100).
+
+**Kill anytime:** write **`45`** to stereo file (modes **64/65/66** auto-revert when done).
+
+**RE map:** [`docs/RE_OFFSETS.md`](RE_OFFSETS.md) — offline disasm of **`0x2FFF0`** SetActiveView (sole writer of active view), **`0x3187C`** view-const, **`0x30300`** PublishSync, **`0x300D0`** replay vtable dispatch, plus forbidden list. Key finding: activation and publish are separate paths; both converge on **`0x300D0`** → **`call [eax+0x178]`** @ **`0x3010D`**.
+
+---
+
+### Session 2026-07-25 ~05:00–07:30 (deep offline RE — no headset)
+
+**Shipped:**
+- **`docs/RE_OFFSETS.md`** — full call graphs for **`0x2FFF0`/`0x3187C`/`0x30300`/`0x300D0`**, safe ladder table, forbidden list
+- **`scripts/offline-re-scan.py`** — disasm, E8 graphs, VS-region + COUNT candidate scans
+- **`re_validate.cpp`** — anchor bytes for Mode **64/66** targets + summary logging
+- **Modes 64/65/66** — COUNT-only @ **`0x3187C`**, read-only vtable peek, COUNT-only @ **`0x30300`** (all on Mode 45 renderer; auto-revert to **45**)
+- **F7** 11-step leanGain ladder to **30.0**
+
+**Still blocking perfect VR:** temporal L/R; replay owner not proven; **`0x3187C`** best static lead.
+
+---
+**As of (prior):** 2026-07-25 ~04:30 (RE offset map + Mode 62/63 scaffold; no game launch)
 **Deployed now:** stereo **`45`**, **`ipd=3`**, scale **`100`** (leanGain **1.0**, F7 **8 steps**),
 **`fovadd=18`**. New offline docs: **`docs/RE_OFFSETS.md`**. Optional RE test modes **`62`** /
 **`63`** (same renderer as 45; disabled by default).

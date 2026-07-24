@@ -124,6 +124,49 @@ When the VC VR **source** is published later: read `src/vr/` + librw stereo/swap
 
 ---
 
+## Breath of the Wild BetterVR (Crementif — MIT, public algorithm notes only)
+
+Repo: https://github.com/Crementif/BotW-BetterVR  
+Stack: Cemu Vulkan layer + PowerPC assembly patches + OpenXR (we stay OpenVR).  
+**Do NOT copy or redistribute BetterVR binaries as our product.**
+
+### What BetterVR does (transferable lessons for GTA IV CE)
+
+| Idea | BetterVR | Our Mode 55 analog |
+|------|----------|-------------------|
+| **Same-tick dual render** | Renders **two frames before** updating game systems — no alternating-eye | Still blocked on Rage replay seam; we keep temporal pair-hold |
+| **Per-eye camera at draw time** | PPC patches shift camera/FOV per eye during GPU fixed-function draw | Mode 54 tried CopyMat+VS replace; **Mode 55 = VS translate-only** on replay `SetVSConstF` |
+| **Gameplay vs render camera split** | Game logic uses center; each eye gets offset only in render path | **Center-eye CopyMat** (no IPD) + per-eye VS translate — aim/look/collision unchanged |
+| **HMD on character** | C++ algebra from asm for Link/camera/hands each frame | Already: ped-coupled yaw (Mode 49+), F9 recenter, F10 6DoF reset |
+| **WorldScale vs IPD separate** | GUI sliders for 3D depth vs roomscale | Already: F8 IPD, F7 WorldScale (translation only, not × IPD) |
+| **No alternated-eye product** | Explicitly rejects AFR class | We still temporal until same-frame seam; Mode 50+ keeps distinct L/R |
+| **Controls option** | PR #127: "Original camera" restores pitch/gamepad when stereo-only | Mode 55 fixes Mode 54 control break by removing D3DTS_VIEW hijack + manager-cam IPD sync |
+
+### What we cannot adopt 1:1
+
+- PowerPC assembly patches inside BotW executable (we have CE CopyMat + D3D9 VS hook only)
+- Same-tick double simulation tick (requires renderer ownership we lack)
+- OpenXR / motion-controller combat stack
+
+**Conclusion:** BetterVR confirms the pattern: **gameplay camera stays authoritative; stereo offset applies at render upload time only.** Mode 55 implements the safe subset for Rage: center CopyMat + replay-thread view translate, not full view replace or BeginScene D3D hijack. **Mode 57 (2026-07-24):** drops Mode 56's split-view level-lock (broken pitch); unified full HMD CopyMat + forced `vr_move` walk.
+
+---
+
+## Stolen ideas — cross-mod camera/locomotion (2026-07-24 ~23:00)
+
+| Mod / ref | Game cam vs HMD view | Locomotion follows look | Pitch / roll on view | WorldScale vs IPD |
+|-----------|----------------------|-------------------------|----------------------|-------------------|
+| **BotW BetterVR** (Crementif) | Game logic uses **center**; per-eye offset only at **render upload** | HMD on Link; body follows head algebra | Full in render path; gameplay stays level | Separate GUI sliders — never × together |
+| **L4D2VR / HL2VR** (Source) | Two **`RenderView`** setups per tick — engine-owned per-eye origin + proj | Stick relative to HMD view; `VRScale` on translation | Full HMD in `CViewSetup`; `GetProjectionRaw` bounds | `VRScale` (6DoF size) separate from eye offset |
+| **UEVR** (praydog) | Native per-eye view + projection matrices | UE plugin hooks; head-relative move | Full 6DoF; no compositor FOV lie | Configurable; native stereo first |
+| **Luke Ross R.E.A.L.** (public FAQ) | FOV must match HMD; supplementary render-time view fix | Game-relative; pitch override in vehicles | Override pitch clamps; hide body at cam | **Do not** multiply scale × IPD |
+| **Halo MCC VR** | Engine FOV ~120; same-frame L+R | Standard FPS | Full per-eye same tick | N/A |
+| **GTA IV Mode 57 (ours)** | **Unified** full HMD CopyMat @ ped eye + 6DoF; VS translate-only parallax (BotW) | **`vr_move` forced** — HMD yaw → ped heading every frame | Full HMD pitch/yaw (no split level-lock; no Mode-46 roll) | `scale` ~175 + F8 IPD separate (F7 WorldScale) |
+
+**Mode 56 lesson (reject):** locking early CopyMat to ped-heading-only broke look-up (angle shift without horizon tilt) and fought late refresh. **Mode 57 fix:** one HMD-owned view path + locomotion decoupled via forced ped heading, not pedCoupled orbit.
+
+---
+
 ## Cross-mod research reconciliation (2026-07-24 ~19:45)
 
 - **L4D2VR / HL2VR-style Source mods:** own the engine's `RenderView` seam. They make two

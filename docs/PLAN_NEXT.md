@@ -4,6 +4,104 @@ Read with `docs/CURRENT-STATE.md`, **`docs/RE_OFFSETS.md`**, and `docs/HANDOFF_G
 
 ---
 
+## Session note 2026-07-25 ~07:00 — Mode 66 PublishSync COUNT (no game launch)
+
+**Shipped:**
+- **Mode 66** (`PublishSyncCountProbe`) — Mode 45 renderer + COUNT-only MinHook @ **`0x30300`** prologue; SEH passthrough; 45 EndScene session; auto-reverts to **`45`**; dual=OFF; no **`0x300D0`** hook
+- **`stereo_config.h/cpp`** — `stereo=66` opt-in; default stays **`45`**
+- **`re_validate.cpp`** — PublishSync **`0x30300`** anchor bytes
+- **`docs/RE_OFFSETS.md`** — ladder **`45→64→65→66→41→42`**; Mode 66 safety table
+
+**When user returns — ONE headset test per session (ladder order):**
+
+| # | stereo | Capture in log |
+|---|--------|----------------|
+| 0 | **45** | `StereoSubmit: L=1 R=1 mode=45` |
+| 1 | **64** | `Mode64: COUNT done … cadence=PASS` |
+| 2 | **65** | `Mode65: VT178-LOG … slot178=0x… activeView=0x…` |
+| 3 | **66** | `Mode66: COUNT done … cadence=PASS` |
+| 4 | **41** | `Mode41: CHAIN … ret=0x3199A fn=0x3187C` |
+| 5 | **42** | `Mode42: OWNER-EDGE … call=FF/2@0x3010D` |
+
+**Kill:** **`45`** · fallback **`30`** + delete `fovadd`. **No dual.**
+
+---
+
+## Session note 2026-07-25 ~06:30 — Full `0x30300` PublishSync RE (no game launch)
+
+**Shipped:**
+- **`docs/RE_OFFSETS.md`** — complete **`0x30300`** prologue→ret disasm; **`0x2FBF0`** matrix-sync chain; **`[0x17F583C]`** active-view map (1 write @ **`0x3006F`**, ~116 reads); **12** static **`E8`** callers (not only **`0x3187C`** tail); safe live ladder **45→64→65→66→41→42** with exact log lines
+- **`scripts/offline-re-scan.py`** — `scan_active_view_global`; full **`0x30300`** caller list; capstone mark @ **`0x30349`**
+- **`stereo_config.h` / `stereo_render.cpp`** — Mode **66** stub comments; Mode **64/65** RE comment polish (no new hooks)
+
+**RE findings:**
+- **`0x30300`** syncs **`[this+0xC0/0x100/0x200]`** via three **`0x2FBF0`** muls, then **`call 0x300D0`** only when **`[0x17F583C]==this`**
+- Inside **`0x300D0`**: skip if **`[0x17ED918]!=0`**; else **`call [device+0x178]`** + **`+0x1B4`**
+- Callers: **`0x3187C`** + **`0x308C9`** tails share PublishSync; plus VP/publish family + 3 distant sites
+- **Mode 66** (PublishSync COUNT) — implemented in next session (~07:00)
+
+**When user returns — ONE headset test per session (ladder order):**
+
+| # | stereo | Capture in log |
+|---|--------|----------------|
+| 0 | **45** | `StereoSubmit: L=1 R=1 mode=45` |
+| 1 | **64** | `Mode64: COUNT done … cadence=PASS` |
+| 2 | **65** | `Mode65: VT178-LOG … slot178=0x… activeView=0x…` |
+| 3 | **41** | `Mode41: CHAIN … ret=0x3199A fn=0x3187C` |
+| 4 | **42** | `Mode42: OWNER-EDGE … call=FF/2@0x3010D` |
+
+**Kill:** **`45`** · fallback **`30`** + delete `fovadd`. **No dual.**
+
+---
+
+## Session note 2026-07-25 ~06:00 — Publish tail + device singleton (no game launch)
+
+**Shipped:**
+- **`docs/RE_OFFSETS.md`** — corrected publish tail RVAs (**`0x30300`/`0x30FA0`/`0x30C10`**, not `0x430xxx`); device singleton **`[0x17ed8d8]`** map (247 reads, 2 init writes); Mode **65** doc
+- **`scripts/offline-re-scan.py`** — disasm publish callees + `scan_global_device_singleton`
+- **Mode 65** (`ReplayVtable178Log`) — Mode 45 renderer + read-only EndScene peek at vtable **`+0x178`**/**`+0x1B4`**; **no game hook**; opt-in **`stereo=65`**
+
+**RE findings:**
+- **`0x30300`** syncs view matrices then, when active view matches **`[0x17f583c]`**, calls **`0x300D0`** → **`call [eax+0x178]`** — **most stereo-relevant** publish callee
+- **`0x30FA0`** builds projection/tangent block at **`[this+0x308..]`** — medium relevance (constants, not draw owner)
+- **`0x30C10`/`0x30A60`** writes VP rows **`[this+0x1C0..0x1F8]`** — high relevance for view data, shared with **`0x308C9`**
+- Device singleton: only static writes are init **`0x23A48`** and clear **`0x24DA8`**; max vtable slot **`0x248`**
+
+**When user returns — pick ONE headset test (in order after baseline):**
+1. **Baseline:** Mode **45** — smooth? F7 steps 8.0→12.0→30.0?
+2. **COUNT:** stereo **`64`** — `Mode64: COUNT done … cadence=PASS`?
+3. **Chain:** stereo **`41`** — slots **`0x3199A/0x319A4`** → **`fn=0x3187C`**?
+4. **Vtable log:** stereo **`42`** then optional **`65`** — `slot178=` RVAs for replay dispatch
+
+**Kill:** **`45`** · fallback **`30`** + delete `fovadd`.
+
+---
+
+## Session note 2026-07-25 ~05:00 — Deep offline RE (no game launch)
+
+**Shipped:**
+- **`docs/RE_OFFSETS.md`** — disasm notes for CopyMat/FovSite/VS wrapper/BuildRootA; corrected
+  indirect anchor **`0x3010D`** (`call [eax+0x178]`); view-const candidate **`0x3187C`**
+- **`scripts/offline-re-scan.py`** — linear disasm, E8 caller graphs, VS-region scan, anchor verify
+- **`re_validate.cpp`** — 4 CopyMat AOBs + anchor byte checks + polished summary
+- **F7** 11-step leanGain to **30.0** on Mode 45 path (`eyeDelta = hmdDelta / leanGain`)
+
+**RE conclusion (updated):**
+- Mode 42 **`0x30D13`** return is **mid-SSE** inside fn `~0x308C9` — do not hook there
+- Static indirect dispatch **`0x3010D`** is the next live observation target (`eax`, `[eax+0x178]`)
+- Best **aligned** replay/view candidate: **`0x3187C`** — needs COUNT-only ≥45 EndScenes before any trial
+- **SameFrameSeamGate=CLOSED**
+
+**When user returns — pick ONE headset test:**
+1. **Baseline:** Mode **45** — smooth? F7 new steps 8.0→12.0→30.0 for huge-world feel?
+2. **RE validate:** stereo **`62`** — `ReValidate: summary required=7/7 … anchors=7`?
+3. **Chain probe:** stereo **`41`** — do `0x3199A/0x319A4` rows show enclosing **`0x3187C`**?
+4. **World size (visual):** `fovadd` **20** alone (not F7+fovadd same session)
+
+**Kill:** **`45`** · fallback **`30`** + delete `fovadd`.
+
+---
+
 ## Session note 2026-07-25 ~04:30 — RE offset map (offline; no game launch)
 
 **Shipped:**

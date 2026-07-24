@@ -269,10 +269,10 @@ int RemapLoadedStereoMode(int v) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  // Two-digit modes 10..63 (45 = LKG; 62/63 = RE scaffold on same renderer).
+  // Two-digit modes 10..66 (45 = LKG; 62..66 = RE scaffold on same renderer).
   if (n >= 2 && buf[0] >= '1' && buf[0] <= '6' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 63)
+    if (v <= 66)
       return RemapLoadedStereoMode(v);
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
@@ -301,7 +301,7 @@ void ReloadStereoMode() {
   if (n > 0)
     v = ParseModeFile(buf, n);
   int prev = g_mode.load();
-  if (v >= 0 && v <= 63) {
+  if (v >= 0 && v <= 66) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -332,7 +332,10 @@ void ReloadStereoMode() {
                            v == static_cast<int>(StereoMode::FovCanvasMotionGuardRtLock) ||
                            v == static_cast<int>(StereoMode::HeadOwnedCamSpike) ||
                            v == static_cast<int>(StereoMode::RePatternValidate) ||
-                           v == static_cast<int>(StereoMode::SameFrameSeamGate))) {
+                           v == static_cast<int>(StereoMode::SameFrameSeamGate) ||
+                           v == static_cast<int>(StereoMode::ViewConstCountProbe) ||
+                           v == static_cast<int>(StereoMode::ReplayVtable178Log) ||
+                           v == static_cast<int>(StereoMode::PublishSyncCountProbe))) {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadWorldScale();
@@ -345,7 +348,7 @@ void ReloadStereoMode() {
 }
 
 void WriteStereoModeFile(int mode) {
-  if (mode < 0 || mode > 63)
+  if (mode < 0 || mode > 66)
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -390,12 +393,14 @@ bool UsesAngleCorrectCanvas(StereoMode mode) {
          mode == StereoMode::FovCanvasMotionGuardFast ||
          mode == StereoMode::FovCanvasMotionGuardRtLock ||
          mode == StereoMode::HeadOwnedCamSpike || mode == StereoMode::RePatternValidate ||
-         mode == StereoMode::SameFrameSeamGate;
+         mode == StereoMode::SameFrameSeamGate || mode == StereoMode::ViewConstCountProbe ||
+         mode == StereoMode::ReplayVtable178Log || mode == StereoMode::PublishSyncCountProbe;
 }
 
 bool IsHeadOwnedCamFamily(StereoMode mode) {
   return mode == StereoMode::HeadOwnedCamSpike || mode == StereoMode::RePatternValidate ||
-         mode == StereoMode::SameFrameSeamGate;
+         mode == StereoMode::SameFrameSeamGate || mode == StereoMode::ViewConstCountProbe ||
+         mode == StereoMode::ReplayVtable178Log || mode == StereoMode::PublishSyncCountProbe;
 }
 
 float GetStereoSepMeters() {
@@ -602,8 +607,10 @@ void PollWorldScaleHotkey() {
     return;
 
   // 6DoF only — does not affect stereo IPD. Higher leanGain = less lean = smaller world.
-  static const float kLeanGains[] = {1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f, 4.0f, 5.0f};
-  constexpr int kN = 8;
+  // 11 steps to 30.0 — fine control near 1.0, wide reach for huge-world feel.
+  static const float kLeanGains[] = {1.0f,  1.25f, 1.5f,  2.0f, 2.5f, 3.0f,
+                                     4.0f,  5.0f,  8.0f,  12.0f, 30.0f};
+  constexpr int kN = 11;
   const float cur = g_leanGain.load();
   int idx = 0;
   float best = 999.f;

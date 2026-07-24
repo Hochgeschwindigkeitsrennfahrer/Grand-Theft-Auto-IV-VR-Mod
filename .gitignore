@@ -1,4 +1,6 @@
 ## Ignore
+# Local Cursor agent permissions (may enable unrestricted shell)
+.cursor/permissions.json
 /.vs/
 /out/
 /out-asi/
