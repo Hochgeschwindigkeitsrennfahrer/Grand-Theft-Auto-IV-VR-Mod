@@ -51,6 +51,13 @@ All important external links for this project.
 | Vulkan SDK | https://vulkan.lunarg.com/ |
 | Meson | https://mesonbuild.com/ |
 
+## Inspiration (local, not a dependency)
+
+| Item | Location | What we take |
+|------|----------|--------------|
+| C06alt First Person v1.3 (Oculus ini) | `inspiration/firstperson mod/` | FPX/Y/Z → `camoff`; head hide via `SET_DRAW_PLAYER_COMPONENT` idea → CE SetDraw helper (`pedhide`) |
+| Notes | `docs/INSPIRATION_NOTES.md` | Do **not** adopt FOV 111 / FusionFix FOV for look-up warp |
+
 ## Related (optional, not a prerequisite)
 
 ASI + D3D11 + OpenXR (WMR): `Documents\gtaiv-openxr` — separate home guide there: `gtaiv-openxr\docs\HOME_CURSOR.md`.  

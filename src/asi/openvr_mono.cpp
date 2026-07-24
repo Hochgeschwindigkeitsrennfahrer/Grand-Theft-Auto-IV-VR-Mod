@@ -3,6 +3,7 @@
 #include "hmd_look.h"
 #include "hmd_pose.h"
 #include "log.h"
+#include "ped_hide.h"
 #include "stereo_config.h"
 #include "stereo_render.h"
 #include "vr_display.h"
@@ -266,6 +267,8 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
       LogVrDisplayInfo();
       ReloadStereoMode();
       InstallStereoRenderHooks();
+      // Warm PedHide resolve once on game thread after FP arm (also called from CopyMat).
+      UpdatePedHeadHide();
       Log("CamMatrix: armed after %u submits (overrides mouse-look)", kCamAfter);
     }
   }

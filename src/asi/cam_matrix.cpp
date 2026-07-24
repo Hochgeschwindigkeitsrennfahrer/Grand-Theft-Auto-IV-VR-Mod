@@ -41,9 +41,8 @@ std::atomic<bool> g_hooksOk{false};
 std::atomic<bool> g_gameplayActive{false};  // false until past title (avoids blackscreen)
 std::atomic<uint32_t> g_applyCount{0};
 
-// Eye placement. Script natives from EndScene crash CE — push eyes past skull/hair.
-// Forward offset via gtaiv_dxvk_vr.eyefwd (cm, default 42): "in head" ped anchor +
-// forward past hair/eyes without unsafe PedHide natives.
+// Eye placement. Inspiration FP uses ScriptHook SET_DRAW + FPX/FPY/FPZ (often 0).
+// We: PedHide via CE SetDraw helper (no natives) + eyefwd/camoff knobs.
 constexpr float kEyeHeight = 0.70f;  // along ped "at" (world up) — skull center
 constexpr float kPosScale = 1.0f;
 
@@ -251,7 +250,17 @@ void ApplyHmdToCam(Matrix44* mat) {
   eye.x += fx * eyeFwd;
   eye.y += fy * eyeFwd;
   eye.z += fz * eyeFwd;
-  // Log once that PedHide is intentionally off (eye-forward is the safe path).
+
+  // Inspiration FirstPerson.ini FPX/FPY/FPZ (our units: cm via gtaiv_dxvk_vr.camoff).
+  float offR = 0.f, offF = 0.f, offU = 0.f;
+  GetCamOffsetMeters(&offR, &offF, &offU);
+  if (offR != 0.f || offF != 0.f || offU != 0.f) {
+    eye.x += rx * offR + fx * offF + ux * offU;
+    eye.y += ry * offR + fy * offF + uy * offU;
+    eye.z += rz * offR + fz * offF + uz * offU;
+  }
+
+  // Inspiration-style head/hair hide (CE SetDraw helper — not EndScene natives).
   UpdatePedHeadHide();
 
   // Stereo eye origin — L4D2VR GetViewOriginLeft/Right:

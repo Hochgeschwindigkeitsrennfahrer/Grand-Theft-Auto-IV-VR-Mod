@@ -2,8 +2,10 @@
 
 namespace asi {
 
-// Hide player head/hair/teeth/face via SET_CHAR_COMPONENT_VARIATION (-1).
-// Call each VR frame while FP cam is active (game may restore components).
+// Hide player head/hair/teeth/face for FP VR.
+// Inspiration FirstPerson.asi uses SET_DRAW_PLAYER_COMPONENT on a ScriptHook
+// NativeThread. We call the same CE helper directly (no script TLS) — see
+// ped_hide.cpp. Kill: gtaiv_dxvk_vr.pedhide = 0.
 void UpdatePedHeadHide();
 
 }  // namespace asi

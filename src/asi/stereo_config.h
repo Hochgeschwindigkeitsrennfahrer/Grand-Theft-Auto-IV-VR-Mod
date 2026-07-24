@@ -159,9 +159,9 @@ enum class StereoMode : int {
   // promote. No CCam+VS stack. SEH / no cand → write stereo=30. Kill → 30/26.
   SameFrameLateVsParentDual = 33,
   // Mode 33 finding: VsParent mid slots are epilogues (5F C2 10 00), not walkers.
-  // Mode 34: only when HookSetVSConstF ret == VsRet 0x2C73E, resolve stack words
-  // to FUNCTION STARTS, keep CC-pad thiscall0, count ~1×/frame, then dual +
-  // pair-hold promote. Fail → write stereo=30. Kill → 30/26.
+  // Mode 34: VsRet(0x2C73E) stack → fn starts → COUNT only. DUAL DISABLED:
+  // 0x4DDAD0 COUNT ok but vsPatch=0/vsCallsR=0 (no parallax). Forbidden list
+  // includes 0x4DDAD0. Fail/COUNT-ok → write stereo=30. Kill → 30/26.
   SameFrameVsRetCallerDual = 34,
 };
 
@@ -193,8 +193,16 @@ bool UsesAngleCorrectCanvas(StereoMode mode);
 // --- Optional config files next to the ASI (read once at startup, log on use) ---
 
 // gtaiv_dxvk_vr.eyefwd: eye-forward offset in cm (default 42). Places cam through
-// skull/hair without unsafe script natives. Smaller = more "in head" (may see hair).
+// skull/hair. With PedHide on, try lower values (12–20) for less turn-swing.
 float GetEyeForwardMeters();
+
+// gtaiv_dxvk_vr.camoff: "x y z" cm — Inspiration FirstPerson.ini FPX/FPY/FPZ style.
+// X = right, Y = forward (away from face), Z = up. Default 0 0 0.
+void GetCamOffsetMeters(float* outRight, float* outForward, float* outUp);
+
+// gtaiv_dxvk_vr.pedhide: 1 = hide head/hair/teeth/face (Inspiration approach via
+// CE SetDraw helper, NOT EndScene natives). 0 = off. Default 1 if file absent.
+bool IsPedHideEnabled();
 
 // gtaiv_dxvk_vr.movemode: 1 = do NOT force ped heading to HMD view — the game maps
 // stick input relative to the (HMD-overridden) camera, enabling strafe/backpedal.

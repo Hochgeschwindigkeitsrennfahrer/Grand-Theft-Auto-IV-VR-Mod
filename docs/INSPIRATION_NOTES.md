@@ -36,15 +36,38 @@ Not: ASI in the original `gta-vc.exe`, but a separate `reVC.exe`.
 
 Forum: https://gtaforums.com/topic/953517-reliv-gta-iv-first-person-mod-by-c06alt-legacy-v11-v122-v13-vr/
 
-| Aspect | Use for us |
-|--------|----------------|
-| FP via ScriptHook / ASI | **Already covered** better: CopyMat + ped eye + HMD |
-| `firstperson.ini` offsets | Ideas for eye height / forward (we use: `kEyeHeight`, `kEyeForward`) |
-| Script-thread mesh/head hide | Exactly our planned path (natives **not** from EndScene) |
-| Old "VR" builds | Often SBS/cinema, not Rage dual draw — little value for true stereo |
-| Versions 1.0.7 / 1.0.8 | CE offsets differ; blind install risky alongside FusionFix |
+Local Inspiration drop (2026-07-24): `inspiration/firstperson mod/`
+- `FirstPerson.asi` + `FirstPerson.ini` (Oculus / HMD=1) + `ReadmeV1.3.txt`
 
-**Conclusion:** Not a stereo reference. Useful as a reference for **script-side** head hide / bone offsets once we have a ScriptHook/native thread.
+### What the Oculus `.ini` actually contains
+
+| Knob | Inspiration value | Notes |
+|------|-------------------|--------|
+| `FPX / FPY / FPZ` | `0 / 0 / 0` | Inches: right / forward-from-face / up. Zero = eyes at face center (needs head hide) |
+| `HMD` | `1` | Rift/HMD drives look |
+| `ForwardFOV / FootFOV / RearFOV` | `111` | Their FOV — **we do not adopt** (FusionFix FOV look-up warp rejected) |
+| `HMDPhoneDistance` | `180` | Phone prop distance — ignore for VR |
+| Sens / autocenter / lock | various | Our HMD + F9 already cover look; skip |
+| Crosshair colors | present | Later HUD work |
+
+### What the ASI does (from strings / CE reverse)
+
+| Idea | Inspiration | Transfer |
+|------|-------------|----------|
+| FP cam | ScriptHook `ATTACH_CAM_TO_PED` + offsets | **Already better:** CopyMat + ped eye + HMD |
+| Head/hair hide | `SET_DRAW_PLAYER_COMPONENT` on **ScriptHook NativeThread** | Same effect via CE helper `SetDrawPlayerComponent` (AOB) — **no** EndScene natives |
+| FOV 111 | `SET_CAM_FOV` | **Do not** re-enable FusionFix FOV / blind CCam FOV |
+| HMD look | Built-in Oculus DK path | We use OpenVR poses |
+
+**Adopted (2026-07-24):**
+- PedHide via CE SetDraw helper (`gtaiv_dxvk_vr.pedhide`, default ON, kill=`0`)
+- Optional `gtaiv_dxvk_vr.camoff` = `x y z` cm (FPX/FPY/FPZ style)
+- Keep `eyefwd` (42) until PedHide proven; then try 12–20
+
+**Not adopted:** FOV 111, ScriptHook dependency, Oculus HID, phone distance.
+
+**Conclusion:** Not a stereo reference. Head hide + eye offsets are the useful bits — now wired without ScriptHook.
+
 
 ---
 

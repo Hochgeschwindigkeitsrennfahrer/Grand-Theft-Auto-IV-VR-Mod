@@ -373,6 +373,15 @@ float GetStereoScale() {
 
 void PollIpdScaleHotkey() {
   static bool wasF8 = false;
+  static bool primed = false;
+  // Prime: load ipd file BEFORE any F8 (ReloadStereoMode only runs at CamMatrix arm
+  // ~360 submits). Also ignore key already held at first EndScene (was 6→7 overwrite).
+  if (!primed) {
+    ReloadIpdScale();
+    wasF8 = (GetAsyncKeyState(VK_F8) & 0x8000) != 0;
+    primed = true;
+    return;
+  }
   if (!KeyPressedEdge(VK_F8, &wasF8))
     return;
 
@@ -400,7 +409,7 @@ float GetEyeForwardMeters() {
   static std::atomic<int> s_cm{-1};
   int cm = s_cm.load();
   if (cm < 0) {
-    // 42cm: sit camera through skull/hair (natives from EndScene crash; no script thread yet).
+    // 42cm: past skull/hair. With PedHide on, user can lower via eyefwd file.
     cm = 42;
     char buf[16]{};
     int v = 0;
@@ -409,13 +418,53 @@ float GetEyeForwardMeters() {
       cm = v;
       Log("Config: eyeForward=%d cm (gtaiv_dxvk_vr.eyefwd) — head embed / past hair", cm);
     } else {
-      Log("Config: eyeForward=%d cm (default) — cam through skull/hair; PedHide natives OFF "
-          "(EndScene crash); set gtaiv_dxvk_vr.eyefwd to override",
-          cm);
+      Log("Config: eyeForward=%d cm (default) — with PedHide try 12–20 for less swing", cm);
     }
     s_cm.store(cm);
   }
   return static_cast<float>(cm) / 100.f;
+}
+
+void GetCamOffsetMeters(float* outRight, float* outForward, float* outUp) {
+  static std::atomic<bool> s_read{false};
+  static float s_x = 0.f, s_y = 0.f, s_z = 0.f;
+  if (!s_read.exchange(true)) {
+    char buf[64]{};
+    int x = 0, y = 0, z = 0;
+    if (ReadSmallFile("gtaiv_dxvk_vr.camoff", buf, sizeof(buf)) > 0 &&
+        sscanf_s(buf, "%d %d %d", &x, &y, &z) == 3 && x >= -50 && x <= 50 && y >= -50 &&
+        y <= 50 && z >= -50 && z <= 50) {
+      s_x = static_cast<float>(x) / 100.f;
+      s_y = static_cast<float>(y) / 100.f;
+      s_z = static_cast<float>(z) / 100.f;
+      Log("Config: camoff right=%d fwd=%d up=%d cm (Inspiration FPX/FPY/FPZ style)", x, y, z);
+    }
+  }
+  if (outRight)
+    *outRight = s_x;
+  if (outForward)
+    *outForward = s_y;
+  if (outUp)
+    *outUp = s_z;
+}
+
+bool IsPedHideEnabled() {
+  static std::atomic<int> s_mode{-1};
+  int m = s_mode.load();
+  if (m < 0) {
+    // Default ON — Inspiration head/hair hide. Kill: write 0 to pedhide file.
+    m = 1;
+    char buf[16]{};
+    int v = 0;
+    if (ReadSmallFile("gtaiv_dxvk_vr.pedhide", buf, sizeof(buf)) > 0 &&
+        sscanf_s(buf, "%d", &v) == 1 && (v == 0 || v == 1)) {
+      m = v;
+    }
+    Log("Config: PedHide=%s (gtaiv_dxvk_vr.pedhide) — Inspiration SetDraw path; kill=0",
+        m ? "ON" : "OFF");
+    s_mode.store(m);
+  }
+  return m == 1;
 }
 
 bool IsFreeMoveEnabled() {

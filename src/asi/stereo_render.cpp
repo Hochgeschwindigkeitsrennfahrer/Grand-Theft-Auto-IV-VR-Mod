@@ -17,6 +17,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 #include <intrin.h>  // _ReturnAddress for mode 18 render-root probe
@@ -2078,6 +2079,24 @@ Mode32Abi Mode32ClassifyPrologue(uintptr_t addr, const char** tagOut) {
     return false;
   };
 
+  // push esi; mov r32, ecx — common zero-arg thiscall (e.g. exeRva 0x4DDAD0).
+  // Must be checked BEFORE 56 57 … (56 alone is a valid start).
+  if (b[0] == 0x56 && Mode32LooksLikeMovFromEcx(b[1], b[2]) &&
+      !(b[1] == 0x57)) {
+    if (hasEspArg(3, 20)) {
+      if (tagOut)
+        *tagOut = "thiscall-stackarg";
+      return Mode32Abi::Reject;
+    }
+    if (!padded) {
+      if (tagOut)
+        *tagOut = "thiscall-unaligned";
+      return Mode32Abi::Reject;
+    }
+    if (tagOut)
+      *tagOut = "thiscall-56";
+    return Mode32Abi::Thiscall;
+  }
   // Known Mode 31 thiscall shapes (tight).
   if (b[0] == 0x56 && b[1] == 0x57 && Mode32LooksLikeMovFromEcx(b[2], b[3])) {
     if (hasEspArg(4, 20)) {
@@ -2156,6 +2175,12 @@ Mode32Abi Mode32ClassifyPrologue(uintptr_t addr, const char** tagOut) {
       // mov r32, [ebp+8..] = at least one stack arg → unsafe for zero-arg dual
       if (b[i] == 0x8B && (b[i + 1] == 0x45 || b[i + 1] == 0x4D || b[i + 1] == 0x55 ||
                            b[i + 1] == 0x5D) && b[i + 2] >= 0x08)
+        stackArg = true;
+      // SSE: movss/movsd xmm, [ebp+8..] — Mode34 0x1BF010 hard-kill (missed by GPR scan)
+      if ((b[i] == 0xF3 || b[i] == 0xF2) && b[i + 1] == 0x0F &&
+          (b[i + 2] == 0x10 || b[i + 2] == 0x11) &&
+          (b[i + 3] == 0x45 || b[i + 3] == 0x4D || b[i + 3] == 0x55 || b[i + 3] == 0x5D) &&
+          b[i + 4] >= 0x08)
         stackArg = true;
       // ecx used as memory base without mov r,ecx (e.g. F3 0F 10 01 = movss xmm0,[ecx])
       if (b[i] == 0x0F && b[i + 1] == 0x10 && (b[i + 2] & 0xC7) == 0x01)
@@ -3342,9 +3367,78 @@ constexpr uint32_t kMode34DiscoverEs = 90;
 constexpr uint32_t kMode34CountEsNeed = 45;
 constexpr uint32_t kMode34VsRetRva = 0x2C73E;
 
+// Crash-probe: wrong-ABI hooks can hard-kill OUTSIDE SEH (stack imbalance on return).
+// Write RVA before InstallDrawWalkAt; clear on dual/fallback; on next load recover → 30.
+bool Mode34ProbePath(char* out, DWORD outLen) {
+  HMODULE self = nullptr;
+  if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                              GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          reinterpret_cast<LPCSTR>(&Mode34ProbePath), &self))
+    return false;
+  if (!GetModuleFileNameA(self, out, outLen))
+    return false;
+  char* slash = strrchr(out, '\\');
+  if (!slash)
+    slash = strrchr(out, '/');
+  if (!slash)
+    return false;
+  slash[1] = 0;
+  strcat_s(out, outLen, "gtaiv_dxvk_vr.mode34probe");
+  return true;
+}
+
+void Mode34WriteProbe(uint32_t rva) {
+  char path[MAX_PATH]{};
+  if (!Mode34ProbePath(path, MAX_PATH))
+    return;
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "wb") != 0 || !f)
+    return;
+  fprintf(f, "0x%X\n", rva);
+  fclose(f);
+  Log("Mode34: probe armed exeRva=0x%X (if process dies before clear → next load falls to 30)",
+      rva);
+}
+
+void Mode34ClearProbe(const char* why) {
+  char path[MAX_PATH]{};
+  if (!Mode34ProbePath(path, MAX_PATH))
+    return;
+  if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES)
+    return;
+  DeleteFileA(path);
+  if (why)
+    Log("Mode34: probe cleared - %s", why);
+}
+
+bool Mode34ConsumeCrashProbe() {
+  char path[MAX_PATH]{};
+  if (!Mode34ProbePath(path, MAX_PATH))
+    return false;
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "rb") != 0 || !f)
+    return false;
+  char buf[32]{};
+  const size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+  fclose(f);
+  DeleteFileA(path);
+  unsigned rva = 0;
+  if (n > 0)
+    sscanf_s(buf, "0x%X", &rva);
+  Log("Mode34: CRASH RECOVERY - leftover probe exeRva=0x%X (prior COUNT hard-kill) → "
+      "forcing stereo=30",
+      rva);
+  WriteStereoModeFile(30);
+  return true;
+}
+
 bool Mode34ForbiddenRva(uint32_t rva) {
-  // 0x1BF010: COUNT hook hard-killed process (2026-07-24 Mode34) — never retry.
-  return Mode33ForbiddenRva(rva) || rva == kMode34VsRetRva || rva == 0x1BF010;
+  // 0x1BF010: COUNT hook hard-killed (SSE [ebp+8] stackarg misclassified as thiscall-frame).
+  // 0x52E7C0: PE confirms [esp+34] stackarg — never hook.
+  // 0x4DDAD0: COUNT ok + DUAL armed, but vsPatch=0 / vsCallsR=0 forever (same-cam dual,
+  // no parallax). Do not re-arm — StereoDiff gate also failed to catch canvas noise.
+  return Mode33ForbiddenRva(rva) || rva == kMode34VsRetRva || rva == 0x1BF010 ||
+         rva == 0x52E7C0 || rva == 0x4DDAD0;
 }
 
 bool Mode34IsCcPaddedThiscall0(uintptr_t addr, const char** tagOut) {
@@ -3354,10 +3448,16 @@ bool Mode34IsCcPaddedThiscall0(uintptr_t addr, const char** tagOut) {
       *tagOut = tag;
     return false;
   }
-  // thiscall-frame (55 8B EC...) is too broad — Mode34 COUNT crashed on 0x1BF010.
-  if (tag && std::strstr(tag, "frame")) {
+  // Only classic push+mov / 83EC thiscall0 shapes. thiscall-frame is too broad
+  // (0x1BF010 SSE stackarg hard-killed outside SEH).
+  const bool okTag = tag && (std::strcmp(tag, "thiscall-56") == 0 ||
+                             std::strcmp(tag, "thiscall-5657") == 0 ||
+                             std::strcmp(tag, "thiscall-535657") == 0 ||
+                             std::strcmp(tag, "thiscall-53555657") == 0 ||
+                             std::strcmp(tag, "thiscall-83EC") == 0);
+  if (!okTag) {
     if (tagOut)
-      *tagOut = "thiscall-frame-reject";
+      *tagOut = (tag && std::strstr(tag, "frame")) ? "thiscall-frame-reject" : tag;
     return false;
   }
   if (tagOut)
@@ -3405,6 +3505,7 @@ void Mode34FallbackPairHold(const char* why) {
     g_origDrawWalk = nullptr;
     g_drawWalkAddr = nullptr;
   }
+  Mode34ClearProbe("fallback");
   WriteStereoModeFile(30);
   Log("Mode34: FALLBACK pair-hold - wrote stereo=30 - %s (kill -> 30 or 26)", why);
 }
@@ -3420,11 +3521,14 @@ bool Mode34StartNextCount() {
     const uint32_t rva = static_cast<uint32_t>(start - base);
     const char* tag = "?";
     if (Mode34ForbiddenRva(rva) || !Mode34IsCcPaddedThiscall0(start, &tag)) {
-      Log("Mode34: skip try exeRva=0x%X abi=%s (need CC-pad thiscall0)", rva, tag);
+      Log("Mode34: skip try exeRva=0x%X abi=%s (need CC-pad thiscall0 push/83EC)", rva, tag);
       continue;
     }
-    if (!InstallDrawWalkAt(start))
+    Mode34WriteProbe(rva);
+    if (!InstallDrawWalkAt(start)) {
+      Mode34ClearProbe("MH fail");
       continue;
+    }
     g_mode34ActiveRva = rva;
     g_mode34CountEs.store(0);
     g_mode34EntrySum = 0;
@@ -3449,10 +3553,10 @@ void Mode34BuildTryListFromDiscover() {
   for (int i = 0; i < g_mode34AggN; ++i) {
     if (g_mode34Agg[i].rareFrames < 2)
       continue;
-    // Prefer starts that appear ~1x/frame: avg hits/rareFrame in [0.8, 2.5].
+    // Same gate as COUNT: avg hits/rareFrame in [0.8, 4].
     const float avg =
         static_cast<float>(g_mode34Agg[i].totalHits) / static_cast<float>(g_mode34Agg[i].rareFrames);
-    if (avg < 0.8f || avg > 2.5f)
+    if (avg < 0.8f || avg > 4.f)
       continue;
     order[n++] = i;
   }
@@ -3591,6 +3695,7 @@ void Mode34OnEndScene(IDirect3DDevice9* device) {
     const uint32_t entries = g_drawWalkEntries.exchange(0);
     if (entries == 0xFFFFFFFFu) {
       Log("Mode34: count cand exeRva=0x%X died - try next", g_mode34ActiveRva);
+      Mode34ClearProbe("count died");
       if (!Mode34StartNextCount())
         return;
       return;
@@ -3604,16 +3709,18 @@ void Mode34OnEndScene(IDirect3DDevice9* device) {
     if (n >= kMode34CountEsNeed) {
       const float avg = static_cast<float>(g_mode34EntrySum) / static_cast<float>(n);
       if (avg >= 0.8f && avg <= 4.f) {
-        g_mode34Phase.store(static_cast<int>(Mode34Phase::Dual));
-        g_mode34DualN.store(0);
-        g_mode34ZeroDiff.store(0);
-        g_drawWalkDead.store(false);
-        Log("Mode34: DUAL armed fnRva=0x%X avgEntries=%.2f (VS patch pass2, CCam Left-only, "
-            "pair-hold promote)",
+        // 2026-07-24: 0x4DDAD0 COUNT passed (avg=2.0) then DUAL ran 40k+ frames with
+        // vsPatch=0 / vsCallsR=0 — walk is not a VS-upload walker → no parallax.
+        // Do NOT arm dual. Playable stays Mode 30 pair-hold.
+        Mode34ClearProbe("COUNT ok but dual disabled");
+        Log("Mode34: COUNT ok fnRva=0x%X avgEntries=%.2f — dual DISABLED (prior "
+            "0x4DDAD0 vsPatch=0/vsCallsR=0; no safe VS arming yet)",
             g_mode34ActiveRva, avg);
+        Mode34FallbackPairHold("COUNT ok but dual disabled — keep Mode 30 pair-hold");
       } else {
         Log("Mode34: count REJECT fnRva=0x%X avgEntries=%.2f (want [0.8,4]) - try next",
             g_mode34ActiveRva, avg);
+        Mode34ClearProbe("count reject");
         if (!Mode34StartNextCount())
           return;
       }
@@ -3622,8 +3729,14 @@ void Mode34OnEndScene(IDirect3DDevice9* device) {
   }
 
   if (ph == static_cast<int>(Mode34Phase::Dual)) {
-    if (g_haveL && g_haveR && (g_mode34DualN.load() == 5 || g_mode34DualN.load() == 30 ||
-                               (g_mode34DualN.load() > 0 && (g_mode34DualN.load() % 300) == 0))) {
+    // Safety net if an older ASI left Dual armed: bail when VS never patches.
+    const uint32_t dualN = g_mode34DualN.load();
+    if (dualN >= 5 && StereoVsTranslateCount() == 0) {
+      Mode34FallbackPairHold("vsPatch=0 after dual trial (same cam — keep Mode 30)");
+      return;
+    }
+    if (g_haveL && g_haveR && (dualN == 5 || dualN == 30 ||
+                               (dualN > 0 && (dualN % 300) == 0))) {
       const long long diff = CompareEyeCanvases(device);
       if (diff >= 0 && diff < 200) {
         const uint32_t z = ++g_mode34ZeroDiff;
@@ -3635,7 +3748,7 @@ void Mode34OnEndScene(IDirect3DDevice9* device) {
     }
     if (es <= 8 || (es % 300) == 0)
       Log("Mode34: dual EndScene es#%u dualN=%u haveL=%d haveR=%d vsPatch=%u", es,
-          g_mode34DualN.load(), g_haveL ? 1 : 0, g_haveR ? 1 : 0, StereoVsTranslateCount());
+          dualN, g_haveL ? 1 : 0, g_haveR ? 1 : 0, StereoVsTranslateCount());
     return;
   }
 }
@@ -4509,6 +4622,25 @@ bool InstallStereoRenderHooks() {
   }
 
   if (mode == StereoMode::SameFrameVsRetCallerDual) {
+    // Prior COUNT hard-kill leaves mode34probe — recover to playable Mode 30.
+    if (Mode34ConsumeCrashProbe()) {
+      ReloadStereoMode();
+      SetStereoEye(StereoEye::Left);
+      g_haveL = g_haveR = false;
+      g_mode30Phase.store(static_cast<int>(Mode30Phase::PairHold));
+      g_execDualDead.store(true);
+      g_mode30SoftEs.store(0);
+      g_mode30DevPatches.store(0);
+      g_mode30ZeroDiff.store(0);
+      g_pairAwaitingR = false;
+      g_pairPromoteCount.store(0);
+      g_vsPatchOn.store(false);
+      g_ok = InstallRootProbeHooks(2);
+      Log("StereoRender: mode 34 CRASH-RECOVERY → mode %d PAIR-HOLD ok=%d",
+          static_cast<int>(GetStereoMode()), g_ok.load() ? 1 : 0);
+      Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 26 or 0");
+      return g_ok.load();
+    }
     SetStereoEye(StereoEye::Left);
     g_haveL = g_haveR = false;
     g_mode34Phase.store(static_cast<int>(Mode34Phase::SoftWaitSamples));
@@ -4533,9 +4665,9 @@ bool InstallStereoRenderHooks() {
     g_drawWalkAddr = nullptr;
     g_origDrawWalk = nullptr;
     g_ok = InstallRootProbeHooks(2);
-    Log("StereoRender: mode 34 SAME-FRAME VsRet-caller dual (WAIT ret==0x2C73E stack -> "
-        "fn starts CC-pad thiscall0 count >=45 ES -> dual+VS; never 0x2C6AC/0x37BD0; "
-        "fail writes stereo=30) ok=%d",
+    Log("StereoRender: mode 34 SAME-FRAME VsRet-caller probe (WAIT ret==0x2C73E stack -> "
+        "fn starts; COUNT only; DUAL DISABLED — 0x4DDAD0 proved vsPatch=0; "
+        "never 0x2C6AC/0x37BD0/0x1BF010/0x4DDAD0; fail/COUNT-ok writes stereo=30) ok=%d",
         g_ok.load() ? 1 : 0);
     Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 30 or 26");
     return g_ok.load();
@@ -5063,6 +5195,7 @@ void StereoMode34CollectVsRetCallers(void* retAddr, void* hookSpWords) {
 
   auto* sp = reinterpret_cast<uintptr_t*>(hookSpWords);
   // Resolve each stack word to a FUNCTION START (not mid epilogue).
+  // Only keep CC-pad zero-arg thiscall shapes (filter early — no frame/stackarg noise).
   for (int i = 0; i < 64; ++i) {
     const uintptr_t v = sp[i];
     if (v < base + 0x1000 || v > base + 0xC00000)
@@ -5077,6 +5210,9 @@ void StereoMode34CollectVsRetCallers(void* retAddr, void* hookSpWords) {
       continue;
     const uint32_t fnRva = static_cast<uint32_t>(fn - base);
     if (Mode34ForbiddenRva(fnRva))
+      continue;
+    const char* tag = "?";
+    if (!Mode34IsCcPaddedThiscall0(fn, &tag))
       continue;
     Mode34NoteFrameRva(fnRva);
   }
