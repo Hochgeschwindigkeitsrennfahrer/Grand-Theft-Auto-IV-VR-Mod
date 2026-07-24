@@ -65,7 +65,8 @@ void DoRecenter() {
     vr::VRCompositor()->SetTrackingSpace(vr::TrackingUniverseSeated);
     ok = true;
   }
-  Log(ok ? "Recenter: SteamVR zero + look baseline (F9)" : "Recenter: look baseline (F9)");
+  Log(ok ? "Recenter: F9 — SteamVR zero + ped/veh heading baseline (6DoF unchanged)"
+         : "Recenter: F9 — ped/veh heading baseline (6DoF unchanged)");
 }
 
 void YawPitchFromMatrix(const vr::HmdMatrix34_t& m, float* yaw, float* pitch) {

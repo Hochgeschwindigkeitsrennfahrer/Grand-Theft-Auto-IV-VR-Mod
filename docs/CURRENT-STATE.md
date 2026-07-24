@@ -1,9 +1,11 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~21:18
-**Deployed now:** stereo **`48`** (Mode-47 leveled pitch flip + **pitch-stable** up/down
-basis + pre-capture CopyMat refresh) + **`fovadd=18`**. The 6DoF `scale` file remains
-**`100`**. Mode 46 stays disabled (post-load freeze). Mode 45/47 remain kill baselines.
+**As of:** 2026-07-24 ~22:00
+**Deployed now:** stereo **`49`** (Mode-48 pitch-stable + pre-capture refresh, **leveledPitchFlip OFF**,
+**ped-yaw coupled** to live character heading + HMD yaw delta) + **`fovadd=18`**. The 6DoF `scale`
+file remains **`100`**. Mode 46 stays disabled (post-load freeze). Mode 45/47/48 remain kill baselines.
+**Hotkeys split:** **F9** = view recenter only (SteamVR zero + ped/veh heading baseline); **F10** = 6DoF
+translation origin reset (lean/strafe anchor). F6=stereo scale, F7=WorldScale, F8=IPD.
 **Mode 46 is disabled: it froze after the loading screen in the only headset test.** Its full
 OpenVR right/forward/up matrix write is not safe for the RAGE follow-camera path. A request for
 `46` is remapped to **`45`** at load; do not deploy a `46` stereo file. Mode 45 remains
@@ -12,13 +14,50 @@ head-owned refresh, temporary-mono motion guard, locked 1536×1536 eye RTs, and 
 Mode 40 is an honest intermediate, not true same-frame stereo: on rapid HMD motion it re-canvases
 the current R game frame to both eye textures for that pair (temporary mono), removing the stale-eye
 disparity during the turn; calm motion returns to normal Mode-37 temporal stereo.
-**Kill:** stereo **`47`** or **`45`** (prior stable baselines), **`44`**, **`37`**, or **`30`** + delete **`fovadd`**.
+**Kill:** stereo **`48`**, **`45`**, **`47`**, **`44`**, **`37`**, or **`30`** + delete **`fovadd`**.
 Protected: **`36`/`35`**.
 Keep **`ipd`≥1**, canvas **zoom DISABLED**. F7 = 6DoF only (does **not** create “inside VR” alone).  
-**Expectation:** same bars/RT/motion-guard stability as Mode 47, but looking nearly straight
-up/down should no longer snap the camera basis to `(1,0,0)` (look-up warp). Pre-capture
-CopyMat refresh reduces follow-cam overwrites stale in the submitted backbuffer. Still not
-true same-frame stereo. Kill to **`47`** if up/down feels wrong.
+**Expectation:** Mode-45 pitch sign (look up/down matches head), Mode-48 pitch-stable basis when
+looking nearly vertical, body turns carry the view (ped yaw + HMD delta), ped-eye + F10 6DoF anchor
+unchanged. Log proof: `leveledPitchFlip=0`, `pedCoupled=1`. Kill to **`45`** if coupling feels wrong;
+**`48`** if up/down warp returns; **`47`** only if pitch flip was actually correct.
+
+### Session 2026-07-24 ~22:00 (F9/F10 hotkey split: recenter vs 6DoF reset)
+
+**One behavior change:** F9 and 6DoF translation reset were coupled; user wanted them split.
+- **F9** — view recenter: SteamVR seated zero, mouse-look baseline, ped heading baseline (Mode 49
+  body-turn coupling), vehicle yaw baseline. Does **not** zero head translation / lean origin.
+- **F10** — 6DoF reset only: zeros the seated translation baseline (F10-relative lean/strafe anchor
+  × WorldScale). Does **not** recenter yaw or SteamVR.
+
+**Log on press:** `Recenter: F9 — SteamVR zero + ped/veh heading baseline (6DoF unchanged)` and
+`SixDofReset: F10 — head translation origin zeroed`.
+
+**Headset check:** seated, lean forward — press **F10** (world should snap lean to zero, facing
+unchanged). Turn body — press **F9** (forward recenters, lean offset kept). Kill still **`45`**.
+
+**Automated post-load freeze-test PASS:** build `20260724-215659` logged continuous
+`StereoSubmit: L=1 R=1 mode=49`, `CamMatrix … pedCoupled=1`, `Mode49: late head-owned …
+pitchStable=1`, through `CamMatrix: FP lock #96000+` with no ASI exception or submit error.
+
+### Session 2026-07-24 ~21:54 (Mode 49 ped-coupled + pitch sign fix: shipped + freeze-test PASS)
+
+**One behavior change:** Mode 49 = Mode 48 visuals/stability, but (1) **turns OFF** Mode 47/48
+`leveledPitchFlip` (headset said flip=1 was still reversed — Mode 45 pitch sign restored), and (2)
+**yaw-couples** to the live ped: camera heading = HMD heading + (pedHeading − pedHeading@F9), so
+body turns carry the view while HMD yaw remains free look on top. Position stays ped-eye +
+F10-relative 6DoF × WorldScale (Mode 45 anchor). Pre-capture CopyMat refresh retained.
+
+**Automated post-load freeze-test PASS:** build `20260724-215101` logged `StereoMode: 49`,
+`StereoRender: mode 49 PED-COUPLED HEAD-OWNED … ok=1 fovSite=1`, continuous
+`StereoSubmit: L=1 R=1 mode=49` through `MonoSubmit #8940+`, `CamMatrix … leveledPitchFlip=0
+pedCoupled=1`, `Mode49: late head-owned … leveledPitchFlip=0 pitchStable=1 pedCoupled=1`, and
+`Mode44: RT lock … checks=8400 recreates=0`. No ASI exception, OpenVR submit error, or RT
+recreation during the 2+ minute run.
+
+**Headset check:** look up/down — correct sign (not reversed)? Walk/turn — view follows body?
+Lean/strafe with scale=100 still OK? Kill: **`45`** (uncoupled baseline), **`48`** (flip+no couple),
+**`47`** (flip only).
 
 ### Session 2026-07-24 ~21:18 (Mode 48 pitch-stable head-owned: shipped + freeze-test PASS)
 
@@ -759,7 +798,9 @@ Rage cam matrix: `right`=X, `up`=Y=**Forward**, `at`=Z=**Up**.
 
 ## Hotkeys / UX
 
-- **F9** — SteamVR recenter + 6DoF baseline  
+- **F9** — view recenter (SteamVR zero + ped/veh heading baseline; 6DoF unchanged)  
+- **F10** — 6DoF translation origin reset (lean/strafe anchor only)  
+- **F6** — stereo scale · **F7** — WorldScale · **F8** — IPD cycle  
 - SteamVR dashboard auto-closes on restart / after OpenVR init (manual close still OK)  
 - Quick restart: `scripts/restart-gtaiv.*` (optional `-DirectExe` after RGLess)  
 - Faster start/launcher: `docs/STARTUP_SPEED.md`  

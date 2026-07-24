@@ -238,6 +238,11 @@ enum class StereoMode : int {
   // temporal eye capture so a late follow-cam overwrite cannot stale the BB.
   // Still no Mode-46 full HMD-basis write. Kill: 47/45/44/37/30.
   HeadOwnedCamPitchStable = 48,
+  // Mode 48 pitch-stable basis + pre-capture refresh, but Mode-45 pitch sign
+  // (leveledPitchFlip OFF — flip=1 in 47/48 was reversed). Yaw couples to live
+  // ped heading: body turns carry the view; HMD yaw is delta on top. Ped eye +
+  // F9-relative 6DoF unchanged. Kill: 48/45/47/44/37/30.
+  HeadOwnedCamPedCoupled = 49,
 };
 
 StereoMode GetStereoMode();

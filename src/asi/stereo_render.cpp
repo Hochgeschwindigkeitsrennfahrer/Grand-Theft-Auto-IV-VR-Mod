@@ -108,7 +108,8 @@ bool UsesFovComfortPath(StereoMode mode) {
          mode == StereoMode::HeadOwnedCamSpike ||
          mode == StereoMode::HeadOwnedCamFullPose ||
          mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-         mode == StereoMode::HeadOwnedCamPitchStable;
+         mode == StereoMode::HeadOwnedCamPitchStable ||
+         mode == StereoMode::HeadOwnedCamPedCoupled;
 }
 
 bool UsesTrueFovCanvasPublish(StereoMode mode) {
@@ -146,7 +147,8 @@ bool Mode40NeedsMonoGuard(float* outRotDeg, float* outMoveCm) {
        mode != StereoMode::HeadOwnedCamSpike &&
        mode != StereoMode::HeadOwnedCamFullPose &&
        mode != StereoMode::HeadOwnedCamLeveledPitchFlip &&
-       mode != StereoMode::HeadOwnedCamPitchStable) ||
+       mode != StereoMode::HeadOwnedCamPitchStable &&
+       mode != StereoMode::HeadOwnedCamPedCoupled) ||
       !g_holdPoseLValid || !g_holdPoseRValid)
     return false;
   const vr::HmdMatrix34_t& l = g_holdPoseL;
@@ -410,7 +412,8 @@ bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
                       GetStereoMode() == StereoMode::HeadOwnedCamSpike ||
                       GetStereoMode() == StereoMode::HeadOwnedCamFullPose ||
                       GetStereoMode() == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-                      GetStereoMode() == StereoMode::HeadOwnedCamPitchStable;
+                      GetStereoMode() == StereoMode::HeadOwnedCamPitchStable ||
+                      GetStereoMode() == StereoMode::HeadOwnedCamPedCoupled;
   const bool haveRts =
       g_texL && g_texR && g_holdL && g_holdR && g_device == dev && g_rtW > 0 && g_rtH > 0;
   if (mode44 && haveRts) {
@@ -4260,7 +4263,8 @@ void __fastcall HookExecA(void* self, void* edx) {
       mode == StereoMode::HeadOwnedCamSpike ||
       mode == StereoMode::HeadOwnedCamFullPose ||
       mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-      mode == StereoMode::HeadOwnedCamPitchStable) {
+      mode == StereoMode::HeadOwnedCamPitchStable ||
+      mode == StereoMode::HeadOwnedCamPedCoupled) {
     const int ph = g_mode30Phase.load();
     if (ph != static_cast<int>(Mode30Phase::Dual) || g_execDualDead.load()) {
       g_origExecA(self, edx);
@@ -4800,9 +4804,10 @@ void TemporalCapturePairHold(IDirect3DDevice9* device) {
   if (!device || !g_holdL || !g_holdR || !g_texL || !g_texR)
     return;
   LogCachedIpdOnce();
-  // Mode 48: refresh tracked CopyMat matrices immediately before each eye capture
+  // Mode 48/49: refresh tracked CopyMat matrices immediately before each eye capture
   // so a late follow-cam overwrite cannot stale the backbuffer view.
-  if (GetStereoMode() == StereoMode::HeadOwnedCamPitchStable)
+  if (GetStereoMode() == StereoMode::HeadOwnedCamPitchStable ||
+      GetStereoMode() == StereoMode::HeadOwnedCamPedCoupled)
     RefreshLiveCamForStereoEye();
   const StereoEye eye = GetStereoEye();
   const bool latchPair = UsesFovComfortPath(GetStereoMode());
@@ -4828,7 +4833,8 @@ void TemporalCapturePairHold(IDirect3DDevice9* device) {
                           GetStereoMode() == StereoMode::HeadOwnedCamSpike ||
                           GetStereoMode() == StereoMode::HeadOwnedCamFullPose ||
                           GetStereoMode() == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-                          GetStereoMode() == StereoMode::HeadOwnedCamPitchStable;
+                          GetStereoMode() == StereoMode::HeadOwnedCamPitchStable ||
+                          GetStereoMode() == StereoMode::HeadOwnedCamPedCoupled;
         IDirect3DTexture9* dstL = fast ? g_texL : g_holdL;
         IDirect3DTexture9* dstR = fast ? g_texR : g_holdR;
         const bool sameFrameL = CopyBbToEyeCanvas(device, dstL, vr::Eye_Left);
@@ -5040,7 +5046,8 @@ bool InstallStereoRenderHooks() {
       mode == StereoMode::HeadOwnedCamSpike ||
       mode == StereoMode::HeadOwnedCamFullPose ||
       mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-      mode == StereoMode::HeadOwnedCamPitchStable) {
+      mode == StereoMode::HeadOwnedCamPitchStable ||
+      mode == StereoMode::HeadOwnedCamPedCoupled) {
     // Pair-hold only: same install surface as Mode 26 (no exec dual hooks).
     // Device-VS dual was probed this session (mode30dev=0) — do not re-arm.
     SetStereoEye(StereoEye::Left);
@@ -5100,7 +5107,8 @@ bool InstallStereoRenderHooks() {
                mode == StereoMode::HeadOwnedCamSpike ||
                mode == StereoMode::HeadOwnedCamFullPose ||
                mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-               mode == StereoMode::HeadOwnedCamPitchStable) {
+               mode == StereoMode::HeadOwnedCamPitchStable ||
+               mode == StereoMode::HeadOwnedCamPedCoupled) {
       const bool fovOk = InstallFovRecomputeSiteHook();
       g_mode40MonoPairs.store(0);
       g_mode44RtChecks.store(0);
@@ -5109,8 +5117,16 @@ bool InstallStereoRenderHooks() {
       if (mode == StereoMode::HeadOwnedCamSpike ||
           mode == StereoMode::HeadOwnedCamFullPose ||
           mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-          mode == StereoMode::HeadOwnedCamPitchStable) {
-        if (mode == StereoMode::HeadOwnedCamPitchStable) {
+          mode == StereoMode::HeadOwnedCamPitchStable ||
+          mode == StereoMode::HeadOwnedCamPedCoupled) {
+        if (mode == StereoMode::HeadOwnedCamPedCoupled) {
+          Log("StereoRender: mode 49 PED-COUPLED HEAD-OWNED (Mode48 pitch-stable + pre-capture "
+              "refresh; leveledPitchFlip=OFF; yaw follows ped + HMD delta; no Mode-46 roll; "
+              "not true stereo) ok=%d fovSite=%d",
+              g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+          Log("StereoRender: kill-switch - stereo=48, 45, 47, 44, 37, or 30 + delete "
+              "gtaiv_dxvk_vr.fovadd");
+        } else if (mode == StereoMode::HeadOwnedCamPitchStable) {
           Log("StereoRender: mode 48 HEAD-OWNED PITCH-STABLE (Mode47 + stable up/down basis "
               "+ pre-capture CopyMat refresh; no Mode-46 roll; not true stereo) ok=%d fovSite=%d",
               g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
@@ -5500,7 +5516,8 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
         mode == StereoMode::HeadOwnedCamSpike ||
         mode == StereoMode::HeadOwnedCamFullPose ||
         mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-        mode == StereoMode::HeadOwnedCamPitchStable) {
+        mode == StereoMode::HeadOwnedCamPitchStable ||
+        mode == StereoMode::HeadOwnedCamPedCoupled) {
       g_dualDoneThisFrame = false;
       g_skipExecA = g_skipExecC = g_skipExecD = 0;
       IDirect3DSurface9* bb = nullptr;
@@ -5643,7 +5660,8 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
       mode != StereoMode::HeadOwnedCamSpike &&
       mode != StereoMode::HeadOwnedCamFullPose &&
       mode != StereoMode::HeadOwnedCamLeveledPitchFlip &&
-      mode != StereoMode::HeadOwnedCamPitchStable)
+      mode != StereoMode::HeadOwnedCamPitchStable &&
+      mode != StereoMode::HeadOwnedCamPedCoupled)
     return false;
   if (!device || !interop || !g_texL || !g_texR)
     return false;
