@@ -23,4 +23,17 @@ bool StereoProjWindowActive();
 // SetVertexShaderConstantF view-translate patch. Same-thread (render) only.
 bool StereoVsGetPatchParams(float cam3[3], float delta3[3]);
 
+// Mode 31: SetVSConstF feeds stack RVAs while Discover is armed (stereo_proj).
+bool StereoMode31WantsDiscover();
+void StereoMode31OnVsConst(void* retAddr);
+
+// Mode 32/33: VsParent hist must be collected at HookSetVSConstF stack depth
+// (same as Mode 26 NoteVsRet) — pass SP from the hook, do not scan from a callee.
+bool StereoMode32WantsDiscover();
+void StereoMode32CollectVsParents(void* retAddr, void* hookSpWords);
+bool StereoMode33WantsDiscover();
+void StereoMode33CollectVsParents(void* retAddr, void* hookSpWords);
+bool StereoMode34WantsDiscover();
+void StereoMode34CollectVsRetCallers(void* retAddr, void* hookSpWords);
+
 }  // namespace asi

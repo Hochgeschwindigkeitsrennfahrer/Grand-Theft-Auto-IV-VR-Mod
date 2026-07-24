@@ -1,10 +1,11 @@
 ﻿# Quick restart after GTA IV crash.
-# Default: only clear game/crash processes, then Steam-launch. No dashboard hacks.
-# See docs/STARTUP_SPEED.md for offline / RGLess / DirectExe.
+# Default: kill game/crash processes → Steam-launch → auto-close SteamVR dashboard
+# once GTAIV is up (IsDashboardVisible toggle). ASI also closes dashboard after
+# VR_Init if still open. See docs/STARTUP_SPEED.md for offline / RGLess / DirectExe.
 param(
   [switch]$NoStart,
   [switch]$NoPause,
-  [switch]$CloseDashboard,  # opt-in: toggle SteamVR dashboard AFTER game is up
+  [switch]$NoCloseDashboard,  # skip dashboard toggle after game is up
   [switch]$KillRockstarStack,  # opt-in: also kill Launcher (can stick Steam on LAUNCHING)
   [switch]$DirectExe  # start GTAIV.exe directly (needs RGLess / offline auth; skips steam -applaunch)
 )
@@ -103,8 +104,8 @@ if (-not $ready) {
   Write-Host "Do NOT use -KillRockstarStack unless cleaning a crash dialog."
 }
 
-if ($CloseDashboard -and $ready) {
-  Write-Host "Closing SteamVR dashboard (-CloseDashboard)..."
+if ($ready -and -not $NoCloseDashboard) {
+  Write-Host "Closing SteamVR dashboard (after GTAIV up; use -NoCloseDashboard to skip)..."
   Start-Sleep -Seconds 2
   Invoke-DashboardToggle
 }

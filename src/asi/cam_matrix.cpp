@@ -2,6 +2,7 @@
 #include "aob.h"
 #include "hmd_pose.h"
 #include "log.h"
+#include "ped_hide.h"
 #include "stereo_config.h"
 #include "stereo_eye.h"
 #include "vr_move.h"
@@ -41,9 +42,9 @@ std::atomic<bool> g_gameplayActive{false};  // false until past title (avoids bl
 std::atomic<uint32_t> g_applyCount{0};
 
 // Eye placement. Script natives from EndScene crash CE — push eyes past skull/hair.
-// Forward offset is configurable via gtaiv_dxvk_vr.eyefwd (cm, default 38): smaller
-// = less camera swing on head rotation (comfort) but the skull may block the view.
-constexpr float kEyeHeight = 0.70f;  // along ped "at" (world up)
+// Forward offset via gtaiv_dxvk_vr.eyefwd (cm, default 42): "in head" ped anchor +
+// forward past hair/eyes without unsafe PedHide natives.
+constexpr float kEyeHeight = 0.70f;  // along ped "at" (world up) — skull center
 constexpr float kPosScale = 1.0f;
 
 constexpr uint32_t kPedVehicleOff = 0xB30;  // CPed::m_pVehicle (CE)
@@ -250,6 +251,8 @@ void ApplyHmdToCam(Matrix44* mat) {
   eye.x += fx * eyeFwd;
   eye.y += fy * eyeFwd;
   eye.z += fz * eyeFwd;
+  // Log once that PedHide is intentionally off (eye-forward is the safe path).
+  UpdatePedHeadHide();
 
   // Stereo eye origin — L4D2VR GetViewOriginLeft/Right:
   //   origin + forward*(-eyeZ*scale) + right*(±IPD*ipdScale*scale/2)
@@ -278,11 +281,12 @@ void ApplyHmdToCam(Matrix44* mat) {
       eyeZ = e2h.m[2][3];
     }
 
-    // L4D2VR: half = (IPD * IpdScale * VRScale) / 2  — scale MULTIPLIES offset.
-    // (Higher VRScale → more parallax → world feels smaller.)
-    const float half = 0.5f * GetStereoSepMeters() * worldScale;
+    // WorldScale (F7) = 6DoF only. StereoScale (F6, default 1.15, cap 1.30) =
+    // soft disparity for size-without-fusion-break. Raw WorldScale×IPD at 1.5
+    // made ~9 cm sep → fusion gone + violent jump (headset 2026-07-24).
+    const float half = 0.5f * GetStereoSepMeters() * GetStereoScale();
     const float s = rightEye ? half : -half;
-    const float fzOff = -eyeZ * worldScale;
+    const float fzOff = -eyeZ;
     ipdX = hrx * s + fx * fzOff;
     ipdY = hry * s + fy * fzOff;
     ipdZ = hrz * s + fz * fzOff;
@@ -309,9 +313,10 @@ void ApplyHmdToCam(Matrix44* mat) {
 
   const uint32_t n = ++g_applyCount;
   if (n <= 5 || (n % 300) == 0) {
-    Log("CamMatrix: FP lock #%u %s pos=(%.3f,%.3f,%.3f) ipd=(%.4f,%.4f,%.4f) sep=%.0fcm", n,
-        rightEye ? "R" : "L", eye.x, eye.y, eye.z, ipdX, ipdY, ipdZ,
-        GetStereoSepMeters() * 100.f);
+    Log("CamMatrix: FP lock #%u %s pos=(%.3f,%.3f,%.3f) ipd=(%.4f,%.4f,%.4f) sep=%.0fcm "
+        "eyeFwd=%.0fcm",
+        n, rightEye ? "R" : "L", eye.x, eye.y, eye.z, ipdX, ipdY, ipdZ,
+        GetStereoSepMeters() * 100.f, eyeFwd * 100.f);
   }
 }
 
@@ -566,7 +571,8 @@ bool GetStereoEyeRightDeltaWorld(float* dx, float* dy, float* dz) {
   const float len = std::sqrt(hrx * hrx + hry * hry + hrz * hrz);
   if (len < 1e-4f)
     return false;
-  const float d = GetStereoSepMeters() * GetWorldScale() / len;
+  // Stereo IPD × soft StereoScale (not WorldScale) — see ApplyHmdToCam.
+  const float d = GetStereoSepMeters() * GetStereoScale() / len;
   *dx = hrx * d;
   *dy = hry * d;
   *dz = hrz * d;

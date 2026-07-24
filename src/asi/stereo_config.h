@@ -95,20 +95,94 @@ enum class StereoMode : int {
   // SetVertexShaderConstantF (draw lists replay constant uploads through D3D9)
   // and translate every 4x4 block that maps the build cam pos onto the view
   // axis (= view/viewProj matrix, either matrix convention) by the eye delta.
+  // RESULT 2026-07-24: vsCallsTotal ~380/frame but vsCallsR=0 — the re-executed
+  // phase objects are dispatch stubs; ALL uploads flow through ONE Rage wrapper
+  // call site (exeRva 0x2C73E) on ONE thread. The real draws happen during the
+  // BUILD walk (mode 18's inline-exec sites), not in our re-run.
   ExecViewConstDual = 24,
+  // Mode 20 v1 machinery (BuildRootA x2 per frame = real double render, 50 FPS,
+  // no jumping) + the TWO camera levers it was missing: shift the manager cam
+  // matrices between the walks AND arm the VS-constant view-translate during
+  // walk 2 (no double shift possible: detection keys on the LEFT cam pos).
+  // RESULT 2026-07-24: stable but vsCallsR stayed ~1 — BuildRootA is not the
+  // draw path either. KEY: uploads run on a DEDICATED RENDER THREAD (tid A)
+  // while BuildRootA+ExecRoot share the game thread (tid B). And the stray
+  // uploads that hit our window DID match+translate (view @c4, viewProj @c8,
+  // row-vector, 16-register blocks) — the VS detection works.
+  BuildDualViewShift = 25,
+  // Temporal stereo on the REPLAY thread: native BuildRootA x1, EndScene flips
+  // a VS-const view-translate arm every other frame, captures L/R canvases
+  // (mode 14 geometry). Double-record + speculative object patches froze
+  // (2026-07-24) — stripped. Same cadence as mode 14; eye shift where draws
+  // actually read matrices. Same-frame double-replay remains the next lever.
+  RecordDualReplayShift = 26,
+  // READ-ONLY: hook VsParent candidate function starts (from Mode 26 stack scan),
+  // WAS: count VsParent candidates per EndScene. RESULT: Cand37BD0 wrong ABI;
+  // Cand4D8F85 never called. Mode 29 reused same FindFnStartNear → crash after
+  // load. Hooks DISABLED; Mode 27 aliases Mode 26. Use stereo file 26.
+  ReplayRootProbe = 27,
+  // WAS: hook VS wrapper @0x2C6AC for same-frame dual. Headset 2026-07-24: crash
+  // right after load screen — wrap hook DISABLED. Mode 28 now aliases Mode 26
+  // (temporal) until a safer same-frame root is found. Use stereo file 26.
+  SameFrameWrapDual = 28,
+  // WAS: count-only VsParent prologue hooks (FindFnStartNear on Mode 26 mid-fn
+  // rets). Headset 2026-07-24: crash after load — Cand37C01 resolved to 0x37BD0
+  // (same wrong-ABI site as Mode 27), SEH then process death. Hooks DISABLED;
+  // Mode 29 aliases Mode 26. Use stereo file 26.
+  VsParentCountProbe = 29,
+  // Mode 23 same-frame dual (proven crash-free, no jump) + DEVICE-SIDE VS
+  // view-translate before the Right pass (Get/SetVertexShaderConstantF on the
+  // live device — NOT upload-hook, NOT prologue hooks). Mode 24's vsCallsR=0
+  // proved re-exec issues zero SetVSConstF; if draws still read device regs,
+  // this supplies the missing Right eye. Soft-start 45 EndScenes (pair-hold
+  // temporal), then dual; StereoDiff≈0 or SEH → permanent pair-hold fallback
+  // (Mode 26 path). Never hooks 0x2C6AC / 0x37BD0. Kill → stereo 26.
+  PhaseDualDeviceVs = 30,
+  // Same-frame stereo WITH real parallax: soft-start = Mode 30 pair-hold, then
+  // discover a ~1×/frame walker on the VsRet thread via SetVSConstF stack
+  // histograms (NOT FindFnStartNear on blind mid-rets, NOT 0x2C6AC/0x37BD0).
+  // Count-only hook ≥45 EndScenes (avg entries ∈ [0.8,4] + thiscall byte-sig)
+  // BEFORE dual. Dual = walk×2 with VS view-translate ONLY between passes
+  // (no CCam+VS stack), capture→pair-hold promote. Discovery/dual fail →
+  // permanent Mode 30 pair-hold. Kill → stereo 30 or 26.
+  // RESULT 2026-07-24: discover failed (stack scan too deep in callee). Use 32.
+  SameFrameReplayDual = 31,
+  // Mode 31 fix: VsParent stack collected INSIDE HookSetVSConstF (same depth as
+  // Mode 26 NoteVsRet), VirtualQuery + ABI classify (thiscall/stdcall/ecx+edx),
+  // count-only ≥45 ES avg∈[0.8,4] before dual. Dual = L capture → VS translate
+  // R → pair-hold promote. Fail → write stereo file 30 + pair-hold. Kill → 30/26.
+  SameFrameVsParentDual = 32,
+  // Mode 32 lesson: Soft Discover ran before VsRet traffic → empty hist → early
+  // seed of stackarg prologues (0x32A40/0x372B0). Mode 33 WAIT until live
+  // VsParent samples appear (slots ~10–32), then ONLY hook CC-padded zero-arg
+  // thiscall; count gate; dual = walk×2 + VS translate pass2 + pair-hold
+  // promote. No CCam+VS stack. SEH / no cand → write stereo=30. Kill → 30/26.
+  SameFrameLateVsParentDual = 33,
+  // Mode 33 finding: VsParent mid slots are epilogues (5F C2 10 00), not walkers.
+  // Mode 34: only when HookSetVSConstF ret == VsRet 0x2C73E, resolve stack words
+  // to FUNCTION STARTS, keep CC-pad thiscall0, count ~1×/frame, then dual +
+  // pair-hold promote. Fail → write stereo=30. Kill → 30/26.
+  SameFrameVsRetCallerDual = 34,
 };
 
 StereoMode GetStereoMode();
 void ReloadStereoMode();
+// Persist kill/fallback mode to gtaiv_dxvk_vr.stereo (next launch safe default).
+void WriteStereoModeFile(int mode);
 
 float GetStereoSepMeters();
 void PollIpdScaleHotkey();
 float GetStereoIpdScale();
 
-// VRScale (L4D2VR): HIGHER → more IPD + 6DoF in game units → world feels SMALLER.
-// File: gtaiv_dxvk_vr.scale (percent, 100 = 1.0)
+// VRScale (L4D2VR): HIGHER → more 6DoF in game units → world feels SMALLER.
+// File: gtaiv_dxvk_vr.scale (percent, 100 = 1.0). Does NOT multiply stereo IPD.
 float GetWorldScale();
 void PollWorldScaleHotkey();
+
+// Soft stereo disparity multiplier (percent). Independent of WorldScale.
+// File: gtaiv_dxvk_vr.stereoscale — default 115. F6 cycles. Cap keeps fusion safe.
+float GetStereoScale();
+void PollStereoScaleHotkey();
 
 // True for Mode 4 and Modes 13..17 (frame-alternating eye capture + Submit).
 bool IsTemporalStereoMode(StereoMode mode);
@@ -118,8 +192,8 @@ bool UsesAngleCorrectCanvas(StereoMode mode);
 
 // --- Optional config files next to the ASI (read once at startup, log on use) ---
 
-// gtaiv_dxvk_vr.eyefwd: eye-forward offset in cm (default 38). Smaller = less
-// camera swing when turning the head (comfort), but the ped skull may block view.
+// gtaiv_dxvk_vr.eyefwd: eye-forward offset in cm (default 42). Places cam through
+// skull/hair without unsafe script natives. Smaller = more "in head" (may see hair).
 float GetEyeForwardMeters();
 
 // gtaiv_dxvk_vr.movemode: 1 = do NOT force ped heading to HMD view — the game maps

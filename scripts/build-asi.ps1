@@ -28,6 +28,7 @@ $src = @(
   "src\asi\hmd_pose.cpp",
   "src\asi\aob.cpp",
   "src\asi\cam_matrix.cpp",
+  "src\asi\ped_hide.cpp",
   "src\asi\vr_move.cpp",
   "src\asi\vr_display.cpp",
   "src\asi\stereo_eye.cpp",
@@ -53,7 +54,7 @@ $libpath = "/LIBPATH:$Root\thirdparty\openvr\lib\win32"
 $cmd = @"
 call "$vcvars" x86
 cd /d "$Root"
-cl /nologo /EHsc /O2 /MD /W3 /DWIN32 /D_WINDOWS /DUNICODE /D_UNICODE $($includes -join ' ') $($src -join ' ') /link /DLL /OUT:"$outDir\gtaiv_dxvk_vr.dll" $libpath openvr_api.lib d3d9.lib user32.lib psapi.lib xinput.lib
+cl /nologo /EHsc /O2 /MD /W3 /DWIN32 /D_WINDOWS /DUNICODE /D_UNICODE $($includes -join ' ') $($src -join ' ') /link /DLL /OUT:"$outDir\gtaiv_dxvk_vr.dll" $libpath openvr_api.lib d3d9.lib user32.lib shell32.lib psapi.lib xinput.lib
 if errorlevel 1 exit /b 1
 copy /Y "$outDir\gtaiv_dxvk_vr.dll" "$outDir\gtaiv_dxvk_vr.asi"
 copy /Y "$Root\thirdparty\openvr\bin\win32\openvr_api.dll" "$outDir\openvr_api.dll"

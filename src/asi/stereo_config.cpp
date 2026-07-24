@@ -16,9 +16,12 @@ std::atomic<int> g_mode{static_cast<int>(StereoMode::Off)};
 std::atomic<bool> g_loggedMode{false};
 std::atomic<float> g_sepM{0.06f};
 std::atomic<bool> g_loggedIpd{false};
-// L4D2VR default VRScale ≈ 1.0 (user tunes). 100% = standard.
+// L4D2VR default VRScale ≈ 1.0 (user tunes). 100% = standard. 6DoF only.
 std::atomic<float> g_worldScale{1.0f};
 std::atomic<bool> g_loggedScale{false};
+// Soft stereo disparity (not WorldScale). 115% ≈ reclaim size without 150%×IPD break.
+std::atomic<float> g_stereoScale{1.15f};
+std::atomic<bool> g_loggedStereoScale{false};
 
 bool GetAsiDir(char* out, DWORD outLen) {
   HMODULE self = nullptr;
@@ -100,6 +103,85 @@ void ApplyStereoFusionDefaults() {
   Log("StereoFusion: defaults VRScale=100%% sep=%dcm (HMD IPD, L4D2VR-style)", cm);
 }
 
+void SetStereoScalePercent(int pct) {
+  if (pct < 100)
+    pct = 100;
+  if (pct > 130)
+    pct = 130;  // hard cap — 150%×IPD broke fusion
+  g_stereoScale.store(static_cast<float>(pct) / 100.f);
+}
+
+void SaveStereoScaleFile(int pct) {
+  char path[MAX_PATH]{};
+  if (!GetAsiDir(path, MAX_PATH))
+    return;
+  strcat_s(path, "gtaiv_dxvk_vr.stereoscale");
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "wb") != 0 || !f)
+    return;
+  std::fprintf(f, "%d\n", pct);
+  std::fclose(f);
+}
+
+void ReloadStereoScale() {
+  char path[MAX_PATH]{};
+  if (!GetAsiDir(path, MAX_PATH))
+    return;
+  strcat_s(path, "gtaiv_dxvk_vr.stereoscale");
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "rb") != 0 || !f)
+    return;
+  char buf[16]{};
+  const size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+  fclose(f);
+  if (n == 0)
+    return;
+  int pct = 0;
+  if (sscanf_s(buf, "%d", &pct) != 1)
+    return;
+  if (pct < 100 || pct > 130)
+    return;
+  SetStereoScalePercent(pct);
+  if (!g_loggedStereoScale.exchange(true))
+    Log("StereoScale: %.2f (file) — F6: higher = stronger 3D / smaller feel (cap 130%%)",
+        pct / 100.f);
+}
+
+// Mode 14/26 first entry: only fill MISSING knobs. Never overwrite a user-tuned
+// IPD/scale file — headset 2026-07-24: best 3D IPD was wiped on mode reload.
+void ApplyGeometryCanvasDefaults() {
+  char path[MAX_PATH]{};
+  bool haveIpd = false, haveScale = false, haveStereo = false;
+  if (GetAsiDir(path, MAX_PATH)) {
+    char ipdPath[MAX_PATH], scalePath[MAX_PATH], ssPath[MAX_PATH];
+    strcpy_s(ipdPath, path); strcat_s(ipdPath, "gtaiv_dxvk_vr.ipd");
+    strcpy_s(scalePath, path); strcat_s(scalePath, "gtaiv_dxvk_vr.scale");
+    strcpy_s(ssPath, path); strcat_s(ssPath, "gtaiv_dxvk_vr.stereoscale");
+    haveIpd = GetFileAttributesA(ipdPath) != INVALID_FILE_ATTRIBUTES;
+    haveScale = GetFileAttributesA(scalePath) != INVALID_FILE_ATTRIBUTES;
+    haveStereo = GetFileAttributesA(ssPath) != INVALID_FILE_ATTRIBUTES;
+  }
+  if (!haveScale) {
+    SetWorldScalePercent(150);
+    SaveScaleFile(150);
+  }
+  if (!haveStereo) {
+    SetStereoScalePercent(115);
+    SaveStereoScaleFile(115);
+  }
+  if (!haveIpd) {
+    const int cm = static_cast<int>(ReadHmdIpdMeters() * 100.f + 0.5f);
+    SetSepCm(cm);
+    SaveIpdFile(cm);
+  }
+  // Reload* are defined below — call via the public path after mode select.
+  g_loggedScale = false;
+  g_loggedIpd = false;
+  g_loggedStereoScale = false;
+  Log("GeometryCanvas: preserve user knob files (ipd=%d scale=%d stereoscale=%d)",
+      haveIpd ? 1 : 0, haveScale ? 1 : 0, haveStereo ? 1 : 0);
+}
+
 void ReloadWorldScale() {
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -142,8 +224,13 @@ void ReloadIpdScale() {
   if (cm < 0 || cm > 500)
     return;
   SetSepCm(cm);
-  if (!g_loggedIpd.exchange(true))
-    Log("StereoSep: %d cm (file gtaiv_dxvk_vr.ipd) — F8 cycles", cm);
+  if (!g_loggedIpd.exchange(true)) {
+    if (cm == 0)
+      Log("StereoSep: 0 cm (file) — NO PARALLAX / flat image. Set gtaiv_dxvk_vr.ipd to 1+ "
+          "(or F8; presets start at 1cm) for 3D");
+    else
+      Log("StereoSep: %d cm (file gtaiv_dxvk_vr.ipd) — F8 cycles 1,2,3,4,6,7,10", cm);
+  }
 }
 
 // Read a small text config file next to the ASI. Returns bytes read (0 = absent).
@@ -169,9 +256,9 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  if (n >= 2 && buf[0] >= '1' && buf[0] <= '2' && buf[1] >= '0' && buf[1] <= '9') {
+  if (n >= 2 && buf[0] >= '1' && buf[0] <= '3' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 24)
+    if (v <= 34)
       return v;
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
@@ -200,20 +287,50 @@ void ReloadStereoMode() {
   if (n > 0)
     v = ParseModeFile(buf, n);
   int prev = g_mode.load();
-  if (v >= 0 && v <= 24) {
+  if (v >= 0 && v <= 34) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
   }
 
-  // Mode 13: apply L4D2 standard scale/IPD once when entering the mode (not every reload).
-  if (static_cast<StereoMode>(g_mode.load()) == StereoMode::StereoFusion && prev != v &&
-      v == static_cast<int>(StereoMode::StereoFusion)) {
+  // Apply once when entering the mode (not every reload).
+  if (prev != v && v == static_cast<int>(StereoMode::StereoFusion)) {
     ApplyStereoFusionDefaults();
+  } else if (prev != v && (v == static_cast<int>(StereoMode::RecordDualReplayShift) ||
+                           v == static_cast<int>(StereoMode::GeometryCanvas) ||
+                           v == static_cast<int>(StereoMode::SameFrameWrapDual) ||
+                           v == static_cast<int>(StereoMode::ReplayRootProbe) ||
+                           v == static_cast<int>(StereoMode::VsParentCountProbe) ||
+                           v == static_cast<int>(StereoMode::PhaseDualDeviceVs) ||
+                           v == static_cast<int>(StereoMode::SameFrameReplayDual) ||
+                           v == static_cast<int>(StereoMode::SameFrameVsParentDual) ||
+                           v == static_cast<int>(StereoMode::SameFrameLateVsParentDual) ||
+                           v == static_cast<int>(StereoMode::SameFrameVsRetCallerDual))) {
+    ApplyGeometryCanvasDefaults();
+    ReloadIpdScale();
+    ReloadWorldScale();
+    ReloadStereoScale();
   } else {
     ReloadIpdScale();
     ReloadWorldScale();
+    ReloadStereoScale();
   }
+}
+
+void WriteStereoModeFile(int mode) {
+  if (mode < 0 || mode > 34)
+    return;
+  char path[MAX_PATH]{};
+  if (!GetAsiDir(path, MAX_PATH))
+    return;
+  strcat_s(path, "gtaiv_dxvk_vr.stereo");
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "wb") != 0 || !f)
+    return;
+  std::fprintf(f, "%d\n", mode);
+  std::fclose(f);
+  g_mode.store(mode);
+  Log("StereoMode: wrote file=%d (safe default / fallback)", mode);
 }
 
 StereoMode GetStereoMode() {
@@ -228,7 +345,13 @@ bool IsTemporalStereoMode(StereoMode mode) {
 bool UsesAngleCorrectCanvas(StereoMode mode) {
   return (mode >= StereoMode::GeometryCanvas && mode <= StereoMode::CamFovWrite) ||
          mode == StereoMode::SameFrameRootDual || mode == StereoMode::ExecViewDual ||
-         mode == StereoMode::ExecViewPhaseDual || mode == StereoMode::ExecViewConstDual;
+         mode == StereoMode::ExecViewPhaseDual || mode == StereoMode::ExecViewConstDual ||
+         mode == StereoMode::BuildDualViewShift || mode == StereoMode::RecordDualReplayShift ||
+         mode == StereoMode::SameFrameWrapDual || mode == StereoMode::ReplayRootProbe ||
+         mode == StereoMode::VsParentCountProbe || mode == StereoMode::PhaseDualDeviceVs ||
+         mode == StereoMode::SameFrameReplayDual || mode == StereoMode::SameFrameVsParentDual ||
+         mode == StereoMode::SameFrameLateVsParentDual ||
+         mode == StereoMode::SameFrameVsRetCallerDual;
 }
 
 float GetStereoSepMeters() {
@@ -244,12 +367,17 @@ float GetWorldScale() {
   return g_worldScale.load();
 }
 
+float GetStereoScale() {
+  return g_stereoScale.load();
+}
+
 void PollIpdScaleHotkey() {
   static bool wasF8 = false;
   if (!KeyPressedEdge(VK_F8, &wasF8))
     return;
 
-  static const int kPresetsCm[] = {0, 2, 3, 4, 6, 7, 10};
+  // Floor 1cm (not 0): user 2026-07-24 — 2cm almost fused, needs closer still.
+  static const int kPresetsCm[] = {1, 2, 3, 4, 6, 7, 10};
   constexpr int kN = 7;
   const int curCm = static_cast<int>(g_sepM.load() * 100.f + 0.5f);
   int idx = 0;
@@ -265,20 +393,25 @@ void PollIpdScaleHotkey() {
   const int cm = kPresetsCm[idx];
   SetSepCm(cm);
   SaveIpdFile(cm);
-  Log("StereoSep: %d cm (F8) — L4D2 IpdScale knob", cm);
+  Log("StereoSep: %d cm (F8) — L4D2 IpdScale knob (presets 1..10; file still 0..500)", cm);
 }
 
 float GetEyeForwardMeters() {
   static std::atomic<int> s_cm{-1};
   int cm = s_cm.load();
   if (cm < 0) {
-    cm = 38;  // legacy default (see past the ped skull without natives)
+    // 42cm: sit camera through skull/hair (natives from EndScene crash; no script thread yet).
+    cm = 42;
     char buf[16]{};
     int v = 0;
     if (ReadSmallFile("gtaiv_dxvk_vr.eyefwd", buf, sizeof(buf)) > 0 &&
         sscanf_s(buf, "%d", &v) == 1 && v >= 0 && v <= 100) {
       cm = v;
-      Log("Config: eyeForward=%d cm (gtaiv_dxvk_vr.eyefwd)", cm);
+      Log("Config: eyeForward=%d cm (gtaiv_dxvk_vr.eyefwd) — head embed / past hair", cm);
+    } else {
+      Log("Config: eyeForward=%d cm (default) — cam through skull/hair; PedHide natives OFF "
+          "(EndScene crash); set gtaiv_dxvk_vr.eyefwd to override",
+          cm);
     }
     s_cm.store(cm);
   }
@@ -351,7 +484,7 @@ void PollWorldScaleHotkey() {
   if (!KeyPressedEdge(VK_F7, &wasF7))
     return;
 
-  // L4D2VR-style VRScale around 1.0; higher → world feels smaller.
+  // 6DoF only — does not multiply stereo IPD.
   static const int kPresets[] = {50, 75, 100, 125, 150, 200, 300};
   constexpr int kN = 7;
   const int curPct = static_cast<int>(g_worldScale.load() * 100.f + 0.5f);
@@ -368,7 +501,31 @@ void PollWorldScaleHotkey() {
   const int pct = kPresets[idx];
   SetWorldScalePercent(pct);
   SaveScaleFile(pct);
-  Log("WorldScale: %.2f (F7) — L4D2 VRScale; HIGHER = smaller world", pct / 100.f);
+  Log("WorldScale: %.2f (F7) — 6DoF only; HIGHER = smaller feel from head move", pct / 100.f);
+}
+
+void PollStereoScaleHotkey() {
+  static bool wasF6 = false;
+  if (!KeyPressedEdge(VK_F6, &wasF6))
+    return;
+
+  static const int kPresets[] = {100, 110, 115, 120, 125, 130};
+  constexpr int kN = 6;
+  const int curPct = static_cast<int>(g_stereoScale.load() * 100.f + 0.5f);
+  int idx = 0;
+  int best = 999;
+  for (int i = 0; i < kN; ++i) {
+    const int d = kPresets[i] > curPct ? kPresets[i] - curPct : curPct - kPresets[i];
+    if (d < best) {
+      best = d;
+      idx = i;
+    }
+  }
+  idx = (idx + 1) % kN;
+  const int pct = kPresets[idx];
+  SetStereoScalePercent(pct);
+  SaveStereoScaleFile(pct);
+  Log("StereoScale: %.2f (F6) — HIGHER = stronger 3D / smaller world (cap 1.30)", pct / 100.f);
 }
 
 }  // namespace asi

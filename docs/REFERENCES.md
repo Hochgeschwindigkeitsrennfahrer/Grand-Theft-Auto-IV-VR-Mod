@@ -27,9 +27,19 @@ All important external links for this project.
 | Item | Link / location |
 |------|------------|
 | FusionFix (GTA IV CE) | https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix |
+| **FusionShaders (decompiled Rage shaders)** | https://github.com/Parallellines0451/GTAIV.EFLC.FusionShaders |
+| Halo MCC VR (same-frame / FOV lessons) | https://github.com/pancreations/Halo-MCC-VR |
 | GTA IV CE | Steam / Rockstar Launcher |
 | SteamVR | Steam library |
 | OpenVR | https://github.com/ValveSoftware/openvr |
+
+### FusionFix knobs we use for VR comfort
+
+| Setting (Graphics menu or `plugins\GTAIV.EFLC.FusionFix.cfg`) | VR use |
+|--------------------------------------------------------------|--------|
+| `MotionBlur = 0` | Off — kills stereo echo / look-smear (Halo lesson) |
+| `FieldOfView = 0..9` | Adds `n×5°` to `CCam+0x60` (FusionFix path; safer than our blind 94° write). `5` = +25° — shrinks black bars / giant-world feel |
+| `GraphicsAPI` | Keep DX9/DXVK path that loads our `d3d9.dll` (do not switch away) |
 
 ## Tools
 

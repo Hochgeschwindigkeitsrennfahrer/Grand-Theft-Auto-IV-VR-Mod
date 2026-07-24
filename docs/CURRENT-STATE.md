@@ -1,7 +1,43 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-23 ~23:45  
-**Version:** **1.5.0** — Mode 7 spike (RT capture + HMD projection); default stereo **off**.
+**As of:** 2026-07-24 ~16:45  
+**Playable / deployed default:** stereo **`30`** (pair-hold) + **`ipd=1`** + **`eyefwd=42`**. Kill → **`26`** or **`0`**.  
+F8 presets now **`1,2,3,4,6,7,10`** (floor 1 cm — user: 2 cm almost fused, needs closer).  
+`scale=50` preserved (F7 = 6DoF only; HIGHER = smaller feel). Do **not** multiply IPD×WorldScale.  
+Mode **34** probe: VsRet-caller discover **worked**; COUNT on `0x1BF010` **hard-killed** → forbidden + stricter ABI; dual **not** shipped. Playable stays **30**.
+
+### Session 2026-07-24 ~16:25–16:45 (comfort + Mode 34)
+
+**Shipped for headset:**
+- F8 floor **1 cm**; file still allows 0–500; warn if file=0.
+- `eyefwd=42` (default/file) — cam past skull/hair. `PedHide: OFF` (natives from EndScene/CopyMat crash CE).
+- Mode **30** + `sep=1cm` + `eyeFwd=42cm` live (buildId `20260724-164438`).
+
+Log quotes (playable):
+- `StereoSep: 1 cm (file gtaiv_dxvk_vr.ipd) — F8 cycles 1,2,3,4,6,7,10`
+- `Config: eyeForward=42 cm … PedHide: OFF …`
+- `CamMatrix: FP lock #1 … sep=1cm eyeFwd=42cm`
+- `StereoSubmit: L=1 R=1 mode=30`
+
+**Mode 34 RESULT (buildId `20260724-164125`):**  
+Goal: when HookSetVSConstF ret==`0x2C73E`, resolve stack → **function starts**, CC-pad thiscall0, count ~1×/frame, dual+pair-hold. Fail → stereo=30.  
+- EndScene brace bug (Mode34 nested under Mode33) fixed mid-session.
+- `Mode34: DISCOVER armed … rareAgg=24 sampleHits=1392 vsRetHits=276`
+- Rare starts with avg≈1.0 e.g. `0x52E7C0`, `0x5303D0`, `0x4DDAD0`
+- `Mode34: COUNT exeRva=0x1BF010` (thiscall-frame) → **process hard-kill** (no SEH FALLBACK write)
+- Hardened after: forbid `0x1BF010`, reject `thiscall-frame`, prefer avg∈[0.8,2.5] closest to 1.0
+- Dual **not armed**. Next Mode34 try only with hardened filter; kill → **30/26**.
+
+### “No 3D” on Mode 30 — ROOT CAUSE (2026-07-24 ~16:00)
+
+Pair-hold was **not** broken: L/R eye flip + `StereoPairHold: promoted pair` + `StereoSubmit L=1 R=1 mode=30` all healthy.  
+Live log had **`sep=0cm`** because `gtaiv_dxvk_vr.ipd` = **`0`** (F8 preset included 0).  
+CamMatrix with ipd=0 → `ipd=(±0.000…)` → flat image, comfort intact.  
+**Fix:** restored IPD; F8 presets no longer include 0 (now start at **1**). Log warn if file=0.
+
+### CE vs version downgrade (verdict)
+
+**Stay on CE.** Classic/1.0.7–1.0.8 + VorpX/C06alt FP offsets would not give us a replay-thread draw walker: those mods are cam/FP/ScriptHook (and often SBS cinema), not Rage dual-draw. Downgrade would invalidate FusionFix + all CE AOBs/RVAs we already mapped (Mode 18–26), force a parallel glue rewrite, and still leave the same “find the VsRet walker” problem on a different binary. Singleplayer/offline OK, but not worth a dedicated spike unless CE same-frame is abandoned. **Full steam ahead on CE.**
 
 ---
 
@@ -22,14 +58,73 @@ GTAIV.exe
 |------|------|
 | Game folder | `C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV` |
 | Log | `...\GTAIV\gtaiv_dxvk_vr.log` |
-| Stereo kill switch | `...\GTAIV\gtaiv_dxvk_vr.stereo` (single digit 0–8) |
-| IPD scale | `...\GTAIV\gtaiv_dxvk_vr.ipd` (percent 1–100); **F8** cycles live |
+| Stereo kill switch | `...\GTAIV\gtaiv_dxvk_vr.stereo` → **`30`** playable / **`26`** baseline / **`0`** mono |
+| IPD / scale / stereoscale | `gtaiv_dxvk_vr.ipd` / `.scale` / `.stereoscale` — preserved across mode probes; **ipd ≥1 for 3D** (F8: 1,2,3,4,6,7,10) |
+| Eye-forward | `gtaiv_dxvk_vr.eyefwd` — default **42** cm (past hair); PedHide natives OFF |
 | Build | `.\scripts\build-asi.ps1` → `out-asi\gtaiv_dxvk_vr.asi` |
-| Deploy + start | `.\scripts\build-deploy-run.ps1` (Build→Kill→Deploy→Steam start) |
+| Deploy + start | `.\scripts\build-deploy-run.ps1` (Build→Kill→Deploy→Steam start→close dashboard) |
 | Deploy only | `.\scripts\deploy-asi.ps1 -GameDir "<GTAIV>"` (`-Launch` starts the game) |
 
-**Currently deployed:** `gtaiv_dxvk_vr.stereo` = **`14`** (GeometryCanvas — fusion confirmed).
-Mode **15** built and ready to test (black-bar widen spike). Kill switch stays **`0`**.
+**Currently deployed:** `gtaiv_dxvk_vr.stereo` = **`30`**, `ipd` = **`1`**, `eyefwd` = **`42`**.  
+**Mode 30 (2026-07-24):** PAIR-HOLD = Mode 14/26 CCam temporal, but submit textures  
+update **only when a complete L→R pair is ready** (both eyes promote together).  
+User: jumps **definitely less**, barely noticeable — keep as playable. With ipd≥1: try fusion.  
+Log: `StereoPairHold: promoted pair #N`, `StereoSubmit … mode=30`, `sep=1cm`, `eyeFwd=42cm`.
+
+**Mode 34 RESULT (2026-07-24) — discover OK, COUNT crash:**  
+VsRet(`0x2C73E`) stack → fn starts; DISCOVER armed; COUNT `0x1BF010` hard-kill.  
+Forbidden + reject thiscall-frame; dual not shipped. Kill → **30** or **26**. See header.
+
+**Mode 33 RESULT (2026-07-24) — wait worked, dual not armed:**  
+Goal: WAIT until live VsParent samples (Mode32 Soft was empty), then only CC-pad  
+zero-arg thiscall → count → dual+VS. Never `0x2C6AC`/`0x37BD0`/`0x32A40`/`0x372B0`.  
+Fail → write stereo=30.
+
+Log quotes (buildId `20260724-161039`):
+- `StereoSep: 6 cm (file …)` / `mode 33 … ok=1`
+- `Mode33: still waiting … es=60 rareAgg=0` (correct — no early seed)
+- `Mode33: VsParent sample#1 slot=10 exeRva=0x22187` (+ `0x37520`/`0x32BD7`/`0x4D901B`)
+- `Mode33: DISCOVER armed (live VsParent appeared; rareAgg=4 sampleHits=8; no early seed)`
+- Mid bytes prove **epilogues**, not walkers: `0x22187=5F C2 10 00` (pop/ret 0x10),  
+  `0x32BD7→0x32A40` REJECT forbidden stackarg, `0x37520→0x372B0` REJECT forbidden
+- `Mode33: COUNT exeRva=0x4D8F10` → `avgEntries=0.31` REJECT
+- `Mode33: FALLBACK pair-hold — wrote stereo=30`
+- After: `StereoSubmit: L=1 R=1 mode=30` (alive). F8 no longer cycles to 0.
+
+**Hard finding:** VsParent slots 10–32 are **return addresses inside callees** (epilogues /  
+mid-instr), not ~1×/frame thiscall0 draw walkers. Next same-frame spike must find the  
+**caller** that drives VsRet ~1×/frame (static E8 / deeper stack), not re-hook these mids.
+
+**Mode 32 RESULT (earlier) — safe fallback, dual not armed:**  
+Soft ran before VsRet traffic → empty hist → early seed of stackarg. Mode 33 fixed the wait.
+
+**Next RVA / ABI (do NOT blind-hook):**
+
+| RVA | ABI | Notes |
+|-----|-----|--------|
+| `0x2C73E` | VsRet | Upload site; not a walker |
+| `0x22187` | mid epilogue `5F C2 10 00` | VsParent slot — not a start |
+| `0x37520` / `0x32BD7` / `0x4D901B` | mid | VsParent slots — resolve to stackarg or none |
+| `0x370D0` | stdcall `56 57 8B 7C` | Helper — no dual |
+| `0x32A40` | thiscall+stackarg | `[ebp+8]`, ret 4 — **FORBIDDEN** Mode33 |
+| `0x372B0` | thiscall+stackarg | CC-pad but stackarg — **FORBIDDEN** Mode33 |
+| `0x4D8F10` | thiscall-83EC | Safe; count avg≈0.3 (not ~1×/frame) |
+| `0x1BF010` | thiscall-frame | Mode34 COUNT **hard-kill** — **FORBIDDEN** |
+| `0x52E7C0` / `0x5303D0` / `0x4DDAD0` | ~1×/frame starts | Mode34 rare avg≈1.0 candidates (untested after harden) |
+| `0x37BD0` / `0x2C6AC` | | **FORBIDDEN** |
+
+**Next session:** Mode34 hardened retry on avg≈1.0 non-frame ABI only, or stay on **30** + tune IPD/F7.  
+Playable stays **`30`** + **`ipd=1`** + **`eyefwd=42`**. Kill → **`26`**.
+
+**Mode 31:** discover failed (`frameSlots=0`, callee too deep). Superseded by Mode 32/33.
+
+**Mode 30 dual probe (earlier) — DEAD for parallax:**  
+device-VS dual `deviceVsPatches=0`. Do not re-arm without replay-thread evidence.
+
+**Mode 29 FAILED (2026-07-24):** `FindFnStartNear(Cand37C01)` → `0x37BD0` crash.  
+Modes **27/29** alias Mode 26. **Mode 28:** wrap@0x2C6AC crashed — aliases 26.  
+**SteamVR dashboard:** `restart-gtaiv.ps1` closes it after GTAIV is up (default).  
+**Quick restart (pinable):** `scripts\install-restart-shortcut.ps1`.
 
 ---
 
@@ -42,7 +137,8 @@ Mode **15** built and ready to test (black-bar widen spike). Kill switch stays *
 | Mono image in headset | Done | Same BB to L+R; `errL=0 errR=0` |
 | FP cam on ped (`FindPlayerPed` + CopyMat) | Done | Armed after ~360 submits; 4/4 call sites |
 | HMD orient + 6DoF relative F9 | Done | Only **F9** recenter (no look toggles) |
-| Eye-Forward ~0.38 | Done | Head/hair partially "see-through" without natives |
+| Eye-Forward ~0.42 | Done | Default/file 42 cm past skull/hair; PedHide natives OFF |
+| PedHide natives | Forbidden | EndScene/CopyMat crash — need script thread later |
 | Locomotion + stick yaw | Done | Stick-yaw sign negated (L/R was swapped) |
 | HMD info log | Done | G2: recommended ~2836×2772, FOVh~94°, IPD~60 mm |
 | BuildRenderList mid-AOB | Done | Finds fn despite FusionFix prologue patch |
@@ -230,23 +326,47 @@ shifting them at exec time changes nothing.**
 pictures" = near objects double → both passes render from the same camera, images land at
 infinity in the per-eye canvases).
 
-**Mode 24 — ExecViewConstDual (BUILT + DEPLOYED, stereo file already set to 24, NOT yet
-tested):** mode 23 + the missing camera change, done at the D3D level: `SetVertexShaderConstantF`
-(device vt[94]) is hooked; during the RIGHT pass every uploaded 4x4 constant block that maps
-the build cam position onto the view axis (|x'|,|y'| ≈ 0 with cancellation tolerance, zero
-matrix rejected via z'/w') is treated as view/viewProj and gets the world-space eye delta
-pre-multiplied (both row-vector and column-vector conventions handled). Zero overhead outside
-the R pass (gate `StereoVsGetPatchParams`).
-Log lines to check after the next headset test:
-- `VsPatch: MATCH rowvec/colvec reg=… cnt=…` → view/viewProj registers found and translated.
-- `StereoExecPhase: #n … vsPatch=N` → N grows = matrices are being patched per frame.
-- `VsPatch: seen reg=… cnt=…` (first 40 uploads of R passes) → register layout intel if
-  NOTHING matches (then the game likely uploads only combined World×ViewProj per draw —
-  next lever: detect gWorld+gWorldViewProj pairs in one upload, or patch at DIP time).
-Expected outcomes: fusion appears → DONE (same-frame stereo complete). No fusion +
-`vsPatch=0` → constants are combined WVP; plan B above. Crash → exception log has stage/code
-(same forensics as mode 22/23).
-Mode 14 stays the stable fallback; mode 23 is the stable dual base (45 FPS, no jumping).
+**Mode 24 — ExecViewConstDual (DEAD for fusion):** phase re-exec never sees the real draws
+(`vsCallsR=0`). All VS-constant uploads go through one Rage wrapper (exeRva `0x2C73E`) on a
+**dedicated render/replay thread**, while BuildRootA + ExecRoot share the game thread.
+
+**Mode 25 — BuildDualViewShift (DEAD for fusion):** BuildRootA ×2 + manager matrix shift +
+VS patch during walk 2. Stable, but `vsCallsR≈1` — same wrong-thread problem.
+
+**Mode 26 — RecordDualReplayShift:**
+- Submit fix: `openvr_mono` always calls `StereoTrySubmitEyes` (was stale mode list).
+- Headset after submit: fusion YES, jump NO, 90 FPS — but "monitor on face", wrong world
+  size, black bars. Cause: VS-only shifted identity-world draws + stale `scale=50`.
+- Now: Mode 14 CCam temporal only (VS stack removed — doubled IPD on static geo).
+  Entering 14/26 resets scale=150% + HMD IPD. IPD is NOT multiplied by WorldScale
+  anymore (150%×IPD broke fusion + violent jump). F7 = 6DoF size only; F8 = stereo cm.
+  Black bars = canvas. Desktop L/R jump + look-smear = temporal (same-frame next).
+**Kill-switch baseline:** `gtaiv_dxvk_vr.stereo` = **`26`**. Kill → `14` or `0`.
+
+**Mode 30 — PhaseDualDeviceVs → PAIR-HOLD (2026-07-24):**
+- Tried: Mode 23 dual + device Get/SetVSConstF before R (safer than prologue hooks).
+- Result: dual stable but `deviceVsPatches=0` — no parallax lever at exec.
+- Shipped: CCam temporal + **pair-hold** (promote L+R submit textures together).
+- User feedback: jump barely noticeable — **keep as playable**. Needs **`ipd≥2`** (was 0 → no 3D).
+**Currently deployed:** stereo = **`30`**, ipd = **`6`**. Kill → **`26`**.
+
+**Mode 31 — SameFrameReplayDual (2026-07-24):** discover failed (stack too deep).  
+Superseded by Mode 32/33. Kill → **`30`** or **`26`**.
+
+**Mode 32 — SameFrameVsParentDual (2026-07-24):** HookSetVSConstF-depth VsParent +  
+ABI classify + count gate. Soft empty → early seed. Dual not armed; wrote stereo=30.  
+Kill → **`30`** or **`26`**.
+
+**Mode 33 — SameFrameLateVsParentDual (2026-07-24):** WAIT for live VsParent samples,  
+then CC-pad thiscall0 only. Wait **worked**; mids are epilogues not walkers;  
+`0x4D8F10` count avg=0.31. Dual not armed; wrote stereo=30. See header.  
+Kill → **`30`** or **`26`**. Next: find ~1×/frame **caller** of VsRet (not mid slots).
+
+**Comfort pack / Mode 27 (2026-07-24):** Best 3D so far = Mode 26 + user IPD. F6 subtle.
+Jitter = temporal. Mode 27 ReplayRootProbe: Cand37BD0 wrong ABI (exception), Cand4D8F85
+never called; VS wrapper `0x2C6AC` has **no static E8 xrefs** (indirect only). Back on
+**Mode 26**; FusionFix `MotionBlur=0` + `FieldOfView=7` (+35°); **IPD/scale files no longer
+overwritten** on mode enter. Next: Mode 28 dynamic caller of `0x2C6AC` for same-frame.
 
 **Insight for full vertical fill later:** at 16:9 the horizontal hits the frustum limit long
 before the vertical fills. The proper endgame is SQUARE aspect (`commandline` 1080×1080) +
@@ -307,7 +427,7 @@ Rage cam matrix: `right`=X, `up`=Y=**Forward**, `at`=Z=**Up**.
 ## Hotkeys / UX
 
 - **F9** — SteamVR recenter + 6DoF baseline  
-- Close SteamVR dashboard (otherwise `DoNotHaveFocus` / `errL`≠0)  
+- SteamVR dashboard auto-closes on restart / after OpenVR init (manual close still OK)  
 - Quick restart: `scripts/restart-gtaiv.*` (optional `-DirectExe` after RGLess)  
 - Faster start/launcher: `docs/STARTUP_SPEED.md`  
 - Inspiration (VC VR / C06alt): `docs/INSPIRATION_NOTES.md`  

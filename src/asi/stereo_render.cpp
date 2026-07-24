@@ -71,6 +71,186 @@ bool g_loggedIpd = false;
 std::atomic<uint32_t> g_temporalFrames{0};
 std::atomic<uint32_t> g_sameFrameCount{0};
 
+// Mode 30 phase machine (no prologue hooks — reuses Mode 23 exec path).
+enum class Mode30Phase : int { SoftStart = 0, Dual = 1, PairHold = 2 };
+std::atomic<int> g_mode30Phase{static_cast<int>(Mode30Phase::SoftStart)};
+std::atomic<uint32_t> g_mode30SoftEs{0};
+std::atomic<uint32_t> g_mode30DevPatches{0};
+std::atomic<uint32_t> g_mode30ZeroDiff{0};
+// Pair-hold: capture into hold RTs; promote to submit RTs only when L+R pair is complete.
+IDirect3DTexture9* g_holdL = nullptr;
+IDirect3DTexture9* g_holdR = nullptr;
+bool g_pairAwaitingR = false;
+std::atomic<uint32_t> g_pairPromoteCount{0};
+
+// ---- Mode 31: discover ~1×/frame VsRet walker → same-frame dual + VS patch ----
+enum class Mode31Phase : int {
+  SoftPairHold = 0,  // Mode 30 path while cam warms / discover arms
+  Discover = 1,      // SetVSConstF stack histogram (no game prologue hooks)
+  Count = 2,         // count-only thiscall hook ≥45 EndScenes
+  Dual = 3,          // walk×2 + VS translate between passes
+  FallbackPairHold = 4
+};
+std::atomic<int> g_mode31Phase{static_cast<int>(Mode31Phase::SoftPairHold)};
+std::atomic<uint32_t> g_mode31Es{0};
+std::atomic<uint32_t> g_mode31CountEs{0};
+std::atomic<uint32_t> g_mode31DualN{0};
+std::atomic<uint32_t> g_mode31ZeroDiff{0};
+std::atomic<uint32_t> g_mode31VsCallsFrame{0};
+uint32_t g_mode31VsTid = 0;
+uint32_t g_mode31EntrySum = 0;
+
+struct Mode31FrameHit {
+  uint32_t rva;
+  uint32_t count;
+};
+Mode31FrameHit g_mode31Frame[96]{};
+int g_mode31FrameN = 0;
+
+struct Mode31Agg {
+  uint32_t rva;
+  uint32_t rareFrames;  // EndScenes where this RVA appeared 1..4 times
+  uint32_t totalHits;
+};
+Mode31Agg g_mode31Agg[64]{};
+int g_mode31AggN = 0;
+
+uintptr_t g_mode31TryList[8]{};
+int g_mode31TryN = 0;
+int g_mode31TryIdx = 0;
+uint32_t g_mode31ActiveRva = 0;
+
+// ---- Mode 32: HookSetVSConstF-depth VsParent discover → count → dual ----
+enum class Mode32Phase : int {
+  SoftPairHold = 0,
+  Discover = 1,
+  Count = 2,
+  Dual = 3,
+  FallbackPairHold = 4
+};
+std::atomic<int> g_mode32Phase{static_cast<int>(Mode32Phase::SoftPairHold)};
+std::atomic<uint32_t> g_mode32Es{0};
+std::atomic<uint32_t> g_mode32CountEs{0};
+std::atomic<uint32_t> g_mode32DualN{0};
+std::atomic<uint32_t> g_mode32ZeroDiff{0};
+std::atomic<uint32_t> g_mode32VsCallsFrame{0};
+uint32_t g_mode32VsTid = 0;
+uint32_t g_mode32EntrySum = 0;
+
+struct Mode32FrameHit {
+  uint32_t rva;
+  uint32_t count;
+};
+Mode32FrameHit g_mode32Frame[96]{};
+int g_mode32FrameN = 0;
+
+struct Mode32Agg {
+  uint32_t rva;
+  uint32_t rareFrames;
+  uint32_t totalHits;
+};
+Mode32Agg g_mode32Agg[64]{};
+int g_mode32AggN = 0;
+
+uintptr_t g_mode32TryList[8]{};
+int g_mode32TryN = 0;
+int g_mode32TryIdx = 0;
+uint32_t g_mode32ActiveRva = 0;
+
+// ---- Mode 33: wait for live VsParent samples → CC-pad thiscall0 → dual ----
+enum class Mode33Phase : int {
+  SoftWaitSamples = 0,  // pair-hold + collect; do NOT seed while hist empty
+  Discover = 1,
+  Count = 2,
+  Dual = 3,
+  FallbackPairHold = 4
+};
+std::atomic<int> g_mode33Phase{static_cast<int>(Mode33Phase::SoftWaitSamples)};
+std::atomic<uint32_t> g_mode33Es{0};
+std::atomic<uint32_t> g_mode33CountEs{0};
+std::atomic<uint32_t> g_mode33DualN{0};
+std::atomic<uint32_t> g_mode33ZeroDiff{0};
+std::atomic<uint32_t> g_mode33VsCallsFrame{0};
+uint32_t g_mode33VsTid = 0;
+uint32_t g_mode33EntrySum = 0;
+uint32_t g_mode33SampleHits = 0;  // live VsParent notes seen
+
+struct Mode33FrameHit {
+  uint32_t rva;
+  uint32_t count;
+};
+Mode33FrameHit g_mode33Frame[96]{};
+int g_mode33FrameN = 0;
+
+struct Mode33Agg {
+  uint32_t rva;
+  uint32_t rareFrames;
+  uint32_t totalHits;
+};
+Mode33Agg g_mode33Agg[64]{};
+int g_mode33AggN = 0;
+
+uintptr_t g_mode33TryList[8]{};
+int g_mode33TryN = 0;
+int g_mode33TryIdx = 0;
+uint32_t g_mode33ActiveRva = 0;
+
+// ---- Mode 34: VsRet(0x2C73E) caller → resolve FUNCTION STARTS → dual ----
+enum class Mode34Phase : int {
+  SoftWaitSamples = 0,
+  Discover = 1,
+  Count = 2,
+  Dual = 3,
+  FallbackPairHold = 4
+};
+std::atomic<int> g_mode34Phase{static_cast<int>(Mode34Phase::SoftWaitSamples)};
+std::atomic<uint32_t> g_mode34Es{0};
+std::atomic<uint32_t> g_mode34CountEs{0};
+std::atomic<uint32_t> g_mode34DualN{0};
+std::atomic<uint32_t> g_mode34ZeroDiff{0};
+std::atomic<uint32_t> g_mode34VsCallsFrame{0};
+uint32_t g_mode34VsTid = 0;
+uint32_t g_mode34EntrySum = 0;
+uint32_t g_mode34SampleHits = 0;
+uint32_t g_mode34VsRetHits = 0;  // HookSetVSConstF with ret==0x2C73E
+
+struct Mode34FrameHit {
+  uint32_t rva;
+  uint32_t count;
+};
+Mode34FrameHit g_mode34Frame[96]{};
+int g_mode34FrameN = 0;
+
+struct Mode34Agg {
+  uint32_t rva;
+  uint32_t rareFrames;
+  uint32_t totalHits;
+};
+Mode34Agg g_mode34Agg[64]{};
+int g_mode34AggN = 0;
+
+uintptr_t g_mode34TryList[8]{};
+int g_mode34TryN = 0;
+int g_mode34TryIdx = 0;
+uint32_t g_mode34ActiveRva = 0;
+
+enum class Mode32Abi : int {
+  Reject = 0,
+  Thiscall = 1,   // safe HookDrawWalk dual
+  Stdcall = 2,    // log only — do not hook (wrong arity risk)
+  Fastcall = 3    // ecx+edx — count-only only if clearly thiscall-shaped
+};
+
+// MSAA resolve target for canvas captures (sub-rect StretchRect from an MSAA
+// source is illegal in D3D9 — resolve full-surface first, then sub-rect copy).
+IDirect3DSurface9* g_resolveSurf = nullptr;
+uint32_t g_resolveW = 0, g_resolveH = 0;
+D3DFORMAT g_resolveFmt = D3DFMT_UNKNOWN;
+
+// L-vs-R image diff probe (mode 23/24): tiny downsample + readback.
+IDirect3DSurface9* g_diffSmall[2] = {};
+IDirect3DSurface9* g_diffSys[2] = {};
+
 void ReleaseEyeRts() {
   if (g_texL) {
     g_texL->Release();
@@ -80,29 +260,140 @@ void ReleaseEyeRts() {
     g_texR->Release();
     g_texR = nullptr;
   }
+  if (g_holdL) {
+    g_holdL->Release();
+    g_holdL = nullptr;
+  }
+  if (g_holdR) {
+    g_holdR->Release();
+    g_holdR = nullptr;
+  }
+  if (g_resolveSurf) {
+    g_resolveSurf->Release();
+    g_resolveSurf = nullptr;
+    g_resolveW = g_resolveH = 0;
+    g_resolveFmt = D3DFMT_UNKNOWN;
+  }
+  for (int i = 0; i < 2; ++i) {
+    if (g_diffSmall[i]) {
+      g_diffSmall[i]->Release();
+      g_diffSmall[i] = nullptr;
+    }
+    if (g_diffSys[i]) {
+      g_diffSys[i]->Release();
+      g_diffSys[i] = nullptr;
+    }
+  }
   g_rtW = g_rtH = 0;
   g_haveL = g_haveR = false;
+  g_pairAwaitingR = false;
 }
 
 bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
   if (!dev || w < 16 || h < 16)
     return false;
-  if (g_texL && g_texR && g_device == dev && g_rtW == w && g_rtH == h)
+  if (g_texL && g_texR && g_holdL && g_holdR && g_device == dev && g_rtW == w && g_rtH == h)
     return true;
   ReleaseEyeRts();
   g_device = dev;
   if (FAILED(dev->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
                                 &g_texL, nullptr)) ||
       FAILED(dev->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
-                                &g_texR, nullptr))) {
+                                &g_texR, nullptr)) ||
+      FAILED(dev->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
+                                &g_holdL, nullptr)) ||
+      FAILED(dev->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
+                                &g_holdR, nullptr))) {
     ReleaseEyeRts();
     Log("StereoRender: CreateTexture RT FAIL %ux%u", w, h);
     return false;
   }
   g_rtW = w;
   g_rtH = h;
-  Log("StereoRender: eye RTs %ux%u OK", w, h);
+  Log("StereoRender: eye RTs %ux%u OK (submit+hold)", w, h);
   return true;
+}
+
+bool PromoteHoldPair(IDirect3DDevice9* dev) {
+  if (!dev || !g_texL || !g_texR || !g_holdL || !g_holdR)
+    return false;
+  IDirect3DSurface9 *srcL = nullptr, *srcR = nullptr, *dstL = nullptr, *dstR = nullptr;
+  if (FAILED(g_holdL->GetSurfaceLevel(0, &srcL)) || !srcL ||
+      FAILED(g_holdR->GetSurfaceLevel(0, &srcR)) || !srcR ||
+      FAILED(g_texL->GetSurfaceLevel(0, &dstL)) || !dstL ||
+      FAILED(g_texR->GetSurfaceLevel(0, &dstR)) || !dstR) {
+    if (srcL) srcL->Release();
+    if (srcR) srcR->Release();
+    if (dstL) dstL->Release();
+    if (dstR) dstR->Release();
+    return false;
+  }
+  const bool ok = SUCCEEDED(dev->StretchRect(srcL, nullptr, dstL, nullptr, D3DTEXF_NONE)) &&
+                  SUCCEEDED(dev->StretchRect(srcR, nullptr, dstR, nullptr, D3DTEXF_NONE));
+  srcL->Release();
+  srcR->Release();
+  dstL->Release();
+  dstR->Release();
+  if (ok) {
+    g_haveL = g_haveR = true;
+    const uint32_t n = ++g_pairPromoteCount;
+    if (n <= 4 || (n % 300) == 0)
+      Log("StereoPairHold: promoted pair #%u (both eyes update together)", n);
+  }
+  return ok;
+}
+
+// Mode 30: translate view/viewProj blocks already resident in device VS regs
+// (re-exec issues zero SetVSConstF — Mode 24). Same match math as HookSetVSConstF.
+int PushDeviceVsEyeTranslate(IDirect3DDevice9* dev, const float cam[3], const float d[3]) {
+  if (!dev || !cam || !d)
+    return 0;
+  const float cx = cam[0], cy = cam[1], cz = cam[2];
+  const float dx = d[0], dy = d[1], dz = d[2];
+  int patched = 0;
+  for (UINT base = 0; base <= 60; base += 4) {
+    float f[16]{};
+    if (FAILED(dev->GetVertexShaderConstantF(base, f, 4)))
+      continue;
+    const float xa = cx * f[0] + cy * f[4] + cz * f[8] + f[12];
+    const float ya = cx * f[1] + cy * f[5] + cz * f[9] + f[13];
+    const float za = cx * f[2] + cy * f[6] + cz * f[10] + f[14];
+    const float wa = cx * f[3] + cy * f[7] + cz * f[11] + f[15];
+    const float gxa = std::fabs(cx * f[0]) + std::fabs(cy * f[4]) + std::fabs(cz * f[8]) +
+                      std::fabs(f[12]);
+    const float gya = std::fabs(cx * f[1]) + std::fabs(cy * f[5]) + std::fabs(cz * f[9]) +
+                      std::fabs(f[13]);
+    const float xb = cx * f[0] + cy * f[1] + cz * f[2] + f[3];
+    const float yb = cx * f[4] + cy * f[5] + cz * f[6] + f[7];
+    const float zb = cx * f[8] + cy * f[9] + cz * f[10] + f[11];
+    const float wb = cx * f[12] + cy * f[13] + cz * f[14] + f[15];
+    const float gxb = std::fabs(cx * f[0]) + std::fabs(cy * f[1]) + std::fabs(cz * f[2]) +
+                      std::fabs(f[3]);
+    const float gyb = std::fabs(cx * f[4]) + std::fabs(cy * f[5]) + std::fabs(cz * f[6]) +
+                      std::fabs(f[7]);
+    const bool matchA = std::fabs(xa) < 2e-3f * gxa + 1e-3f &&
+                        std::fabs(ya) < 2e-3f * gya + 1e-3f &&
+                        (std::fabs(za) > 1e-3f || std::fabs(wa) > 0.5f) && gxa > 1e-3f;
+    const bool matchB = std::fabs(xb) < 2e-3f * gxb + 1e-3f &&
+                        std::fabs(yb) < 2e-3f * gyb + 1e-3f &&
+                        (std::fabs(zb) > 1e-3f || std::fabs(wb) > 0.5f) && gxb > 1e-3f;
+    if (matchA) {
+      f[12] -= dx * f[0] + dy * f[4] + dz * f[8];
+      f[13] -= dx * f[1] + dy * f[5] + dz * f[9];
+      f[14] -= dx * f[2] + dy * f[6] + dz * f[10];
+      f[15] -= dx * f[3] + dy * f[7] + dz * f[11];
+    } else if (matchB) {
+      f[3] -= dx * f[0] + dy * f[1] + dz * f[2];
+      f[7] -= dx * f[4] + dy * f[5] + dz * f[6];
+      f[11] -= dx * f[8] + dy * f[9] + dz * f[10];
+      f[15] -= dx * f[12] + dy * f[13] + dz * f[14];
+    } else {
+      continue;
+    }
+    if (SUCCEEDED(dev->SetVertexShaderConstantF(base, f, 4)))
+      ++patched;
+  }
+  return patched;
 }
 
 bool CopyBbToEye(IDirect3DDevice9* dev, IDirect3DTexture9* tex) {
@@ -215,6 +506,42 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
   dst->GetDesc(&dd);
   D3DSURFACE_DESC sd{};
   bb->GetDesc(&sd);
+
+  static bool s_srcLogged = false;
+  if (!s_srcLogged) {
+    s_srcLogged = true;
+    Log("StereoCapture: src %ux%u fmt=%u msaa=%d", sd.Width, sd.Height,
+        static_cast<unsigned>(sd.Format), static_cast<int>(sd.MultiSampleType));
+  }
+
+  // MSAA source: full-surface resolve into a cached plain RT, then sub-rect
+  // from the resolve (sub-rect StretchRect straight from MSAA = INVALIDCALL,
+  // which forced the geometry-breaking full-stretch fallback before).
+  if (sd.MultiSampleType != D3DMULTISAMPLE_NONE) {
+    if (g_resolveSurf &&
+        (g_resolveW != sd.Width || g_resolveH != sd.Height || g_resolveFmt != sd.Format)) {
+      g_resolveSurf->Release();
+      g_resolveSurf = nullptr;
+    }
+    if (!g_resolveSurf) {
+      if (SUCCEEDED(dev->CreateRenderTarget(sd.Width, sd.Height, sd.Format, D3DMULTISAMPLE_NONE,
+                                            0, FALSE, &g_resolveSurf, nullptr)) &&
+          g_resolveSurf) {
+        g_resolveW = sd.Width;
+        g_resolveH = sd.Height;
+        g_resolveFmt = sd.Format;
+        Log("StereoCapture: MSAA resolve RT %ux%u created", sd.Width, sd.Height);
+      } else {
+        g_resolveSurf = nullptr;
+      }
+    }
+    if (g_resolveSurf && SUCCEEDED(dev->StretchRect(bb, nullptr, g_resolveSurf, nullptr,
+                                                    D3DTEXF_NONE))) {
+      bb->Release();
+      bb = g_resolveSurf;
+      bb->AddRef();
+    }
+  }
   const float W = static_cast<float>(dd.Width);
   const float H = static_cast<float>(dd.Height);
   const float SW = static_cast<float>(sd.Width);
@@ -439,6 +766,11 @@ constexpr uint32_t kMgrCamPosRvaB = 0xD8D9C0;  // pos row of cam matrix B
 std::atomic<bool> g_execDualDead{false};
 std::atomic<uint32_t> g_execViewDualCount{0};
 std::atomic<uint32_t> g_execViewSkips{0};
+// Mode 24/25 patch params for the SetVertexShaderConstantF view-translate hook
+// (stereo_proj.cpp). Written and read on the same thread as the dual pass.
+std::atomic<bool> g_vsPatchOn{false};
+float g_vsPatchCam[3] = {};
+float g_vsPatchDelta[3] = {};
 // Crash forensics: which step of the dual pass threw, and with what code.
 volatile LONG g_execViewStage = 0;
 volatile DWORD g_execViewExcCode = 0;
@@ -584,6 +916,73 @@ bool RunRootDualGuarded(void* self, void* edx) {
   }
 }
 
+// Mode 25: the REAL draws happen inline during the build walk (mode 24 evidence:
+// all VS-constant uploads flow through one wrapper site on one thread, and NONE
+// during the phase re-exec). Mode 20 v1 already ran the walk twice per frame
+// (true double render, 50 FPS) — it only lacked a camera change that reaches the
+// render side. Combine: walk 1 = left, then shift the manager cam matrices AND
+// arm the VS-constant translate, walk 2 = right. No double shift possible: the
+// VS detection keys on the LEFT cam pos, which no longer matches if the manager
+// shift already reached the constants.
+long long CompareEyeCanvases(IDirect3DDevice9* dev);
+
+bool RunBuildDualViewShiftGuarded(void* self, void* edx) {
+  __try {
+    g_execViewStage = 1;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    float* posA = reinterpret_cast<float*>(base + kMgrCamPosRvaA);
+    float* posB = reinterpret_cast<float*>(base + kMgrCamPosRvaB);
+    float dx = 0.f, dy = 0.f, dz = 0.f;
+    float cx = 0.f, cy = 0.f, cz = 0.f;
+    const bool sane = GetStereoEyeRightDeltaWorld(&dx, &dy, &dz) &&
+                      GetLastStereoCamPos(&cx, &cy, &cz) && std::fabs(posA[0] - cx) < 2.f &&
+                      std::fabs(posA[1] - cy) < 2.f && std::fabs(posA[2] - cz) < 2.f;
+    if (!sane) {
+      ++g_execViewSkips;
+      g_origRoot[1](self, edx);
+      return true;
+    }
+    g_execViewStage = 2;  // walk 1 = LEFT (CCam snapshot is the left eye)
+    g_origRoot[1](self, edx);
+    g_execViewStage = 3;  // capture L
+    if (CopyBbToEyeCanvas(g_device, g_texL, vr::Eye_Left))
+      g_haveL = true;
+    g_execViewStage = 4;  // shift manager matrices + arm VS translate
+    const float ax = posA[0], ay = posA[1], az = posA[2];
+    const float bx = posB[0], by = posB[1], bz = posB[2];
+    posA[0] = ax + dx;
+    posA[1] = ay + dy;
+    posA[2] = az + dz;
+    posB[0] = bx + dx;
+    posB[1] = by + dy;
+    posB[2] = bz + dz;
+    g_vsPatchCam[0] = cx;
+    g_vsPatchCam[1] = cy;
+    g_vsPatchCam[2] = cz;
+    g_vsPatchDelta[0] = dx;
+    g_vsPatchDelta[1] = dy;
+    g_vsPatchDelta[2] = dz;
+    g_vsPatchOn.store(true);
+    g_execViewStage = 5;  // walk 2 = RIGHT
+    g_origRoot[1](self, edx);
+    g_vsPatchOn.store(false);
+    g_execViewStage = 6;  // capture R
+    if (CopyBbToEyeCanvas(g_device, g_texR, vr::Eye_Right))
+      g_haveR = true;
+    g_execViewStage = 7;  // restore
+    posA[0] = ax;
+    posA[1] = ay;
+    posA[2] = az;
+    posB[0] = bx;
+    posB[1] = by;
+    posB[2] = bz;
+    return true;
+  } __except (ExecViewFilter(GetExceptionInformation())) {
+    g_vsPatchOn.store(false);
+    return false;
+  }
+}
+
 void __fastcall HookRoot1(void* self, void* edx) {
   const StereoMode mode = GetStereoMode();
   if (mode == StereoMode::RootDispatchProbe) {
@@ -600,6 +999,54 @@ void __fastcall HookRoot1(void* self, void* edx) {
   }
   if (!g_origRoot[1])
     return;
+
+  // Mode 26: do NOT double-call BuildRootA (freeze risk; also produced only ONE
+  // EndScene per tick so it never gave same-frame stereo). Single native build;
+  // EndScene on the replay thread does temporal L/R via VS-const arm flip.
+  if (mode == StereoMode::RecordDualReplayShift || mode == StereoMode::SameFrameWrapDual ||
+      mode == StereoMode::ReplayRootProbe || mode == StereoMode::VsParentCountProbe) {
+    g_origRoot[1](self, edx);
+    const uint32_t n = ++g_execViewDualCount;
+    if (n <= 3 || (n % 600) == 0)
+      Log("StereoRecDual: build #%u (game thread %u) - temporal VS arm on EndScene", n,
+          GetCurrentThreadId());
+    return;
+  }
+
+  if (mode == StereoMode::BuildDualViewShift && !g_execDualDead.load() && !g_inDual.load() &&
+      IsCamMatrixOverrideEnabled() && g_device && g_texL && g_texR) {
+    static bool s_tidLogged = false;
+    if (!s_tidLogged) {
+      s_tidLogged = true;
+      Log("StereoBuildShift: build threadId=%u (compare with VsRet tid)", GetCurrentThreadId());
+    }
+    g_inDual.store(true);
+    const bool ok = RunBuildDualViewShiftGuarded(self, edx);
+    g_inDual.store(false);
+    if (!ok) {
+      g_execDualDead.store(true);
+      g_haveL = g_haveR = false;
+      const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+      Log("StereoBuildShift: EXCEPTION stage=%ld code=0x%08X addr=%p (exeRva 0x%X) - "
+          "PERMANENTLY disabled, native mono continues",
+          g_execViewStage, g_execViewExcCode, reinterpret_cast<void*>(g_execViewExcAddr),
+          static_cast<unsigned>(g_execViewExcAddr - base));
+      g_origRoot[1](self, edx);
+      return;
+    }
+    const uint32_t n = ++g_execViewDualCount;
+    if (n <= 6 || (n % 300) == 0)
+      Log("StereoBuildShift: #%u haveL=%d haveR=%d skips=%u sep=%.0fcm vsPatch=%u "
+          "vsCallsTotal=%u vsCallsR=%u",
+          n, g_haveL ? 1 : 0, g_haveR ? 1 : 0, g_execViewSkips.load(),
+          GetStereoSepMeters() * 100.f, StereoVsTranslateCount(), StereoVsTotalCalls(),
+          StereoVsRightPassCalls());
+    if (g_haveL && g_haveR && (n == 5 || (n % 300) == 0))
+      CompareEyeCanvases(g_device);
+    if (n == 600 || n == 3000)
+      StereoVsDumpRets();
+    return;
+  }
 
   if (mode == StereoMode::SameFrameRootDual && !g_rootDualDead.load() && !g_inDual.load() &&
       IsCamMatrixOverrideEnabled() && g_device && g_texL && g_texR && g_origRoot[0] &&
@@ -660,6 +1107,1371 @@ bool RootSigMatches(uintptr_t addr, const uint8_t* sig, size_t n) {
 bool HookOneBuild(const char* label, uintptr_t addr, void* detour, BuildRenderList_t* origOut);
 
 // nRoots = 3 for mode 20 (dual needs only ExecRoot/BuildRootA), 5 for mode 19.
+// Mode 27/29: VsParent candidates. Mode 29 uses live Mode 26 mid-fn return RVAs;
+// FindFnStartNear (VirtualQuery-bounded) resolves each to a prologue, then we
+// count calls per EndScene → pick the ~1×/frame replay root for Mode 30 dual.
+constexpr int kNumReplayCands = 5;
+constexpr uint32_t kReplayCandRva[kNumReplayCands] = {
+    0x22187,  // Mode 26 VsParent mid-fn ret
+    0x37C01,  // Mode 26 VsParent mid-fn ret
+    0x37520,  // Mode 26 VsParent mid-fn ret
+    0x32BD7,  // Mode 26 VsParent mid-fn ret
+    0x4D901B, // Mode 26 VsParent mid-fn ret
+};
+const char* kReplayCandName[kNumReplayCands] = {
+    "Cand22187", "Cand37C01", "Cand37520", "Cand32BD7", "Cand4D901B"};
+using ReplayCand_t = void(__fastcall*)(void* self, void* edx);
+ReplayCand_t g_origReplayCand[kNumReplayCands] = {};
+std::atomic<uint32_t> g_replayCandCount[kNumReplayCands] = {};
+std::atomic<bool> g_replayCandDead[kNumReplayCands] = {};
+
+// Forward: VirtualQuery-bounded prologue scan (defined with Mode 28 helpers).
+uintptr_t FindFnStartNear(uintptr_t addrInFn);
+
+template <int I>
+void __fastcall HookReplayCand(void* self, void* edx) {
+  if (g_replayCandDead[I].load()) {
+    if (g_origReplayCand[I])
+      g_origReplayCand[I](self, edx);
+    return;
+  }
+  ++g_replayCandCount[I];
+  __try {
+    g_origReplayCand[I](self, edx);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    g_replayCandDead[I].store(true);
+    Log("ReplayProbe: %s EXCEPTION — permanently disabled", kReplayCandName[I]);
+  }
+}
+
+bool InstallReplayCandHooks() {
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  bool any = false;
+  void* detours[kNumReplayCands] = {
+      reinterpret_cast<void*>(&HookReplayCand<0>),
+      reinterpret_cast<void*>(&HookReplayCand<1>),
+      reinterpret_cast<void*>(&HookReplayCand<2>),
+      reinterpret_cast<void*>(&HookReplayCand<3>),
+      reinterpret_cast<void*>(&HookReplayCand<4>),
+  };
+  for (int i = 0; i < kNumReplayCands; ++i) {
+    g_replayCandCount[i].store(0);
+    g_replayCandDead[i].store(false);
+    g_origReplayCand[i] = nullptr;
+    const uintptr_t retAddr = base + kReplayCandRva[i];
+    const uintptr_t fnStart = FindFnStartNear(retAddr);
+    if (!fnStart) {
+      Log("ReplayProbe: %s SKIP no prologue near retRva=0x%X", kReplayCandName[i],
+          kReplayCandRva[i]);
+      continue;
+    }
+    const auto* b = reinterpret_cast<const uint8_t*>(fnStart);
+    const uint32_t fnRva = static_cast<uint32_t>(fnStart - base);
+    Log("ReplayProbe: %s retRva=0x%X -> fnStartRva=0x%X bytes=%02X %02X %02X %02X @ %p",
+        kReplayCandName[i], kReplayCandRva[i], fnRva, b[0], b[1], b[2], b[3],
+        reinterpret_cast<void*>(fnStart));
+    if (MH_CreateHook(reinterpret_cast<void*>(fnStart), detours[i],
+                      reinterpret_cast<void**>(&g_origReplayCand[i])) != MH_OK ||
+        MH_EnableHook(reinterpret_cast<void*>(fnStart)) != MH_OK) {
+      Log("ReplayProbe: %s MH FAIL @ %p (fnStartRva 0x%X)", kReplayCandName[i],
+          reinterpret_cast<void*>(fnStart), fnRva);
+      g_origReplayCand[i] = nullptr;
+      continue;
+    }
+    Log("ReplayProbe: hooked %s @ %p (fnStartRva 0x%X)", kReplayCandName[i],
+        reinterpret_cast<void*>(fnStart), fnRva);
+    any = true;
+  }
+  return any;
+}
+
+void DumpReplayCandCounts() {
+  static uint32_t s_n = 0;
+  static uint32_t s_prev[kNumReplayCands] = {};
+  uint32_t delta[kNumReplayCands] = {};
+  for (int i = 0; i < kNumReplayCands; ++i) {
+    const uint32_t c = g_replayCandCount[i].load();
+    delta[i] = c - s_prev[i];
+    s_prev[i] = c;
+  }
+  ++s_n;
+  if (s_n <= 8 || (s_n % 120) == 0)
+    Log("VsParentCount: frame#%u %s=%u/f %s=%u/f %s=%u/f %s=%u/f %s=%u/f tid=%u "
+        "(want ~1/f)",
+        s_n, kReplayCandName[0], delta[0], kReplayCandName[1], delta[1],
+        kReplayCandName[2], delta[2], kReplayCandName[3], delta[3],
+        kReplayCandName[4], delta[4], GetCurrentThreadId());
+}
+
+// ---- Mode 28: same-frame via live caller of VS wrapper 0x2C6AC ----
+// Learn stack parents of the VS wrapper → find a ~1×/frame draw walker → dual
+// invoke (manager cam shift + VS translate on pass 2) + Mode 14 canvas. Until
+// dual is armed (or if it dies), EndScene keeps Mode 26 temporal so the HMD
+// still has stereo. FusionFix FOV stays 0 (look-up warp).
+constexpr uint32_t kVsWrapRva = 0x2C6AC;
+using VsWrap_t = void(__stdcall*)(uint32_t, uint32_t, uint32_t);
+VsWrap_t g_origVsWrap = nullptr;
+std::atomic<bool> g_wrapHooked{false};
+std::atomic<uint32_t> g_wrapCalls{0};
+
+enum class WrapPhase : int { Learn = 0, Count = 1, Dual = 2, TemporalOnly = 3 };
+std::atomic<int> g_wrapPhase{static_cast<int>(WrapPhase::Learn)};
+
+struct WrapFnCand {
+  uintptr_t start;
+  uint32_t hits;
+  int depth;
+};
+WrapFnCand g_wrapFns[32]{};
+int g_wrapFnN = 0;
+
+using DrawWalk_t = void(__fastcall*)(void* self, void* edx);
+DrawWalk_t g_origDrawWalk = nullptr;
+void* g_drawWalkAddr = nullptr;
+std::atomic<bool> g_drawWalkDead{false};
+std::atomic<bool> g_inDrawWalkDual{false};
+std::atomic<uint32_t> g_drawWalkDualCount{0};
+std::atomic<uint32_t> g_drawWalkEntries{0};
+uintptr_t g_wrapTryList[8]{};
+int g_wrapTryN = 0;
+int g_wrapTryIdx = 0;
+
+uintptr_t FindFnStartNear(uintptr_t addrInFn) {
+  if (!addrInFn)
+    return 0;
+  MEMORY_BASIC_INFORMATION mbi{};
+  if (!VirtualQuery(reinterpret_cast<const void*>(addrInFn), &mbi, sizeof(mbi)))
+    return 0;
+  if (mbi.State != MEM_COMMIT)
+    return 0;
+  const uintptr_t regionBase = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+  const uintptr_t regionEnd = regionBase + mbi.RegionSize;
+  if (addrInFn < regionBase || addrInFn >= regionEnd)
+    return 0;
+  // Cap scan window to 0x1000 but never leave the committed region (no blind
+  // -0x1000 into unmapped pages — that contributed to Mode 28 AVs).
+  uintptr_t low = regionBase;
+  if (addrInFn - low > 0x1000)
+    low = addrInFn - 0x1000;
+  for (uintptr_t p = addrInFn; p > low; --p) {
+    if (p + 3 >= regionEnd)
+      continue;
+    const auto* b = reinterpret_cast<const uint8_t*>(p);
+    if (b[0] == 0x55 && b[1] == 0x8B && b[2] == 0xEC)
+      return p;
+    if (b[0] == 0x56 && b[1] == 0x57 && b[2] == 0x8B)
+      return p;
+    if (b[0] == 0x53 && b[1] == 0x56 && b[2] == 0x57 && b[3] == 0x8B)
+      return p;
+  }
+  // Also test p == low (loop stops before low).
+  if (low + 3 < regionEnd && low <= addrInFn) {
+    const auto* b = reinterpret_cast<const uint8_t*>(low);
+    if (b[0] == 0x55 && b[1] == 0x8B && b[2] == 0xEC)
+      return low;
+    if (b[0] == 0x56 && b[1] == 0x57 && b[2] == 0x8B)
+      return low;
+    if (b[0] == 0x53 && b[1] == 0x56 && b[2] == 0x57 && b[3] == 0x8B)
+      return low;
+  }
+  return 0;
+}
+
+// Mode 32: prefer a NEAR thiscall prologue (≤0x300). Blind FindFnStartNear often
+// hits stdcall helpers (0x370D0) or thiscall+stackarg frames (0x32A40 ret 4).
+uintptr_t FindThiscallNear(uintptr_t addrInFn, uint32_t maxDist) {
+  if (!addrInFn || maxDist == 0)
+    return 0;
+  MEMORY_BASIC_INFORMATION mbi{};
+  if (!VirtualQuery(reinterpret_cast<const void*>(addrInFn), &mbi, sizeof(mbi)))
+    return 0;
+  if (mbi.State != MEM_COMMIT)
+    return 0;
+  const uintptr_t regionBase = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+  const uintptr_t regionEnd = regionBase + mbi.RegionSize;
+  if (addrInFn < regionBase || addrInFn >= regionEnd)
+    return 0;
+  auto movEcx = [](uint8_t a, uint8_t b) {
+    return a == 0x8B && (b == 0xF1 || b == 0xF9 || b == 0xD9 || b == 0xC1 || b == 0xE9 || b == 0xD1);
+  };
+  uintptr_t low = regionBase;
+  if (addrInFn - low > maxDist)
+    low = addrInFn - maxDist;
+  for (uintptr_t p = addrInFn; p > low; --p) {
+    if (p + 6 >= regionEnd)
+      continue;
+    const auto* b = reinterpret_cast<const uint8_t*>(p);
+    // Classic push + mov r,ecx — only accept INT3-padded starts
+    if (b[0] == 0x56 && b[1] == 0x57 && movEcx(b[2], b[3]) && p >= 2 &&
+        reinterpret_cast<const uint8_t*>(p)[-1] == 0xCC)
+      return p;
+    if (b[0] == 0x53 && b[1] == 0x56 && b[2] == 0x57 && movEcx(b[3], b[4]) && p >= 2 &&
+        reinterpret_cast<const uint8_t*>(p)[-1] == 0xCC)
+      return p;
+    if (b[0] == 0x53 && b[1] == 0x55 && b[2] == 0x56 && b[3] == 0x57 && movEcx(b[4], b[5]) &&
+        p >= 2 && reinterpret_cast<const uint8_t*>(p)[-1] == 0xCC)
+      return p;
+    if (b[0] == 0x56 && movEcx(b[1], b[2]) && p >= 2 &&
+        reinterpret_cast<const uint8_t*>(p)[-1] == 0xCC)
+      return p;
+    // 83 EC xx … 8B F1 within 14 — INT3-padded only
+    if (b[0] == 0x83 && b[1] == 0xEC && p >= 2 &&
+        reinterpret_cast<const uint8_t*>(p)[-1] == 0xCC) {
+      for (int i = 2; i < 14; ++i) {
+        if (movEcx(b[i], b[i + 1]))
+          return p;
+      }
+    }
+  }
+  return 0;
+}
+
+void NoteWrapFn(uintptr_t start, int depth) {
+  if (!start)
+    return;
+  for (int i = 0; i < g_wrapFnN; ++i) {
+    if (g_wrapFns[i].start == start) {
+      ++g_wrapFns[i].hits;
+      if (depth < g_wrapFns[i].depth)
+        g_wrapFns[i].depth = depth;
+      return;
+    }
+  }
+  if (g_wrapFnN >= 32)
+    return;
+  g_wrapFns[g_wrapFnN++] = {start, 1, depth};
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  Log("WrapDual: NEW fn cand exeRva=0x%X depth=%d tid=%u",
+      static_cast<unsigned>(start - base), depth, GetCurrentThreadId());
+}
+
+void __stdcall HookVsWrap(uint32_t a, uint32_t b, uint32_t c) {
+  // Rage: ebx = device/this, stdcall 3 stack args. Must not clobber ebx.
+  uintptr_t ebxSave = 0;
+  __asm { mov ebxSave, ebx }
+  if (g_wrapPhase.load() == static_cast<int>(WrapPhase::Learn)) {
+    NoteWrapFn(FindFnStartNear(reinterpret_cast<uintptr_t>(_ReturnAddress())), 0);
+    void* stack[8]{};
+    const USHORT n = CaptureStackBackTrace(1, 6, stack, nullptr);
+    for (USHORT i = 0; i < n && i < 4; ++i)
+      NoteWrapFn(FindFnStartNear(reinterpret_cast<uintptr_t>(stack[i])), static_cast<int>(i) + 1);
+  }
+  ++g_wrapCalls;
+  __asm { mov ebx, ebxSave }
+  g_origVsWrap(a, b, c);
+  __asm { mov ebx, ebxSave }
+}
+
+bool InstallVsWrapHook() {
+  if (g_wrapHooked.load())
+    return true;
+  const uintptr_t addr = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr)) + kVsWrapRva;
+  if (MH_CreateHook(reinterpret_cast<void*>(addr), reinterpret_cast<void*>(&HookVsWrap),
+                    reinterpret_cast<void**>(&g_origVsWrap)) != MH_OK ||
+      MH_EnableHook(reinterpret_cast<void*>(addr)) != MH_OK) {
+    Log("WrapDual: VS wrapper hook FAIL @ %p", reinterpret_cast<void*>(addr));
+    return false;
+  }
+  g_wrapHooked.store(true);
+  Log("WrapDual: hooked VS wrapper @ %p (rva 0x%X) — learning callers",
+      reinterpret_cast<void*>(addr), kVsWrapRva);
+  return true;
+}
+
+bool RunDrawWalkDualGuarded(void* self, void* edx) {
+  __try {
+    g_execViewStage = 1;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    float* posA = reinterpret_cast<float*>(base + kMgrCamPosRvaA);
+    float* posB = reinterpret_cast<float*>(base + kMgrCamPosRvaB);
+    float dx = 0.f, dy = 0.f, dz = 0.f;
+    float cx = 0.f, cy = 0.f, cz = 0.f;
+    const bool sane = GetStereoEyeRightDeltaWorld(&dx, &dy, &dz) &&
+                      GetLastStereoCamPos(&cx, &cy, &cz) && std::fabs(posA[0] - cx) < 2.f &&
+                      std::fabs(posA[1] - cy) < 2.f && std::fabs(posA[2] - cz) < 2.f;
+
+    g_vsPatchOn.store(false);
+    SetStereoEye(StereoEye::Left);
+    g_execViewStage = 2;
+    g_origDrawWalk(self, edx);
+    g_execViewStage = 3;
+    if (g_device && g_texL && CopyBbToEyeCanvas(g_device, g_texL, vr::Eye_Left))
+      g_haveL = true;
+
+    if (!sane) {
+      // Still captured Left; skip Right dual this tick (cutscene / wrong cam).
+      return true;
+    }
+
+    const float ax = posA[0], ay = posA[1], az = posA[2];
+    const float bx = posB[0], by = posB[1], bz = posB[2];
+    posA[0] = ax + dx;
+    posA[1] = ay + dy;
+    posA[2] = az + dz;
+    posB[0] = bx + dx;
+    posB[1] = by + dy;
+    posB[2] = bz + dz;
+    g_vsPatchCam[0] = cx;
+    g_vsPatchCam[1] = cy;
+    g_vsPatchCam[2] = cz;
+    g_vsPatchDelta[0] = dx;
+    g_vsPatchDelta[1] = dy;
+    g_vsPatchDelta[2] = dz;
+    g_vsPatchOn.store(true);
+    g_execViewStage = 5;
+    g_origDrawWalk(self, edx);
+    g_vsPatchOn.store(false);
+    g_execViewStage = 6;
+    if (g_device && g_texR && CopyBbToEyeCanvas(g_device, g_texR, vr::Eye_Right))
+      g_haveR = true;
+    g_execViewStage = 7;
+    posA[0] = ax;
+    posA[1] = ay;
+    posA[2] = az;
+    posB[0] = bx;
+    posB[1] = by;
+    posB[2] = bz;
+    return true;
+  } __except (ExecViewFilter(GetExceptionInformation())) {
+    g_vsPatchOn.store(false);
+    return false;
+  }
+}
+
+bool CallDrawWalkOnceGuarded(void* self, void* edx) {
+  __try {
+    g_origDrawWalk(self, edx);
+    return true;
+  } __except (ExecViewFilter(GetExceptionInformation())) {
+    return false;
+  }
+}
+
+bool CallDrawWalkOnceGuarded(void* self, void* edx);
+bool RunMode31DualGuarded(void* self, void* edx);
+void Mode31FallbackPairHold(const char* why);
+bool RunMode32DualGuarded(void* self, void* edx);
+void Mode32FallbackPairHold(const char* why);
+void Mode33FallbackPairHold(const char* why);
+bool RunMode33DualGuarded(void* self, void* edx);
+void Mode34FallbackPairHold(const char* why);
+bool RunMode34DualGuarded(void* self, void* edx);
+
+void __fastcall HookDrawWalk(void* self, void* edx) {
+  if (!g_origDrawWalk)
+    return;
+  ++g_drawWalkEntries;
+
+  // Mode 34: VsRet-caller walker (same dual body as Mode 32/33).
+  if (GetStereoMode() == StereoMode::SameFrameVsRetCallerDual) {
+    const int ph = g_mode34Phase.load();
+    if (ph == static_cast<int>(Mode34Phase::Count)) {
+      if (!CallDrawWalkOnceGuarded(self, edx)) {
+        Log("Mode34: EXCEPTION in count passthrough code=0x%08X @exeRva=0x%X - FALLBACK",
+            g_execViewExcCode, g_mode34ActiveRva);
+        g_drawWalkEntries.store(0xFFFFFFFFu);
+        Mode34FallbackPairHold("SEH in count passthrough");
+      }
+      return;
+    }
+    if (ph == static_cast<int>(Mode34Phase::Dual) && !g_drawWalkDead.load() &&
+        !g_inDrawWalkDual.load() && IsCamMatrixOverrideEnabled() && g_device && g_holdL &&
+        g_holdR) {
+      g_inDrawWalkDual.store(true);
+      const bool ok = RunMode34DualGuarded(self, edx);
+      g_inDrawWalkDual.store(false);
+      if (!ok) {
+        g_drawWalkDead.store(true);
+        g_haveL = g_haveR = false;
+        const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+        Log("Mode34: EXCEPTION dual stage=%ld code=0x%08X @exeRva=0x%X", g_execViewStage,
+            g_execViewExcCode, static_cast<unsigned>(g_execViewExcAddr - base));
+        Mode34FallbackPairHold("SEH in dual pass");
+        CallDrawWalkOnceGuarded(self, edx);
+        return;
+      }
+      const uint32_t n = ++g_mode34DualN;
+      if (n <= 6 || (n % 300) == 0)
+        Log("Mode34: SAME-FRAME #%u haveL=%d haveR=%d vsPatch=%u vsCallsR=%u sep=%.0fcm "
+            "fnRva=0x%X",
+            n, g_haveL ? 1 : 0, g_haveR ? 1 : 0, StereoVsTranslateCount(),
+            StereoVsRightPassCalls(), GetStereoSepMeters() * 100.f, g_mode34ActiveRva);
+      return;
+    }
+    if (!CallDrawWalkOnceGuarded(self, edx)) {
+      Log("Mode34: EXCEPTION idle passthrough - disabling walker hook");
+      Mode34FallbackPairHold("SEH in idle walker");
+    }
+    return;
+  }
+
+  // Mode 33: same walker path as Mode 32, stricter phases/fallback.
+  if (GetStereoMode() == StereoMode::SameFrameLateVsParentDual) {
+    const int ph = g_mode33Phase.load();
+    if (ph == static_cast<int>(Mode33Phase::Count)) {
+      if (!CallDrawWalkOnceGuarded(self, edx)) {
+        Log("Mode33: EXCEPTION in count passthrough code=0x%08X @exeRva=0x%X — FALLBACK",
+            g_execViewExcCode, g_mode33ActiveRva);
+        g_drawWalkEntries.store(0xFFFFFFFFu);
+        Mode33FallbackPairHold("SEH in count passthrough");
+      }
+      return;
+    }
+    if (ph == static_cast<int>(Mode33Phase::Dual) && !g_drawWalkDead.load() &&
+        !g_inDrawWalkDual.load() && IsCamMatrixOverrideEnabled() && g_device && g_holdL &&
+        g_holdR) {
+      g_inDrawWalkDual.store(true);
+      const bool ok = RunMode33DualGuarded(self, edx);
+      g_inDrawWalkDual.store(false);
+      if (!ok) {
+        g_drawWalkDead.store(true);
+        g_haveL = g_haveR = false;
+        const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+        Log("Mode33: EXCEPTION dual stage=%ld code=0x%08X @exeRva=0x%X", g_execViewStage,
+            g_execViewExcCode, static_cast<unsigned>(g_execViewExcAddr - base));
+        Mode33FallbackPairHold("SEH in dual pass");
+        CallDrawWalkOnceGuarded(self, edx);
+        return;
+      }
+      const uint32_t n = ++g_mode33DualN;
+      if (n <= 6 || (n % 300) == 0)
+        Log("Mode33: SAME-FRAME #%u haveL=%d haveR=%d vsPatch=%u vsCallsR=%u sep=%.0fcm "
+            "fnRva=0x%X",
+            n, g_haveL ? 1 : 0, g_haveR ? 1 : 0, StereoVsTranslateCount(),
+            StereoVsRightPassCalls(), GetStereoSepMeters() * 100.f, g_mode33ActiveRva);
+      return;
+    }
+    if (!CallDrawWalkOnceGuarded(self, edx)) {
+      Log("Mode33: EXCEPTION idle passthrough — disabling walker hook");
+      Mode33FallbackPairHold("SEH in idle walker");
+    }
+    return;
+  }
+
+  // Mode 32: count-only or same-frame dual on a verified thiscall walker.
+  if (GetStereoMode() == StereoMode::SameFrameVsParentDual) {
+    const int ph = g_mode32Phase.load();
+    if (ph == static_cast<int>(Mode32Phase::Count)) {
+      if (!CallDrawWalkOnceGuarded(self, edx)) {
+        Log("Mode32: EXCEPTION in count passthrough code=0x%08X @exeRva=0x%X — "
+            "immediate FALLBACK (caller may be corrupt; no try-next in-hook)",
+            g_execViewExcCode, g_mode32ActiveRva);
+        g_drawWalkEntries.store(0xFFFFFFFFu);
+        Mode32FallbackPairHold("SEH in count passthrough");
+      }
+      return;
+    }
+    if (ph == static_cast<int>(Mode32Phase::Dual) && !g_drawWalkDead.load() &&
+        !g_inDrawWalkDual.load() && IsCamMatrixOverrideEnabled() && g_device && g_holdL &&
+        g_holdR) {
+      g_inDrawWalkDual.store(true);
+      const bool ok = RunMode32DualGuarded(self, edx);
+      g_inDrawWalkDual.store(false);
+      if (!ok) {
+        g_drawWalkDead.store(true);
+        g_haveL = g_haveR = false;
+        const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+        Log("Mode32: EXCEPTION dual stage=%ld code=0x%08X @exeRva=0x%X", g_execViewStage,
+            g_execViewExcCode, static_cast<unsigned>(g_execViewExcAddr - base));
+        Mode32FallbackPairHold("SEH in dual pass");
+        CallDrawWalkOnceGuarded(self, edx);
+        return;
+      }
+      const uint32_t n = ++g_mode32DualN;
+      if (n <= 6 || (n % 300) == 0)
+        Log("Mode32: SAME-FRAME #%u haveL=%d haveR=%d vsPatch=%u vsCallsR=%u sep=%.0fcm "
+            "fnRva=0x%X",
+            n, g_haveL ? 1 : 0, g_haveR ? 1 : 0, StereoVsTranslateCount(),
+            StereoVsRightPassCalls(), GetStereoSepMeters() * 100.f, g_mode32ActiveRva);
+      return;
+    }
+    if (!CallDrawWalkOnceGuarded(self, edx)) {
+      Log("Mode32: EXCEPTION idle passthrough — disabling walker hook");
+      Mode32FallbackPairHold("SEH in idle walker");
+    }
+    return;
+  }
+
+  // Mode 31: count-only or same-frame dual on a verified thiscall walker.
+  if (GetStereoMode() == StereoMode::SameFrameReplayDual) {
+    const int ph = g_mode31Phase.load();
+    if (ph == static_cast<int>(Mode31Phase::Count)) {
+      if (!CallDrawWalkOnceGuarded(self, edx)) {
+        Log("Mode31: EXCEPTION in count passthrough code=0x%08X — reject cand",
+            g_execViewExcCode);
+        g_drawWalkEntries.store(0xFFFFFFFFu);
+      }
+      return;
+    }
+    if (ph == static_cast<int>(Mode31Phase::Dual) && !g_drawWalkDead.load() &&
+        !g_inDrawWalkDual.load() && IsCamMatrixOverrideEnabled() && g_device && g_holdL &&
+        g_holdR) {
+      g_inDrawWalkDual.store(true);
+      const bool ok = RunMode31DualGuarded(self, edx);
+      g_inDrawWalkDual.store(false);
+      if (!ok) {
+        g_drawWalkDead.store(true);
+        g_haveL = g_haveR = false;
+        const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+        Log("Mode31: EXCEPTION dual stage=%ld code=0x%08X @exeRva=0x%X", g_execViewStage,
+            g_execViewExcCode, static_cast<unsigned>(g_execViewExcAddr - base));
+        Mode31FallbackPairHold("SEH in dual pass");
+        CallDrawWalkOnceGuarded(self, edx);
+        return;
+      }
+      const uint32_t n = ++g_mode31DualN;
+      if (n <= 6 || (n % 300) == 0)
+        Log("Mode31: SAME-FRAME #%u haveL=%d haveR=%d vsPatch=%u vsCallsR=%u sep=%.0fcm "
+            "fnRva=0x%X",
+            n, g_haveL ? 1 : 0, g_haveR ? 1 : 0, StereoVsTranslateCount(),
+            StereoVsRightPassCalls(), GetStereoSepMeters() * 100.f, g_mode31ActiveRva);
+      return;
+    }
+    if (!CallDrawWalkOnceGuarded(self, edx)) {
+      Log("Mode31: EXCEPTION idle passthrough — disabling walker hook");
+      Mode31FallbackPairHold("SEH in idle walker");
+    }
+    return;
+  }
+
+  const int phase = g_wrapPhase.load();
+  if (phase != static_cast<int>(WrapPhase::Dual) || g_drawWalkDead.load() ||
+      g_inDrawWalkDual.load() || !IsCamMatrixOverrideEnabled() || !g_device || !g_texL ||
+      !g_texR) {
+    if (!CallDrawWalkOnceGuarded(self, edx)) {
+      Log("WrapDual: EXCEPTION in passthrough/count code=0x%08X — reject this cand",
+          g_execViewExcCode);
+      // EndScene Count handler will advance; avoid hard TemporalOnly on first bad ABI.
+      g_drawWalkEntries.store(0xFFFFFFFFu);
+    }
+    return;
+  }
+  g_inDrawWalkDual.store(true);
+  const bool ok = RunDrawWalkDualGuarded(self, edx);
+  g_inDrawWalkDual.store(false);
+  if (!ok) {
+    g_drawWalkDead.store(true);
+    g_wrapPhase.store(static_cast<int>(WrapPhase::TemporalOnly));
+    g_haveL = g_haveR = false;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    Log("WrapDual: EXCEPTION dual stage=%ld code=0x%08X @exeRva=0x%X — fallback temporal",
+        g_execViewStage, g_execViewExcCode,
+        static_cast<unsigned>(g_execViewExcAddr - base));
+    CallDrawWalkOnceGuarded(self, edx);
+    return;
+  }
+  const uint32_t n = ++g_drawWalkDualCount;
+  if (n <= 6 || (n % 300) == 0)
+    Log("WrapDual: SAME-FRAME #%u haveL=%d haveR=%d vsPatch=%u vsCallsR=%u sep=%.0fcm", n,
+        g_haveL ? 1 : 0, g_haveR ? 1 : 0, StereoVsTranslateCount(), StereoVsRightPassCalls(),
+        GetStereoSepMeters() * 100.f);
+}
+
+bool InstallDrawWalkAt(uintptr_t start) {
+  if (!start)
+    return false;
+  if (g_drawWalkAddr) {
+    MH_DisableHook(g_drawWalkAddr);
+    MH_RemoveHook(g_drawWalkAddr);
+    g_origDrawWalk = nullptr;
+    g_drawWalkAddr = nullptr;
+  }
+  if (MH_CreateHook(reinterpret_cast<void*>(start), reinterpret_cast<void*>(&HookDrawWalk),
+                    reinterpret_cast<void**>(&g_origDrawWalk)) != MH_OK ||
+      MH_EnableHook(reinterpret_cast<void*>(start)) != MH_OK) {
+    Log("WrapDual: draw-walk MH FAIL @ %p", reinterpret_cast<void*>(start));
+    return false;
+  }
+  g_drawWalkAddr = reinterpret_cast<void*>(start);
+  g_drawWalkEntries.store(0);
+  return true;
+}
+
+void BuildWrapTryList() {
+  g_wrapTryN = 0;
+  g_wrapTryIdx = 0;
+  // Score: deeper stack (outer) + more hits. Cap 8 candidates.
+  int order[32];
+  int n = 0;
+  for (int i = 0; i < g_wrapFnN; ++i) {
+    if (g_wrapFns[i].hits < 50)
+      continue;
+    order[n++] = i;
+  }
+  for (int a = 0; a < n; ++a) {
+    for (int b = a + 1; b < n; ++b) {
+      const int sa = g_wrapFns[order[a]].depth * 100000 + (int)g_wrapFns[order[a]].hits;
+      const int sb = g_wrapFns[order[b]].depth * 100000 + (int)g_wrapFns[order[b]].hits;
+      if (sb > sa) {
+        const int t = order[a];
+        order[a] = order[b];
+        order[b] = t;
+      }
+    }
+  }
+  for (int i = 0; i < n && g_wrapTryN < 8; ++i)
+    g_wrapTryList[g_wrapTryN++] = g_wrapFns[order[i]].start;
+
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  Log("WrapDual: learn done fnCands=%d tryN=%d wrapCalls=%u", g_wrapFnN, g_wrapTryN,
+      g_wrapCalls.load());
+  for (int i = 0; i < g_wrapTryN; ++i)
+    Log("WrapDual: try[%d] exeRva=0x%X", i, static_cast<unsigned>(g_wrapTryList[i] - base));
+}
+
+bool StartNextWrapCount() {
+  while (g_wrapTryIdx < g_wrapTryN) {
+    const uintptr_t start = g_wrapTryList[g_wrapTryIdx++];
+    if (!InstallDrawWalkAt(start))
+      continue;
+    g_wrapPhase.store(static_cast<int>(WrapPhase::Count));
+    const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+    Log("WrapDual: COUNT phase on exeRva=0x%X (want ~1 entry/EndScene)",
+        static_cast<unsigned>(start - base));
+    return true;
+  }
+  g_wrapPhase.store(static_cast<int>(WrapPhase::TemporalOnly));
+  Log("WrapDual: no ~1×/frame walker — staying on temporal Mode26 path");
+  return false;
+}
+
+// ---- Mode 31 helpers (safer discovery than Mode 27/29 FindFnStartNear blind) ----
+constexpr uint32_t kForbiddenHookRvaA = 0x2C6AC;  // VS wrap — Mode 28 crash
+constexpr uint32_t kForbiddenHookRvaB = 0x37BD0;  // wrong-ABI — Mode 27/29 crash
+constexpr uint32_t kForbiddenMidRva = 0x37C01;    // resolves to 0x37BD0
+constexpr uint32_t kMode31DiscoverEs = 90;
+constexpr uint32_t kMode31CountEsNeed = 45;
+
+bool Mode31ForbiddenRva(uint32_t rva) {
+  return rva == kForbiddenHookRvaA || rva == kForbiddenHookRvaB || rva == kForbiddenMidRva ||
+         rva == 0x2C73E;  // VsRet itself — hundreds/frame
+}
+
+// Accept only proven thiscall shapes (mov reg, ecx). Reject Mode 29's 8B FA.
+bool Mode31SafeThiscallPrologue(uintptr_t addr) {
+  if (!addr)
+    return false;
+  const auto* b = reinterpret_cast<const uint8_t*>(addr);
+  // 56 57 8B F1/F9
+  if (b[0] == 0x56 && b[1] == 0x57 && b[2] == 0x8B && (b[3] == 0xF1 || b[3] == 0xF9))
+    return true;
+  // 53 56 57 8B F1/F9
+  if (b[0] == 0x53 && b[1] == 0x56 && b[2] == 0x57 && b[3] == 0x8B &&
+      (b[4] == 0xF1 || b[4] == 0xF9))
+    return true;
+  // 53 55 56 57 8B F1/F9 (ExecRoot-like)
+  if (b[0] == 0x53 && b[1] == 0x55 && b[2] == 0x56 && b[3] == 0x57 && b[4] == 0x8B &&
+      (b[5] == 0xF1 || b[5] == 0xF9))
+    return true;
+  // 83 EC xx … 8B F1/F9 within first 12 bytes
+  if (b[0] == 0x83 && b[1] == 0xEC) {
+    for (int i = 2; i < 11; ++i) {
+      if (b[i] == 0x8B && (b[i + 1] == 0xF1 || b[i + 1] == 0xF9))
+        return true;
+    }
+  }
+  // 55 8B EC … 8B F1/F9
+  if (b[0] == 0x55 && b[1] == 0x8B && b[2] == 0xEC) {
+    for (int i = 3; i < 11; ++i) {
+      if (b[i] == 0x8B && (b[i + 1] == 0xF1 || b[i + 1] == 0xF9))
+        return true;
+    }
+  }
+  return false;
+}
+
+void Mode31FallbackPairHold(const char* why) {
+  g_mode31Phase.store(static_cast<int>(Mode31Phase::FallbackPairHold));
+  g_vsPatchOn.store(false);
+  g_drawWalkDead.store(true);
+  SetStereoEye(StereoEye::Left);
+  g_pairAwaitingR = false;
+  if (g_drawWalkAddr) {
+    MH_DisableHook(g_drawWalkAddr);
+    MH_RemoveHook(g_drawWalkAddr);
+    g_origDrawWalk = nullptr;
+    g_drawWalkAddr = nullptr;
+  }
+  Log("Mode31: FALLBACK pair-hold (Mode30 path) — %s (kill → stereo 30 or 26)", why);
+}
+
+void Mode31NoteFrameRva(uint32_t rva) {
+  if (Mode31ForbiddenRva(rva))
+    return;
+  for (int i = 0; i < g_mode31FrameN; ++i) {
+    if (g_mode31Frame[i].rva == rva) {
+      ++g_mode31Frame[i].count;
+      return;
+    }
+  }
+  if (g_mode31FrameN >= 96)
+    return;
+  g_mode31Frame[g_mode31FrameN++] = {rva, 1};
+}
+
+void Mode31AggRare(uint32_t rva, uint32_t hits) {
+  for (int i = 0; i < g_mode31AggN; ++i) {
+    if (g_mode31Agg[i].rva == rva) {
+      g_mode31Agg[i].totalHits += hits;
+      ++g_mode31Agg[i].rareFrames;
+      return;
+    }
+  }
+  if (g_mode31AggN >= 64)
+    return;
+  g_mode31Agg[g_mode31AggN++] = {rva, 1, hits};
+}
+
+bool RunMode31DualGuarded(void* self, void* edx) {
+  __try {
+    g_execViewStage = 1;
+    float dx = 0.f, dy = 0.f, dz = 0.f;
+    float cx = 0.f, cy = 0.f, cz = 0.f;
+    const bool sane = GetStereoEyeRightDeltaWorld(&dx, &dy, &dz) &&
+                      GetLastStereoCamPos(&cx, &cy, &cz);
+    // CCam stays Left both passes — VS translate ONLY (no CCam+VS stack).
+    g_vsPatchOn.store(false);
+    SetStereoEye(StereoEye::Left);
+    g_execViewStage = 2;
+    g_origDrawWalk(self, edx);
+    g_execViewStage = 3;
+    if (g_device && g_holdL && CopyBbToEyeCanvas(g_device, g_holdL, vr::Eye_Left))
+      g_pairAwaitingR = true;
+
+    if (!sane) {
+      return true;  // keep last submit pair; try again next tick
+    }
+
+    g_vsPatchCam[0] = cx;
+    g_vsPatchCam[1] = cy;
+    g_vsPatchCam[2] = cz;
+    g_vsPatchDelta[0] = dx;
+    g_vsPatchDelta[1] = dy;
+    g_vsPatchDelta[2] = dz;
+    g_vsPatchOn.store(true);
+    g_execViewStage = 5;
+    g_origDrawWalk(self, edx);
+    g_vsPatchOn.store(false);
+    g_execViewStage = 6;
+    if (g_device && g_holdR && CopyBbToEyeCanvas(g_device, g_holdR, vr::Eye_Right) &&
+        g_pairAwaitingR) {
+      PromoteHoldPair(g_device);
+      g_pairAwaitingR = false;
+    }
+    g_execViewStage = 7;
+    return true;
+  } __except (ExecViewFilter(GetExceptionInformation())) {
+    g_vsPatchOn.store(false);
+    return false;
+  }
+}
+
+bool Mode31StartNextCount() {
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  while (g_mode31TryIdx < g_mode31TryN) {
+    const uintptr_t start = g_mode31TryList[g_mode31TryIdx++];
+    const uint32_t rva = static_cast<uint32_t>(start - base);
+    if (Mode31ForbiddenRva(rva) || !Mode31SafeThiscallPrologue(start)) {
+      Log("Mode31: skip try exeRva=0x%X (forbidden or unsafe prologue)", rva);
+      continue;
+    }
+    if (!InstallDrawWalkAt(start))
+      continue;
+    g_mode31ActiveRva = rva;
+    g_mode31CountEs.store(0);
+    g_mode31EntrySum = 0;
+    g_drawWalkEntries.store(0);
+    g_drawWalkDead.store(false);
+    g_mode31Phase.store(static_cast<int>(Mode31Phase::Count));
+    const auto* b = reinterpret_cast<const uint8_t*>(start);
+    Log("Mode31: COUNT exeRva=0x%X bytes=%02X %02X %02X %02X %02X %02X (need avg∈[0.8,4] "
+        "over %u EndScenes)",
+        rva, b[0], b[1], b[2], b[3], b[4], b[5], kMode31CountEsNeed);
+    return true;
+  }
+  Mode31FallbackPairHold("no safe ~1×/frame walker after discover+count");
+  return false;
+}
+
+void Mode31SeedKnownMidRvas();
+
+void Mode31BuildTryListFromDiscover() {
+  g_mode31TryN = 0;
+  g_mode31TryIdx = 0;
+  // Sort agg by rareFrames desc.
+  int order[64];
+  int n = 0;
+  for (int i = 0; i < g_mode31AggN; ++i) {
+    if (g_mode31Agg[i].rareFrames < 8)
+      continue;
+    order[n++] = i;
+  }
+  for (int a = 0; a < n; ++a) {
+    for (int b = a + 1; b < n; ++b) {
+      if (g_mode31Agg[order[b]].rareFrames > g_mode31Agg[order[a]].rareFrames) {
+        const int t = order[a];
+        order[a] = order[b];
+        order[b] = t;
+      }
+    }
+  }
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  Log("Mode31: discover done aggN=%d rareCands=%d vsTid=%u vsTotal=%u — resolving",
+      g_mode31AggN, n, g_mode31VsTid, StereoVsTotalCalls());
+  for (int i = 0; i < n && i < 16; ++i) {
+    const Mode31Agg& a = g_mode31Agg[order[i]];
+    Log("Mode31: rare cand midRva=0x%X rareFrames=%u totalHits=%u", a.rva, a.rareFrames,
+        a.totalHits);
+  }
+  for (int i = 0; i < n && g_mode31TryN < 8; ++i) {
+    const uint32_t midRva = g_mode31Agg[order[i]].rva;
+    if (Mode31ForbiddenRva(midRva))
+      continue;
+    const uintptr_t mid = base + midRva;
+    const uintptr_t fn = FindFnStartNear(mid);
+    if (!fn) {
+      Log("Mode31: midRva=0x%X — no prologue near", midRva);
+      continue;
+    }
+    const uint32_t fnRva = static_cast<uint32_t>(fn - base);
+    if (Mode31ForbiddenRva(fnRva)) {
+      Log("Mode31: midRva=0x%X -> fnRva=0x%X FORBIDDEN — skip", midRva, fnRva);
+      continue;
+    }
+    if (!Mode31SafeThiscallPrologue(fn)) {
+      const auto* b = reinterpret_cast<const uint8_t*>(fn);
+      Log("Mode31: midRva=0x%X -> fnRva=0x%X unsafe bytes=%02X %02X %02X %02X — skip",
+          midRva, fnRva, b[0], b[1], b[2], b[3]);
+      continue;
+    }
+    bool dup = false;
+    for (int j = 0; j < g_mode31TryN; ++j) {
+      if (g_mode31TryList[j] == fn) {
+        dup = true;
+        break;
+      }
+    }
+    if (dup)
+      continue;
+    g_mode31TryList[g_mode31TryN++] = fn;
+    const auto* b = reinterpret_cast<const uint8_t*>(fn);
+    Log("Mode31: try[%d] midRva=0x%X -> fnRva=0x%X bytes=%02X %02X %02X %02X %02X %02X",
+        g_mode31TryN - 1, midRva, fnRva, b[0], b[1], b[2], b[3], b[4], b[5]);
+  }
+  if (g_mode31TryN == 0) {
+    Log("Mode31: live hist empty/unsafe — seeding Mode26 VsParent mid-RVAs (no 0x37C01)");
+    Mode31SeedKnownMidRvas();
+  }
+  if (g_mode31TryN == 0) {
+    Mode31FallbackPairHold("discover+seed found no safe thiscall prologue");
+    // Still log top mid RVAs for CURRENT-STATE next session.
+    for (int i = 0; i < n && i < 8; ++i) {
+      Log("Mode31: NEXT-RVA midRva=0x%X rareFrames=%u (no safe hook this session)",
+          g_mode31Agg[order[i]].rva, g_mode31Agg[order[i]].rareFrames);
+    }
+    return;
+  }
+  Mode31StartNextCount();
+}
+
+void Mode31SeedKnownMidRvas() {
+  static const uint32_t kSeed[] = {0x22187, 0x37520, 0x32BD7, 0x4D901B};
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  for (uint32_t midRva : kSeed) {
+    if (Mode31ForbiddenRva(midRva))
+      continue;
+    const uintptr_t fn = FindFnStartNear(base + midRva);
+    if (!fn)
+      continue;
+    const uint32_t fnRva = static_cast<uint32_t>(fn - base);
+    if (Mode31ForbiddenRva(fnRva) || !Mode31SafeThiscallPrologue(fn)) {
+      const auto* b = reinterpret_cast<const uint8_t*>(fn);
+      Log("Mode31: seed midRva=0x%X -> fnRva=0x%X REJECT bytes=%02X %02X %02X %02X",
+          midRva, fnRva, b[0], b[1], b[2], b[3]);
+      continue;
+    }
+    bool dup = false;
+    for (int j = 0; j < g_mode31TryN; ++j) {
+      if (g_mode31TryList[j] == fn) {
+        dup = true;
+        break;
+      }
+    }
+    if (dup || g_mode31TryN >= 8)
+      continue;
+    g_mode31TryList[g_mode31TryN++] = fn;
+    const auto* b = reinterpret_cast<const uint8_t*>(fn);
+    Log("Mode31: seed try[%d] midRva=0x%X -> fnRva=0x%X bytes=%02X %02X %02X %02X",
+        g_mode31TryN - 1, midRva, fnRva, b[0], b[1], b[2], b[3]);
+  }
+}
+
+void Mode31FinishDiscoverFrame(uint32_t es) {
+  const uint32_t vsCalls = g_mode31VsCallsFrame.exchange(0);
+  const unsigned vsTotal = StereoVsTotalCalls();
+  static unsigned s_prevTotal = 0;
+  const unsigned vsDelta = vsTotal - s_prevTotal;
+  s_prevTotal = vsTotal;
+  for (int i = 0; i < g_mode31FrameN; ++i) {
+    const uint32_t c = g_mode31Frame[i].count;
+    if (c >= 1 && c <= 16)
+      Mode31AggRare(g_mode31Frame[i].rva, c);
+  }
+  g_mode31FrameN = 0;
+  if (es <= 6 || (es % 30) == 0)
+    Log("Mode31: discover es#%u onVs=%u vsHookDelta=%u rareAgg=%d tid=%u "
+        "(want stack RVAs with 1..16 hits/frame)",
+        es, vsCalls, vsDelta, g_mode31AggN, g_mode31VsTid);
+}
+
+// ---- Mode 32 helpers (HookSetVSConstF-depth discover + ABI gate) ----
+constexpr uint32_t kMode32DiscoverEs = 90;
+constexpr uint32_t kMode32CountEsNeed = 45;
+
+bool Mode32ForbiddenRva(uint32_t rva) {
+  return rva == kForbiddenHookRvaA || rva == kForbiddenHookRvaB || rva == kForbiddenMidRva ||
+         rva == 0x2C73E;
+}
+
+bool Mode32LooksLikeMovFromEcx(uint8_t b0, uint8_t b1) {
+  // 8B F1 / 8B F9 / 8B D9 / 8B C1 / 8B E9 / 8B D1 — mov r32, ecx
+  if (b0 != 0x8B)
+    return false;
+  return b1 == 0xF1 || b1 == 0xF9 || b1 == 0xD9 || b1 == 0xC1 || b1 == 0xE9 || b1 == 0xD1;
+}
+
+bool Mode32LooksLikeMovFromEdx(uint8_t b0, uint8_t b1) {
+  // 8B F2 / 8B FA / 8B DA / 8B C2 — mov r32, edx (fastcall 2nd arg)
+  if (b0 != 0x8B)
+    return false;
+  return b1 == 0xF2 || b1 == 0xFA || b1 == 0xDA || b1 == 0xC2;
+}
+
+Mode32Abi Mode32ClassifyPrologue(uintptr_t addr, const char** tagOut) {
+  if (!addr) {
+    if (tagOut)
+      *tagOut = "null";
+    return Mode32Abi::Reject;
+  }
+  MEMORY_BASIC_INFORMATION mbi{};
+  if (!VirtualQuery(reinterpret_cast<const void*>(addr), &mbi, sizeof(mbi)) ||
+      mbi.State != MEM_COMMIT || !(mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
+                                                  PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) {
+    if (tagOut)
+      *tagOut = "vq-fail";
+    return Mode32Abi::Reject;
+  }
+  const auto* b = reinterpret_cast<const uint8_t*>(addr);
+  // Prefer real function starts (INT3 align). Mid-fn hooks AV hard (0x372B0-ish).
+  const bool padded = (addr >= 4) && b[-1] == 0xCC && b[-2] == 0xCC;
+  auto hasEspArg = [&](int from, int to) {
+    for (int i = from; i < to; ++i) {
+      // mov r32, [esp+disp] / mov r32, [esp]
+      if (b[i] == 0x8B && (b[i + 1] == 0x44 || b[i + 1] == 0x4C || b[i + 1] == 0x54 ||
+                           b[i + 1] == 0x5C || b[i + 1] == 0x6C || b[i + 1] == 0x74 ||
+                           b[i + 1] == 0x7C) && b[i + 2] == 0x24)
+        return true;
+      if (b[i] == 0x8B && (b[i + 1] == 0x04 || b[i + 1] == 0x0C || b[i + 1] == 0x14 ||
+                           b[i + 1] == 0x1C) && b[i + 2] == 0x24)
+        return true;
+    }
+    return false;
+  };
+
+  // Known Mode 31 thiscall shapes (tight).
+  if (b[0] == 0x56 && b[1] == 0x57 && Mode32LooksLikeMovFromEcx(b[2], b[3])) {
+    if (hasEspArg(4, 20)) {
+      if (tagOut)
+        *tagOut = "thiscall-stackarg";
+      return Mode32Abi::Reject;
+    }
+    if (!padded) {
+      if (tagOut)
+        *tagOut = "thiscall-unaligned";
+      return Mode32Abi::Reject;
+    }
+    if (tagOut)
+      *tagOut = "thiscall-5657";
+    return Mode32Abi::Thiscall;
+  }
+  if (b[0] == 0x53 && b[1] == 0x56 && b[2] == 0x57 && Mode32LooksLikeMovFromEcx(b[3], b[4])) {
+    if (hasEspArg(5, 22) || !padded) {
+      if (tagOut)
+        *tagOut = !padded ? "thiscall-unaligned" : "thiscall-stackarg";
+      return Mode32Abi::Reject;
+    }
+    if (tagOut)
+      *tagOut = "thiscall-535657";
+    return Mode32Abi::Thiscall;
+  }
+  if (b[0] == 0x53 && b[1] == 0x55 && b[2] == 0x56 && b[3] == 0x57 &&
+      Mode32LooksLikeMovFromEcx(b[4], b[5])) {
+    if (hasEspArg(6, 24) || !padded) {
+      if (tagOut)
+        *tagOut = !padded ? "thiscall-unaligned" : "thiscall-stackarg";
+      return Mode32Abi::Reject;
+    }
+    if (tagOut)
+      *tagOut = "thiscall-53555657";
+    return Mode32Abi::Thiscall;
+  }
+  // 83 EC xx … mov r,ecx within 16 bytes
+  if (b[0] == 0x83 && b[1] == 0xEC) {
+    bool ecx = false, edx = false;
+    for (int i = 2; i < 15; ++i) {
+      if (Mode32LooksLikeMovFromEcx(b[i], b[i + 1]))
+        ecx = true;
+      if (Mode32LooksLikeMovFromEdx(b[i], b[i + 1]))
+        edx = true;
+    }
+    if (hasEspArg(2, 20)) {
+      if (tagOut)
+        *tagOut = "thiscall-stackarg";
+      return Mode32Abi::Reject;
+    }
+    if (!padded) {
+      if (tagOut)
+        *tagOut = "thiscall-unaligned";
+      return Mode32Abi::Reject;
+    }
+    if (ecx && edx) {
+      if (tagOut)
+        *tagOut = "fastcall-83EC";
+      return Mode32Abi::Fastcall;
+    }
+    if (ecx) {
+      if (tagOut)
+        *tagOut = "thiscall-83EC";
+      return Mode32Abi::Thiscall;
+    }
+  }
+  // 55 8B EC … widen window to 24 for mov r,ecx (Mode31 missed 0x32A40)
+  if (b[0] == 0x55 && b[1] == 0x8B && b[2] == 0xEC) {
+    bool ecx = false, edx = false, stackArg = false;
+    for (int i = 3; i < 23; ++i) {
+      if (Mode32LooksLikeMovFromEcx(b[i], b[i + 1]))
+        ecx = true;
+      if (Mode32LooksLikeMovFromEdx(b[i], b[i + 1]))
+        edx = true;
+      // mov r32, [ebp+8..] = at least one stack arg → unsafe for zero-arg dual
+      if (b[i] == 0x8B && (b[i + 1] == 0x45 || b[i + 1] == 0x4D || b[i + 1] == 0x55 ||
+                           b[i + 1] == 0x5D) && b[i + 2] >= 0x08)
+        stackArg = true;
+      // ecx used as memory base without mov r,ecx (e.g. F3 0F 10 01 = movss xmm0,[ecx])
+      if (b[i] == 0x0F && b[i + 1] == 0x10 && (b[i + 2] & 0xC7) == 0x01)
+        ecx = true;
+      if (b[i] == 0x8B && (b[i + 1] & 0xC7) == 0x01)
+        ecx = true;
+    }
+    if (stackArg) {
+      if (tagOut)
+        *tagOut = "thiscall-stackarg";
+      return Mode32Abi::Reject;  // needs stdcall-ish re-call; do not HookDrawWalk
+    }
+    if (ecx && edx) {
+      if (tagOut)
+        *tagOut = "fastcall-frame";
+      return Mode32Abi::Fastcall;
+    }
+    if (ecx) {
+      if (tagOut)
+        *tagOut = "thiscall-frame";
+      return Mode32Abi::Thiscall;
+    }
+    if (tagOut)
+      *tagOut = "stdcall-frame";
+    return Mode32Abi::Stdcall;
+  }
+  // 56 57 8B 7C/74 = push esi/edi; mov r32, [esp+…] — stack-arg, not thiscall.
+  if (b[0] == 0x56 && b[1] == 0x57 && b[2] == 0x8B && (b[3] == 0x7C || b[3] == 0x74)) {
+    if (tagOut)
+      *tagOut = "stdcall-5657mem";
+    return Mode32Abi::Stdcall;
+  }
+  if (tagOut)
+    *tagOut = "unknown";
+  return Mode32Abi::Reject;
+}
+
+void Mode32NoteFrameRva(uint32_t rva) {
+  if (Mode32ForbiddenRva(rva))
+    return;
+  for (int i = 0; i < g_mode32FrameN; ++i) {
+    if (g_mode32Frame[i].rva == rva) {
+      ++g_mode32Frame[i].count;
+      return;
+    }
+  }
+  if (g_mode32FrameN >= 96)
+    return;
+  g_mode32Frame[g_mode32FrameN++] = {rva, 1};
+}
+
+void Mode32AggRare(uint32_t rva, uint32_t hits) {
+  for (int i = 0; i < g_mode32AggN; ++i) {
+    if (g_mode32Agg[i].rva == rva) {
+      g_mode32Agg[i].totalHits += hits;
+      ++g_mode32Agg[i].rareFrames;
+      return;
+    }
+  }
+  if (g_mode32AggN >= 64)
+    return;
+  g_mode32Agg[g_mode32AggN++] = {rva, 1, hits};
+}
+
+void Mode32FallbackPairHold(const char* why) {
+  g_mode32Phase.store(static_cast<int>(Mode32Phase::FallbackPairHold));
+  g_vsPatchOn.store(false);
+  g_drawWalkDead.store(true);
+  SetStereoEye(StereoEye::Left);
+  g_pairAwaitingR = false;
+  if (g_drawWalkAddr) {
+    MH_DisableHook(g_drawWalkAddr);
+    MH_RemoveHook(g_drawWalkAddr);
+    g_origDrawWalk = nullptr;
+    g_drawWalkAddr = nullptr;
+  }
+  WriteStereoModeFile(30);
+  Log("Mode32: FALLBACK pair-hold — wrote stereo=30 — %s (kill → 30 or 26)", why);
+}
+
+bool RunMode32DualGuarded(void* self, void* edx) {
+  __try {
+    g_execViewStage = 1;
+    float dx = 0.f, dy = 0.f, dz = 0.f;
+    float cx = 0.f, cy = 0.f, cz = 0.f;
+    const bool sane = GetStereoEyeRightDeltaWorld(&dx, &dy, &dz) &&
+                      GetLastStereoCamPos(&cx, &cy, &cz);
+    g_vsPatchOn.store(false);
+    SetStereoEye(StereoEye::Left);
+    g_execViewStage = 2;
+    g_origDrawWalk(self, edx);
+    g_execViewStage = 3;
+    if (g_device && g_holdL && CopyBbToEyeCanvas(g_device, g_holdL, vr::Eye_Left))
+      g_pairAwaitingR = true;
+
+    if (!sane)
+      return true;
+
+    g_vsPatchCam[0] = cx;
+    g_vsPatchCam[1] = cy;
+    g_vsPatchCam[2] = cz;
+    g_vsPatchDelta[0] = dx;
+    g_vsPatchDelta[1] = dy;
+    g_vsPatchDelta[2] = dz;
+    g_vsPatchOn.store(true);
+    g_execViewStage = 5;
+    g_origDrawWalk(self, edx);
+    g_vsPatchOn.store(false);
+    g_execViewStage = 6;
+    if (g_device && g_holdR && CopyBbToEyeCanvas(g_device, g_holdR, vr::Eye_Right) &&
+        g_pairAwaitingR) {
+      PromoteHoldPair(g_device);
+      g_pairAwaitingR = false;
+    }
+    g_execViewStage = 7;
+    return true;
+  } __except (ExecViewFilter(GetExceptionInformation())) {
+    g_vsPatchOn.store(false);
+    return false;
+  }
+}
+
+bool Mode32StartNextCount() {
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  while (g_mode32TryIdx < g_mode32TryN) {
+    const uintptr_t start = g_mode32TryList[g_mode32TryIdx++];
+    const uint32_t rva = static_cast<uint32_t>(start - base);
+    const char* tag = "?";
+    const Mode32Abi abi = Mode32ClassifyPrologue(start, &tag);
+    if (Mode32ForbiddenRva(rva) || abi != Mode32Abi::Thiscall) {
+      Log("Mode32: skip try exeRva=0x%X abi=%s (need thiscall for dual)", rva, tag);
+      continue;
+    }
+    if (!InstallDrawWalkAt(start))
+      continue;
+    g_mode32ActiveRva = rva;
+    g_mode32CountEs.store(0);
+    g_mode32EntrySum = 0;
+    g_drawWalkEntries.store(0);
+    g_drawWalkDead.store(false);
+    g_mode32Phase.store(static_cast<int>(Mode32Phase::Count));
+    const auto* b = reinterpret_cast<const uint8_t*>(start);
+    Log("Mode32: COUNT exeRva=0x%X abi=%s bytes=%02X %02X %02X %02X %02X %02X "
+        "(need avg in [0.8,4] over %u EndScenes)",
+        rva, tag, b[0], b[1], b[2], b[3], b[4], b[5], kMode32CountEsNeed);
+    return true;
+  }
+  Mode32FallbackPairHold("no safe ~1×/frame thiscall walker after discover+count");
+  return false;
+}
+
+void Mode32SeedKnownMidRvas() {
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  auto tryAdd = [&](uintptr_t fn, uint32_t midRva, const char* how) {
+    if (!fn || g_mode32TryN >= 8)
+      return;
+    const uint32_t fnRva = static_cast<uint32_t>(fn - base);
+    const char* tag = "?";
+    const Mode32Abi abi = Mode32ClassifyPrologue(fn, &tag);
+    if (Mode32ForbiddenRva(fnRva) || abi != Mode32Abi::Thiscall) {
+      const auto* b = reinterpret_cast<const uint8_t*>(fn);
+      Log("Mode32: seed %s midRva=0x%X -> fnRva=0x%X REJECT abi=%s bytes=%02X %02X %02X %02X",
+          how, midRva, fnRva, tag, b[0], b[1], b[2], b[3]);
+      return;
+    }
+    for (int j = 0; j < g_mode32TryN; ++j) {
+      if (g_mode32TryList[j] == fn)
+        return;
+    }
+    g_mode32TryList[g_mode32TryN++] = fn;
+    Log("Mode32: seed try[%d] %s midRva=0x%X -> fnRva=0x%X abi=%s", g_mode32TryN - 1, how,
+        midRva, fnRva, tag);
+  };
+
+  // Mode 26 VsParent mid-RVAs → prefer NEAR thiscall (≤0x300), not blind FindFnStartNear.
+  static const uint32_t kSeedMid[] = {0x22187, 0x37520, 0x32BD7, 0x4D901B};
+  for (uint32_t midRva : kSeedMid) {
+    if (Mode32ForbiddenRva(midRva))
+      continue;
+    const uintptr_t mid = base + midRva;
+    uintptr_t fn = FindThiscallNear(mid, 0x300);
+    if (!fn)
+      fn = FindThiscallNear(mid, 0x800);
+    if (!fn) {
+      const uintptr_t blind = FindFnStartNear(mid);
+      if (blind) {
+        const char* tag = "?";
+        Mode32ClassifyPrologue(blind, &tag);
+        Log("Mode32: seed midRva=0x%X blind fnRva=0x%X abi=%s (no near thiscall)", midRva,
+            static_cast<unsigned>(blind - base), tag);
+      } else {
+        Log("Mode32: seed midRva=0x%X — no prologue near", midRva);
+      }
+      continue;
+    }
+    tryAdd(fn, midRva, "thiscallNear");
+  }
+
+  // PE-confirmed CC-padded thiscall only. 0x4D8F84 unaligned — skip.
+  static const uint32_t kDirectFn[] = {
+      0x4D8F10,  // CC-pad 83 EC 14 … 8B F1
+  };
+  for (uint32_t fnRva : kDirectFn) {
+    if (Mode32ForbiddenRva(fnRva))
+      continue;
+    tryAdd(base + fnRva, fnRva, "directFn");
+  }
+}
+
+void Mode32BuildTryListFromDiscover() {
+  g_mode32TryN = 0;
+  g_mode32TryIdx = 0;
+  int order[64];
+  int n = 0;
+  for (int i = 0; i < g_mode32AggN; ++i) {
+    if (g_mode32Agg[i].rareFrames < 8)
+      continue;
+    order[n++] = i;
+  }
+  for (int a = 0; a < n; ++a) {
+    for (int b = a + 1; b < n; ++b) {
+      if (g_mode32Agg[order[b]].rareFrames > g_mode32Agg[order[a]].rareFrames) {
+        const int t = order[a];
+        order[a] = order[b];
+        order[b] = t;
+      }
+    }
+  }
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  Log("Mode32: discover done aggN=%d rareCands=%d vsTid=%u vsTotal=%u — resolving",
+      g_mode32AggN, n, g_mode32VsTid, StereoVsTotalCalls());
+  for (int i = 0; i < n && i < 16; ++i) {
+    const Mode32Agg& a = g_mode32Agg[order[i]];
+    Log("Mode32: rare cand midRva=0x%X rareFrames=%u totalHits=%u", a.rva, a.rareFrames,
+        a.totalHits);
+  }
+  for (int i = 0; i < n && g_mode32TryN < 8; ++i) {
+    const uint32_t midRva = g_mode32Agg[order[i]].rva;
+    if (Mode32ForbiddenRva(midRva))
+      continue;
+    const uintptr_t mid = base + midRva;
+    uintptr_t fn = FindThiscallNear(mid, 0x300);
+    if (!fn)
+      fn = FindThiscallNear(mid, 0x800);
+    if (!fn) {
+      const uintptr_t blind = FindFnStartNear(mid);
+      if (blind) {
+        const char* tag = "?";
+        const Mode32Abi abi = Mode32ClassifyPrologue(blind, &tag);
+        Log("Mode32: midRva=0x%X blind fnRva=0x%X abi=%s — skip (want thiscallNear)", midRva,
+            static_cast<unsigned>(blind - base), tag);
+      } else {
+        Log("Mode32: midRva=0x%X — no prologue near", midRva);
+      }
+      continue;
+    }
+    const uint32_t fnRva = static_cast<uint32_t>(fn - base);
+    const char* tag = "?";
+    const Mode32Abi abi = Mode32ClassifyPrologue(fn, &tag);
+    const auto* b = reinterpret_cast<const uint8_t*>(fn);
+    if (Mode32ForbiddenRva(fnRva)) {
+      Log("Mode32: midRva=0x%X -> fnRva=0x%X FORBIDDEN — skip", midRva, fnRva);
+      continue;
+    }
+    if (abi != Mode32Abi::Thiscall) {
+      Log("Mode32: midRva=0x%X -> fnRva=0x%X NEXT-RVA abi=%s bytes=%02X %02X %02X %02X "
+          "(not thiscall — no hook)",
+          midRva, fnRva, tag, b[0], b[1], b[2], b[3]);
+      continue;
+    }
+    bool dup = false;
+    for (int j = 0; j < g_mode32TryN; ++j) {
+      if (g_mode32TryList[j] == fn) {
+        dup = true;
+        break;
+      }
+    }
+    if (dup)
+      continue;
+    g_mode32TryList[g_mode32TryN++] = fn;
+    Log("Mode32: try[%d] midRva=0x%X -> fnRva=0x%X abi=%s bytes=%02X %02X %02X %02X %02X %02X",
+        g_mode32TryN - 1, midRva, fnRva, tag, b[0], b[1], b[2], b[3], b[4], b[5]);
+  }
+  if (g_mode32TryN == 0) {
+    Log("Mode32: live hist empty/unsafe — seeding Mode26 VsParent mid-RVAs (no 0x37C01)");
+    Mode32SeedKnownMidRvas();
+  }
+  if (g_mode32TryN == 0) {
+    Mode32FallbackPairHold("discover+seed found no safe thiscall prologue");
+    for (int i = 0; i < n && i < 8; ++i)
+      Log("Mode32: NEXT-RVA midRva=0x%X rareFrames=%u (logged for CURRENT-STATE)",
+          g_mode32Agg[order[i]].rva, g_mode32Agg[order[i]].rareFrames);
+    return;
+  }
+  Mode32StartNextCount();
+}
+
+void Mode32FinishDiscoverFrame(uint32_t es) {
+  const uint32_t vsCalls = g_mode32VsCallsFrame.exchange(0);
+  const unsigned vsTotal = StereoVsTotalCalls();
+  static unsigned s_prevTotal32 = 0;
+  const unsigned vsDelta = vsTotal - s_prevTotal32;
+  s_prevTotal32 = vsTotal;
+  const int slots = g_mode32FrameN;
+  for (int i = 0; i < g_mode32FrameN; ++i) {
+    const uint32_t c = g_mode32Frame[i].count;
+    if (c >= 1 && c <= 16)
+      Mode32AggRare(g_mode32Frame[i].rva, c);
+  }
+  g_mode32FrameN = 0;
+  if (es <= 6 || (es % 30) == 0)
+    Log("Mode32: discover es#%u onVs=%u vsHookDelta=%u rareAgg=%d frameSlots=%d tid=%u "
+        "(HookSetVSConstF-depth VsParent)",
+        es, vsCalls, vsDelta, g_mode32AggN, slots, g_mode32VsTid);
+}
+
 bool InstallRootProbeHooks(int nRoots) {
   const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
   const uint8_t* sigs[kNumRoots] = {kRootSig0, kRootSig1, kRootSig2, kRootSig3, kRootSig4};
@@ -853,15 +2665,10 @@ void RunExecuteDualFromPhaseA(void* edx) {
   }
 }
 
-// Mode 24: patch params for the SetVertexShaderConstantF view-translate hook
-// (stereo_proj.cpp). Written and read on the render thread only.
-std::atomic<bool> g_vsPatchOn{false};
-float g_vsPatchCam[3] = {};
-float g_vsPatchDelta[3] = {};
-
 // Mode 23: per-phase double exec (proven crash-free by mode 10) + manager-cam
 // matrix shift between the passes (the piece mode 10 was missing). Runs inside
 // the first HookExecA of the frame on the render thread.
+// Mode 30: same dual + DEVICE VS push before Right (not upload-hook; not prologues).
 bool RunExecViewPhaseDualGuarded(void* edx) {
   __try {
     g_execViewStage = 1;
@@ -878,6 +2685,12 @@ bool RunExecViewPhaseDualGuarded(void* edx) {
       RunExecuteEyePass(edx);
       return true;
     }
+    const StereoMode mode = GetStereoMode();
+    // Mode 30: force Left CCam bookkeeping so we do NOT stack CCam+VS (double IPD).
+    if (mode == StereoMode::PhaseDualDeviceVs) {
+      SetStereoEye(StereoEye::Left);
+      g_vsPatchOn.store(false);
+    }
     g_execViewStage = 2;  // exec pass 1 (LEFT — CCam snapshot is the left eye)
     RunExecuteEyePass(edx);
     g_execViewStage = 3;  // capture L
@@ -886,13 +2699,16 @@ bool RunExecViewPhaseDualGuarded(void* edx) {
     g_execViewStage = 4;  // matrix shift to RIGHT eye
     const float ax = posA[0], ay = posA[1], az = posA[2];
     const float bx = posB[0], by = posB[1], bz = posB[2];
-    posA[0] = ax + dx;
-    posA[1] = ay + dy;
-    posA[2] = az + dz;
-    posB[0] = bx + dx;
-    posB[1] = by + dy;
-    posB[2] = bz + dz;
-    if (GetStereoMode() == StereoMode::ExecViewConstDual) {
+    // Mode 23/24: manager matrices (proven inert for fusion). Mode 30: skip — VS only.
+    if (mode != StereoMode::PhaseDualDeviceVs) {
+      posA[0] = ax + dx;
+      posA[1] = ay + dy;
+      posA[2] = az + dz;
+      posB[0] = bx + dx;
+      posB[1] = by + dy;
+      posB[2] = bz + dz;
+    }
+    if (mode == StereoMode::ExecViewConstDual) {
       g_vsPatchCam[0] = cx;
       g_vsPatchCam[1] = cy;
       g_vsPatchCam[2] = cz;
@@ -901,6 +2717,13 @@ bool RunExecViewPhaseDualGuarded(void* edx) {
       g_vsPatchDelta[2] = dz;
       g_vsPatchOn.store(true);
     }
+    int devPatched = 0;
+    if (mode == StereoMode::PhaseDualDeviceVs && g_device) {
+      const float cam[3] = {cx, cy, cz};
+      const float delta[3] = {dx, dy, dz};
+      devPatched = PushDeviceVsEyeTranslate(g_device, cam, delta);
+      g_mode30DevPatches.fetch_add(static_cast<uint32_t>(devPatched));
+    }
     g_execViewStage = 5;  // exec pass 2
     RunExecuteEyePass(edx);
     g_vsPatchOn.store(false);
@@ -908,15 +2731,912 @@ bool RunExecViewPhaseDualGuarded(void* edx) {
     if (CopyCurrentRtToEyeCanvas(g_device, g_texR, vr::Eye_Right))
       g_haveR = true;
     g_execViewStage = 7;  // restore
-    posA[0] = ax;
-    posA[1] = ay;
-    posA[2] = az;
-    posB[0] = bx;
-    posB[1] = by;
-    posB[2] = bz;
+    if (mode != StereoMode::PhaseDualDeviceVs) {
+      posA[0] = ax;
+      posA[1] = ay;
+      posA[2] = az;
+      posB[0] = bx;
+      posB[1] = by;
+      posB[2] = bz;
+    }
+    if (mode == StereoMode::PhaseDualDeviceVs && (g_execViewDualCount.load() < 6 ||
+                                                   (g_execViewDualCount.load() % 300) == 0))
+      Log("StereoMode30: deviceVsPatches=%d sep=%.0fcm (before R pass)", devPatched,
+          GetStereoSepMeters() * 100.f);
     return true;
   } __except (ExecViewFilter(GetExceptionInformation())) {
     return false;
+  }
+}
+
+// Definitive answer to "are both eyes the same image?": downsample both canvases
+// to 16x16, read back, sum absolute byte differences. 0 = identical (no parallax
+// reached the render). Called rarely (GetRenderTargetData syncs the GPU).
+long long CompareEyeCanvases(IDirect3DDevice9* dev) {
+  if (!dev || !g_texL || !g_texR)
+    return -1;
+  for (int i = 0; i < 2; ++i) {
+    if (!g_diffSmall[i] &&
+        FAILED(dev->CreateRenderTarget(16, 16, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE,
+                                       &g_diffSmall[i], nullptr)))
+      return -1;
+    if (!g_diffSys[i] &&
+        FAILED(dev->CreateOffscreenPlainSurface(16, 16, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM,
+                                                &g_diffSys[i], nullptr)))
+      return -1;
+  }
+  for (int i = 0; i < 2; ++i) {
+    IDirect3DSurface9* s = nullptr;
+    IDirect3DTexture9* t = i ? g_texR : g_texL;
+    if (FAILED(t->GetSurfaceLevel(0, &s)) || !s)
+      return -1;
+    const bool ok = SUCCEEDED(dev->StretchRect(s, nullptr, g_diffSmall[i], nullptr,
+                                               D3DTEXF_LINEAR)) &&
+                    SUCCEEDED(dev->GetRenderTargetData(g_diffSmall[i], g_diffSys[i]));
+    s->Release();
+    if (!ok)
+      return -1;
+  }
+  D3DLOCKED_RECT la{}, lb{};
+  if (FAILED(g_diffSys[0]->LockRect(&la, nullptr, D3DLOCK_READONLY)))
+    return -1;
+  if (FAILED(g_diffSys[1]->LockRect(&lb, nullptr, D3DLOCK_READONLY))) {
+    g_diffSys[0]->UnlockRect();
+    return -1;
+  }
+  long long sum = 0;
+  for (int y = 0; y < 16; ++y) {
+    const uint8_t* pa = static_cast<const uint8_t*>(la.pBits) + y * la.Pitch;
+    const uint8_t* pb = static_cast<const uint8_t*>(lb.pBits) + y * lb.Pitch;
+    for (int x = 0; x < 64; ++x)
+      sum += (pa[x] > pb[x]) ? (pa[x] - pb[x]) : (pb[x] - pa[x]);
+  }
+  g_diffSys[1]->UnlockRect();
+  g_diffSys[0]->UnlockRect();
+  Log("StereoDiff: L-vs-R 16x16 absdiff=%lld (0 = identical images, no parallax)", sum);
+  return sum;
+}
+
+void Mode30FallbackPairHold(const char* why) {
+  g_execDualDead.store(true);
+  g_mode30Phase.store(static_cast<int>(Mode30Phase::PairHold));
+  g_vsPatchOn.store(false);
+  SetStereoEye(StereoEye::Left);
+  g_pairAwaitingR = false;
+  Log("StereoMode30: FALLBACK pair-hold temporal — %s (kill switch still stereo=26)", why);
+}
+
+void TemporalCapturePairHold(IDirect3DDevice9* device);
+
+void Mode31OnEndScene(IDirect3DDevice9* device) {
+  if (!device)
+    return;
+  IDirect3DSurface9* bb = nullptr;
+  if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb)
+    return;
+  D3DSURFACE_DESC desc{};
+  bb->GetDesc(&desc);
+  bb->Release();
+  uint32_t rtW = desc.Width, rtH = desc.Height;
+  ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
+  if (!EnsureEyeRts(device, rtW, rtH))
+    return;
+  if (!IsCamMatrixOverrideEnabled())
+    return;
+
+  const int ph = g_mode31Phase.load();
+  const uint32_t es = ++g_mode31Es;
+
+  if (ph == static_cast<int>(Mode31Phase::SoftPairHold) ||
+      ph == static_cast<int>(Mode31Phase::FallbackPairHold)) {
+    TemporalCapturePairHold(device);
+    if (ph == static_cast<int>(Mode31Phase::SoftPairHold))
+      Mode31FinishDiscoverFrame(es);
+    if (ph == static_cast<int>(Mode31Phase::SoftPairHold) && es >= 45) {
+      g_mode31Phase.store(static_cast<int>(Mode31Phase::Discover));
+      Log("Mode31: DISCOVER armed (SetVSConstF stack hist on VsRet tid; no 0x2C6AC/0x37BD0; "
+          "%u EndScenes) — pair-hold continues; soft already collected rareAgg=%d",
+          kMode31DiscoverEs, g_mode31AggN);
+    }
+    return;
+  }
+
+  if (ph == static_cast<int>(Mode31Phase::Discover)) {
+    TemporalCapturePairHold(device);
+    Mode31FinishDiscoverFrame(es);
+    // Discover window counted from phase entry: use agg rareFrames growth via es soft.
+    static uint32_t s_discStart = 0;
+    if (s_discStart == 0)
+      s_discStart = es;
+    if (es - s_discStart >= kMode31DiscoverEs) {
+      s_discStart = 0;
+      Mode31BuildTryListFromDiscover();
+    }
+    return;
+  }
+
+  if (ph == static_cast<int>(Mode31Phase::Count)) {
+    TemporalCapturePairHold(device);
+    const uint32_t entries = g_drawWalkEntries.exchange(0);
+    if (entries == 0xFFFFFFFFu) {
+      Log("Mode31: count cand exeRva=0x%X died — try next", g_mode31ActiveRva);
+      if (!Mode31StartNextCount())
+        return;
+      return;
+    }
+    ++g_mode31CountEs;
+    g_mode31EntrySum += entries;
+    const uint32_t n = g_mode31CountEs.load();
+    if (n <= 6 || (n % 15) == 0)
+      Log("Mode31: count es#%u/%u entries=%u sum=%u fnRva=0x%X", n, kMode31CountEsNeed,
+          entries, g_mode31EntrySum, g_mode31ActiveRva);
+    if (n >= kMode31CountEsNeed) {
+      const float avg = static_cast<float>(g_mode31EntrySum) / static_cast<float>(n);
+      if (avg >= 0.8f && avg <= 4.f) {
+        g_mode31Phase.store(static_cast<int>(Mode31Phase::Dual));
+        g_mode31DualN.store(0);
+        g_mode31ZeroDiff.store(0);
+        g_drawWalkDead.store(false);
+        Log("Mode31: DUAL armed fnRva=0x%X avgEntries=%.2f (VS patch between passes, "
+            "CCam Left-only, pair-hold promote)",
+            g_mode31ActiveRva, avg);
+      } else {
+        Log("Mode31: count REJECT fnRva=0x%X avgEntries=%.2f (want [0.8,4]) — try next",
+            g_mode31ActiveRva, avg);
+        if (!Mode31StartNextCount())
+          return;
+      }
+    }
+    return;
+  }
+
+  if (ph == static_cast<int>(Mode31Phase::Dual)) {
+    // Captures happen inside HookDrawWalk dual; optionally verify parallax.
+    if (g_haveL && g_haveR && (g_mode31DualN.load() == 5 || g_mode31DualN.load() == 30 ||
+                               (g_mode31DualN.load() > 0 && (g_mode31DualN.load() % 300) == 0))) {
+      const long long diff = CompareEyeCanvases(device);
+      if (diff >= 0 && diff < 200) {
+        const uint32_t z = ++g_mode31ZeroDiff;
+        if (z >= 3)
+          Mode31FallbackPairHold("StereoDiff~0 (dual same cam — VS patch not reaching draws)");
+      } else if (diff >= 200) {
+        g_mode31ZeroDiff.store(0);
+      }
+    }
+    if (es <= 8 || (es % 300) == 0)
+      Log("Mode31: dual EndScene es#%u dualN=%u haveL=%d haveR=%d vsPatch=%u", es,
+          g_mode31DualN.load(), g_haveL ? 1 : 0, g_haveR ? 1 : 0, StereoVsTranslateCount());
+    return;
+  }
+}
+
+void Mode32OnEndScene(IDirect3DDevice9* device) {
+  if (!device)
+    return;
+  IDirect3DSurface9* bb = nullptr;
+  if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb)
+    return;
+  D3DSURFACE_DESC desc{};
+  bb->GetDesc(&desc);
+  bb->Release();
+  uint32_t rtW = desc.Width, rtH = desc.Height;
+  ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
+  if (!EnsureEyeRts(device, rtW, rtH))
+    return;
+  if (!IsCamMatrixOverrideEnabled())
+    return;
+
+  const int ph = g_mode32Phase.load();
+  const uint32_t es = ++g_mode32Es;
+
+  if (ph == static_cast<int>(Mode32Phase::SoftPairHold) ||
+      ph == static_cast<int>(Mode32Phase::FallbackPairHold)) {
+    TemporalCapturePairHold(device);
+    if (ph == static_cast<int>(Mode32Phase::SoftPairHold))
+      Mode32FinishDiscoverFrame(es);
+    if (ph == static_cast<int>(Mode32Phase::SoftPairHold) && es >= 45) {
+      // Mode 31/32 live hist often stays empty (SetVSConstF quiet after cam arm).
+      // If soft already has rare parents, do a short Discover; else seed immediately.
+      if (g_mode32AggN > 0) {
+        g_mode32Phase.store(static_cast<int>(Mode32Phase::Discover));
+        Log("Mode32: DISCOVER armed (HookSetVSConstF-depth VsParent; no 0x2C6AC/0x37BD0; "
+            "%u EndScenes) — pair-hold continues; soft rareAgg=%d",
+            kMode32DiscoverEs, g_mode32AggN);
+      } else {
+        Log("Mode32: soft rareAgg=0 (vsTotal=%u) — skip empty Discover, seed Mode26 "
+            "VsParent mid-RVAs now",
+            StereoVsTotalCalls());
+        Mode32BuildTryListFromDiscover();
+      }
+    }
+    return;
+  }
+
+  if (ph == static_cast<int>(Mode32Phase::Discover)) {
+    TemporalCapturePairHold(device);
+    Mode32FinishDiscoverFrame(es);
+    static uint32_t s_discStart32 = 0;
+    if (s_discStart32 == 0)
+      s_discStart32 = es;
+    if (es - s_discStart32 >= kMode32DiscoverEs) {
+      s_discStart32 = 0;
+      Mode32BuildTryListFromDiscover();
+    }
+    return;
+  }
+
+  if (ph == static_cast<int>(Mode32Phase::Count)) {
+    TemporalCapturePairHold(device);
+    const uint32_t entries = g_drawWalkEntries.exchange(0);
+    if (entries == 0xFFFFFFFFu) {
+      Log("Mode32: count cand exeRva=0x%X died — try next", g_mode32ActiveRva);
+      if (!Mode32StartNextCount())
+        return;
+      return;
+    }
+    ++g_mode32CountEs;
+    g_mode32EntrySum += entries;
+    const uint32_t n = g_mode32CountEs.load();
+    if (n <= 6 || (n % 15) == 0)
+      Log("Mode32: count es#%u/%u entries=%u sum=%u fnRva=0x%X", n, kMode32CountEsNeed,
+          entries, g_mode32EntrySum, g_mode32ActiveRva);
+    if (n >= kMode32CountEsNeed) {
+      const float avg = static_cast<float>(g_mode32EntrySum) / static_cast<float>(n);
+      if (avg >= 0.8f && avg <= 4.f) {
+        g_mode32Phase.store(static_cast<int>(Mode32Phase::Dual));
+        g_mode32DualN.store(0);
+        g_mode32ZeroDiff.store(0);
+        g_drawWalkDead.store(false);
+        Log("Mode32: DUAL armed fnRva=0x%X avgEntries=%.2f (VS patch between passes, "
+            "CCam Left-only, pair-hold promote)",
+            g_mode32ActiveRva, avg);
+      } else {
+        Log("Mode32: count REJECT fnRva=0x%X avgEntries=%.2f (want [0.8,4]) — try next",
+            g_mode32ActiveRva, avg);
+        if (!Mode32StartNextCount())
+          return;
+      }
+    }
+    return;
+  }
+
+  if (ph == static_cast<int>(Mode32Phase::Dual)) {
+    if (g_haveL && g_haveR && (g_mode32DualN.load() == 5 || g_mode32DualN.load() == 30 ||
+                               (g_mode32DualN.load() > 0 && (g_mode32DualN.load() % 300) == 0))) {
+      const long long diff = CompareEyeCanvases(device);
+      if (diff >= 0 && diff < 200) {
+        const uint32_t z = ++g_mode32ZeroDiff;
+        if (z >= 3)
+          Mode32FallbackPairHold("StereoDiff~0 (dual same cam — VS patch not reaching draws)");
+      } else if (diff >= 200) {
+        g_mode32ZeroDiff.store(0);
+      }
+    }
+    if (es <= 8 || (es % 300) == 0)
+      Log("Mode32: dual EndScene es#%u dualN=%u haveL=%d haveR=%d vsPatch=%u", es,
+          g_mode32DualN.load(), g_haveL ? 1 : 0, g_haveR ? 1 : 0, StereoVsTranslateCount());
+    return;
+  }
+}
+
+// ---- Mode 33: wait for live VsParent → CC-pad thiscall0 only → dual ----
+constexpr uint32_t kMode33SoftWaitMaxEs = 360;   // pair-hold while waiting for samples
+constexpr uint32_t kMode33DiscoverEs = 90;
+constexpr uint32_t kMode33CountEsNeed = 45;
+
+bool Mode33ForbiddenRva(uint32_t rva) {
+  // Mode 32 rejects + known stackarg / crash prologues (never blind-hook).
+  return Mode32ForbiddenRva(rva) || rva == 0x32A40 || rva == 0x372B0 || rva == 0x370D0;
+}
+
+bool Mode33IsCcPaddedThiscall0(uintptr_t addr, const char** tagOut) {
+  const char* tag = "?";
+  const Mode32Abi abi = Mode32ClassifyPrologue(addr, &tag);
+  if (tagOut)
+    *tagOut = tag;
+  if (abi != Mode32Abi::Thiscall)
+    return false;
+  // Mode32Classify already requires CC-pad for most shapes; also reject any
+  // thiscall-frame that slipped through without pad (stricter than Mode 32).
+  if (addr < 4)
+    return false;
+  const auto* b = reinterpret_cast<const uint8_t*>(addr);
+  if (!(b[-1] == 0xCC && b[-2] == 0xCC)) {
+    if (tagOut)
+      *tagOut = "thiscall-unpadded";
+    return false;
+  }
+  return true;
+}
+
+void Mode33NoteFrameRva(uint32_t rva) {
+  if (Mode33ForbiddenRva(rva))
+    return;
+  ++g_mode33SampleHits;
+  for (int i = 0; i < g_mode33FrameN; ++i) {
+    if (g_mode33Frame[i].rva == rva) {
+      ++g_mode33Frame[i].count;
+      return;
+    }
+  }
+  if (g_mode33FrameN >= 96)
+    return;
+  g_mode33Frame[g_mode33FrameN++] = {rva, 1};
+}
+
+void Mode33AggRare(uint32_t rva, uint32_t hits) {
+  for (int i = 0; i < g_mode33AggN; ++i) {
+    if (g_mode33Agg[i].rva == rva) {
+      g_mode33Agg[i].totalHits += hits;
+      ++g_mode33Agg[i].rareFrames;
+      return;
+    }
+  }
+  if (g_mode33AggN >= 64)
+    return;
+  g_mode33Agg[g_mode33AggN++] = {rva, 1, hits};
+}
+
+void Mode33FallbackPairHold(const char* why) {
+  g_mode33Phase.store(static_cast<int>(Mode33Phase::FallbackPairHold));
+  g_vsPatchOn.store(false);
+  g_drawWalkDead.store(true);
+  SetStereoEye(StereoEye::Left);
+  g_pairAwaitingR = false;
+  if (g_drawWalkAddr) {
+    MH_DisableHook(g_drawWalkAddr);
+    MH_RemoveHook(g_drawWalkAddr);
+    g_origDrawWalk = nullptr;
+    g_drawWalkAddr = nullptr;
+  }
+  WriteStereoModeFile(30);
+  Log("Mode33: FALLBACK pair-hold — wrote stereo=30 — %s (kill → 30 or 26)", why);
+}
+
+bool RunMode33DualGuarded(void* self, void* edx) {
+  // Same dual body as Mode 32 (VS translate pass2, CCam Left-only, pair-hold).
+  return RunMode32DualGuarded(self, edx);
+}
+
+bool Mode33StartNextCount() {
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  while (g_mode33TryIdx < g_mode33TryN) {
+    const uintptr_t start = g_mode33TryList[g_mode33TryIdx++];
+    const uint32_t rva = static_cast<uint32_t>(start - base);
+    const char* tag = "?";
+    if (Mode33ForbiddenRva(rva) || !Mode33IsCcPaddedThiscall0(start, &tag)) {
+      Log("Mode33: skip try exeRva=0x%X abi=%s (need CC-pad thiscall0)", rva, tag);
+      continue;
+    }
+    if (!InstallDrawWalkAt(start))
+      continue;
+    g_mode33ActiveRva = rva;
+    g_mode33CountEs.store(0);
+    g_mode33EntrySum = 0;
+    g_drawWalkEntries.store(0);
+    g_drawWalkDead.store(false);
+    g_mode33Phase.store(static_cast<int>(Mode33Phase::Count));
+    const auto* b = reinterpret_cast<const uint8_t*>(start);
+    Log("Mode33: COUNT exeRva=0x%X abi=%s bytes=%02X %02X %02X %02X %02X %02X "
+        "(need avg in [0.8,4] over %u EndScenes)",
+        rva, tag, b[0], b[1], b[2], b[3], b[4], b[5], kMode33CountEsNeed);
+    return true;
+  }
+  Mode33FallbackPairHold("no safe CC-pad thiscall0 walker after live discover");
+  return false;
+}
+
+void Mode33BuildTryListFromDiscover() {
+  g_mode33TryN = 0;
+  g_mode33TryIdx = 0;
+  int order[64];
+  int n = 0;
+  for (int i = 0; i < g_mode33AggN; ++i) {
+    if (g_mode33Agg[i].rareFrames < 2)
+      continue;
+    order[n++] = i;
+  }
+  for (int a = 0; a < n; ++a) {
+    for (int b = a + 1; b < n; ++b) {
+      if (g_mode33Agg[order[b]].rareFrames > g_mode33Agg[order[a]].rareFrames) {
+        const int t = order[a];
+        order[a] = order[b];
+        order[b] = t;
+      }
+    }
+  }
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  Log("Mode33: discover done aggN=%d rareCands=%d sampleHits=%u vsTid=%u vsTotal=%u",
+      g_mode33AggN, n, g_mode33SampleHits, g_mode33VsTid, StereoVsTotalCalls());
+  for (int i = 0; i < n && i < 16; ++i) {
+    const Mode33Agg& a = g_mode33Agg[order[i]];
+    Log("Mode33: rare cand midRva=0x%X rareFrames=%u totalHits=%u", a.rva, a.rareFrames,
+        a.totalHits);
+  }
+
+  auto tryAdd = [&](uintptr_t fn, uint32_t fromRva, const char* how) {
+    if (!fn || g_mode33TryN >= 8)
+      return;
+    const uint32_t fnRva = static_cast<uint32_t>(fn - base);
+    const char* tag = "?";
+    if (Mode33ForbiddenRva(fnRva) || !Mode33IsCcPaddedThiscall0(fn, &tag)) {
+      const auto* b = reinterpret_cast<const uint8_t*>(fn);
+      Log("Mode33: %s midRva=0x%X -> fnRva=0x%X REJECT abi=%s bytes=%02X %02X %02X %02X", how,
+          fromRva, fnRva, tag, b[0], b[1], b[2], b[3]);
+      return;
+    }
+    for (int j = 0; j < g_mode33TryN; ++j) {
+      if (g_mode33TryList[j] == fn)
+        return;
+    }
+    g_mode33TryList[g_mode33TryN++] = fn;
+    const auto* b = reinterpret_cast<const uint8_t*>(fn);
+    Log("Mode33: try[%d] %s midRva=0x%X -> fnRva=0x%X abi=%s bytes=%02X %02X %02X %02X %02X %02X",
+        g_mode33TryN - 1, how, fromRva, fnRva, tag, b[0], b[1], b[2], b[3], b[4], b[5]);
+  };
+
+  for (int i = 0; i < n && g_mode33TryN < 8; ++i) {
+    const uint32_t midRva = g_mode33Agg[order[i]].rva;
+    if (Mode33ForbiddenRva(midRva))
+      continue;
+    const uintptr_t mid = base + midRva;
+    // If the stack slot itself is already a CC-pad thiscall0 start, hook it.
+    tryAdd(mid, midRva, "slotIsStart");
+    uintptr_t fn = FindThiscallNear(mid, 0x300);
+    if (!fn)
+      fn = FindThiscallNear(mid, 0x800);
+    if (!fn)
+      fn = FindThiscallNear(mid, 0x1000);
+    if (fn)
+      tryAdd(fn, midRva, "thiscallNear");
+    else {
+      const uintptr_t blind = FindFnStartNear(mid);
+      if (blind)
+        tryAdd(blind, midRva, "fnStartNear");
+      else
+        Log("Mode33: midRva=0x%X — no prologue near (no blind seed)", midRva);
+    }
+  }
+
+  // Safe PE-confirmed CC-pad thiscall (Mode32 count avg=0 — may still reject after gate).
+  tryAdd(base + 0x4D8F10, 0x4D8F10, "directFn");
+
+  if (g_mode33TryN == 0) {
+    Mode33FallbackPairHold("live VsParent hist found no CC-pad thiscall0 (no early seed)");
+    return;
+  }
+  Mode33StartNextCount();
+}
+
+void Mode33FinishDiscoverFrame(uint32_t es) {
+  const uint32_t vsCalls = g_mode33VsCallsFrame.exchange(0);
+  const unsigned vsTotal = StereoVsTotalCalls();
+  static unsigned s_prevTotal33 = 0;
+  const unsigned vsDelta = vsTotal - s_prevTotal33;
+  s_prevTotal33 = vsTotal;
+  const int slots = g_mode33FrameN;
+  for (int i = 0; i < g_mode33FrameN; ++i) {
+    const uint32_t c = g_mode33Frame[i].count;
+    if (c >= 1 && c <= 16)
+      Mode33AggRare(g_mode33Frame[i].rva, c);
+  }
+  g_mode33FrameN = 0;
+  if (es <= 6 || (es % 30) == 0)
+    Log("Mode33: wait/discover es#%u onVs=%u vsHookDelta=%u rareAgg=%d frameSlots=%d "
+        "sampleHits=%u tid=%u",
+        es, vsCalls, vsDelta, g_mode33AggN, slots, g_mode33SampleHits, g_mode33VsTid);
+}
+
+void Mode33OnEndScene(IDirect3DDevice9* device) {
+  if (!device)
+    return;
+  IDirect3DSurface9* bb = nullptr;
+  if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb)
+    return;
+  D3DSURFACE_DESC desc{};
+  bb->GetDesc(&desc);
+  bb->Release();
+  uint32_t rtW = desc.Width, rtH = desc.Height;
+  ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
+  if (!EnsureEyeRts(device, rtW, rtH))
+    return;
+  if (!IsCamMatrixOverrideEnabled())
+    return;
+
+  const int ph = g_mode33Phase.load();
+  const uint32_t es = ++g_mode33Es;
+
+  if (ph == static_cast<int>(Mode33Phase::SoftWaitSamples) ||
+      ph == static_cast<int>(Mode33Phase::FallbackPairHold)) {
+    TemporalCapturePairHold(device);
+    if (ph == static_cast<int>(Mode33Phase::SoftWaitSamples))
+      Mode33FinishDiscoverFrame(es);
+    if (ph == static_cast<int>(Mode33Phase::SoftWaitSamples)) {
+      // KEY vs Mode 32: do NOT seed while hist empty. Wait for live VsParent.
+      if (g_mode33AggN > 0 && g_mode33SampleHits >= 8 && es >= 45) {
+        g_mode33Phase.store(static_cast<int>(Mode33Phase::Discover));
+        Log("Mode33: DISCOVER armed (live VsParent appeared; rareAgg=%d sampleHits=%u; "
+            "no early seed; %u more ES) — pair-hold continues",
+            g_mode33AggN, g_mode33SampleHits, kMode33DiscoverEs);
+      } else if (es >= kMode33SoftWaitMaxEs) {
+        Mode33FallbackPairHold("no live VsParent samples after soft wait — keep Mode 30");
+      } else if (es >= 45 && (es % 60) == 0) {
+        Log("Mode33: still waiting for VsParent samples es=%u rareAgg=%d sampleHits=%u "
+            "vsTotal=%u (Mode32 empty Soft was too early)",
+            es, g_mode33AggN, g_mode33SampleHits, StereoVsTotalCalls());
+      }
+    }
+    return;
+  }
+
+  if (ph == static_cast<int>(Mode33Phase::Discover)) {
+    TemporalCapturePairHold(device);
+    Mode33FinishDiscoverFrame(es);
+    static uint32_t s_discStart33 = 0;
+    if (s_discStart33 == 0)
+      s_discStart33 = es;
+    if (es - s_discStart33 >= kMode33DiscoverEs) {
+      s_discStart33 = 0;
+      Mode33BuildTryListFromDiscover();
+    }
+    return;
+  }
+
+  if (ph == static_cast<int>(Mode33Phase::Count)) {
+    TemporalCapturePairHold(device);
+    const uint32_t entries = g_drawWalkEntries.exchange(0);
+    if (entries == 0xFFFFFFFFu) {
+      Log("Mode33: count cand exeRva=0x%X died — try next", g_mode33ActiveRva);
+      if (!Mode33StartNextCount())
+        return;
+      return;
+    }
+    ++g_mode33CountEs;
+    g_mode33EntrySum += entries;
+    const uint32_t n = g_mode33CountEs.load();
+    if (n <= 6 || (n % 15) == 0)
+      Log("Mode33: count es#%u/%u entries=%u sum=%u fnRva=0x%X", n, kMode33CountEsNeed,
+          entries, g_mode33EntrySum, g_mode33ActiveRva);
+    if (n >= kMode33CountEsNeed) {
+      const float avg = static_cast<float>(g_mode33EntrySum) / static_cast<float>(n);
+      if (avg >= 0.8f && avg <= 4.f) {
+        g_mode33Phase.store(static_cast<int>(Mode33Phase::Dual));
+        g_mode33DualN.store(0);
+        g_mode33ZeroDiff.store(0);
+        g_drawWalkDead.store(false);
+        Log("Mode33: DUAL armed fnRva=0x%X avgEntries=%.2f (VS patch pass2, CCam Left-only, "
+            "pair-hold promote)",
+            g_mode33ActiveRva, avg);
+      } else {
+        Log("Mode33: count REJECT fnRva=0x%X avgEntries=%.2f (want [0.8,4]) — try next",
+            g_mode33ActiveRva, avg);
+        if (!Mode33StartNextCount())
+          return;
+      }
+    }
+    return;
+  }
+
+  if (ph == static_cast<int>(Mode33Phase::Dual)) {
+    if (g_haveL && g_haveR && (g_mode33DualN.load() == 5 || g_mode33DualN.load() == 30 ||
+                               (g_mode33DualN.load() > 0 && (g_mode33DualN.load() % 300) == 0))) {
+      const long long diff = CompareEyeCanvases(device);
+      if (diff >= 0 && diff < 200) {
+        const uint32_t z = ++g_mode33ZeroDiff;
+        if (z >= 3)
+          Mode33FallbackPairHold("StereoDiff~0 (dual same cam — VS patch not reaching draws)");
+      } else if (diff >= 200) {
+        g_mode33ZeroDiff.store(0);
+      }
+    }
+    if (es <= 8 || (es % 300) == 0)
+      Log("Mode33: dual EndScene es#%u dualN=%u haveL=%d haveR=%d vsPatch=%u", es,
+          g_mode33DualN.load(), g_haveL ? 1 : 0, g_haveR ? 1 : 0, StereoVsTranslateCount());
+    return;
+  }
+}
+
+// ---- Mode 34: VsRet(0x2C73E) stack -> FUNCTION STARTS -> dual ----
+constexpr uint32_t kMode34SoftWaitMaxEs = 360;
+constexpr uint32_t kMode34DiscoverEs = 90;
+constexpr uint32_t kMode34CountEsNeed = 45;
+constexpr uint32_t kMode34VsRetRva = 0x2C73E;
+
+bool Mode34ForbiddenRva(uint32_t rva) {
+  // 0x1BF010: COUNT hook hard-killed process (2026-07-24 Mode34) — never retry.
+  return Mode33ForbiddenRva(rva) || rva == kMode34VsRetRva || rva == 0x1BF010;
+}
+
+bool Mode34IsCcPaddedThiscall0(uintptr_t addr, const char** tagOut) {
+  const char* tag = "?";
+  if (!Mode33IsCcPaddedThiscall0(addr, &tag)) {
+    if (tagOut)
+      *tagOut = tag;
+    return false;
+  }
+  // thiscall-frame (55 8B EC...) is too broad — Mode34 COUNT crashed on 0x1BF010.
+  if (tag && std::strstr(tag, "frame")) {
+    if (tagOut)
+      *tagOut = "thiscall-frame-reject";
+    return false;
+  }
+  if (tagOut)
+    *tagOut = tag;
+  return true;
+}
+
+void Mode34NoteFrameRva(uint32_t rva) {
+  if (Mode34ForbiddenRva(rva))
+    return;
+  ++g_mode34SampleHits;
+  for (int i = 0; i < g_mode34FrameN; ++i) {
+    if (g_mode34Frame[i].rva == rva) {
+      ++g_mode34Frame[i].count;
+      return;
+    }
+  }
+  if (g_mode34FrameN >= 96)
+    return;
+  g_mode34Frame[g_mode34FrameN++] = {rva, 1};
+}
+
+void Mode34AggRare(uint32_t rva, uint32_t hits) {
+  for (int i = 0; i < g_mode34AggN; ++i) {
+    if (g_mode34Agg[i].rva == rva) {
+      g_mode34Agg[i].totalHits += hits;
+      ++g_mode34Agg[i].rareFrames;
+      return;
+    }
+  }
+  if (g_mode34AggN >= 64)
+    return;
+  g_mode34Agg[g_mode34AggN++] = {rva, 1, hits};
+}
+
+void Mode34FallbackPairHold(const char* why) {
+  g_mode34Phase.store(static_cast<int>(Mode34Phase::FallbackPairHold));
+  g_vsPatchOn.store(false);
+  g_drawWalkDead.store(true);
+  SetStereoEye(StereoEye::Left);
+  g_pairAwaitingR = false;
+  if (g_drawWalkAddr) {
+    MH_DisableHook(g_drawWalkAddr);
+    MH_RemoveHook(g_drawWalkAddr);
+    g_origDrawWalk = nullptr;
+    g_drawWalkAddr = nullptr;
+  }
+  WriteStereoModeFile(30);
+  Log("Mode34: FALLBACK pair-hold - wrote stereo=30 - %s (kill -> 30 or 26)", why);
+}
+
+bool RunMode34DualGuarded(void* self, void* edx) {
+  return RunMode32DualGuarded(self, edx);
+}
+
+bool Mode34StartNextCount() {
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  while (g_mode34TryIdx < g_mode34TryN) {
+    const uintptr_t start = g_mode34TryList[g_mode34TryIdx++];
+    const uint32_t rva = static_cast<uint32_t>(start - base);
+    const char* tag = "?";
+    if (Mode34ForbiddenRva(rva) || !Mode34IsCcPaddedThiscall0(start, &tag)) {
+      Log("Mode34: skip try exeRva=0x%X abi=%s (need CC-pad thiscall0)", rva, tag);
+      continue;
+    }
+    if (!InstallDrawWalkAt(start))
+      continue;
+    g_mode34ActiveRva = rva;
+    g_mode34CountEs.store(0);
+    g_mode34EntrySum = 0;
+    g_drawWalkEntries.store(0);
+    g_drawWalkDead.store(false);
+    g_mode34Phase.store(static_cast<int>(Mode34Phase::Count));
+    const auto* b = reinterpret_cast<const uint8_t*>(start);
+    Log("Mode34: COUNT exeRva=0x%X abi=%s bytes=%02X %02X %02X %02X %02X %02X "
+        "(need avg in [0.8,4] over %u EndScenes)",
+        rva, tag, b[0], b[1], b[2], b[3], b[4], b[5], kMode34CountEsNeed);
+    return true;
+  }
+  Mode34FallbackPairHold("no safe CC-pad thiscall0 VsRet-caller after discover");
+  return false;
+}
+
+void Mode34BuildTryListFromDiscover() {
+  g_mode34TryN = 0;
+  g_mode34TryIdx = 0;
+  int order[64];
+  int n = 0;
+  for (int i = 0; i < g_mode34AggN; ++i) {
+    if (g_mode34Agg[i].rareFrames < 2)
+      continue;
+    // Prefer starts that appear ~1x/frame: avg hits/rareFrame in [0.8, 2.5].
+    const float avg =
+        static_cast<float>(g_mode34Agg[i].totalHits) / static_cast<float>(g_mode34Agg[i].rareFrames);
+    if (avg < 0.8f || avg > 2.5f)
+      continue;
+    order[n++] = i;
+  }
+  // Rank by closeness to 1.0 entries/frame (true walker), then rareFrames.
+  for (int a = 0; a < n; ++a) {
+    for (int b = a + 1; b < n; ++b) {
+      const Mode34Agg& A = g_mode34Agg[order[a]];
+      const Mode34Agg& B = g_mode34Agg[order[b]];
+      const float avgA = static_cast<float>(A.totalHits) / static_cast<float>(A.rareFrames);
+      const float avgB = static_cast<float>(B.totalHits) / static_cast<float>(B.rareFrames);
+      const float dA = avgA > 1.f ? avgA - 1.f : 1.f - avgA;
+      const float dB = avgB > 1.f ? avgB - 1.f : 1.f - avgB;
+      if (dB < dA || (dB == dA && B.rareFrames > A.rareFrames)) {
+        const int t = order[a];
+        order[a] = order[b];
+        order[b] = t;
+      }
+    }
+  }
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  Log("Mode34: discover done aggN=%d rareCands=%d sampleHits=%u vsRetHits=%u vsTid=%u",
+      g_mode34AggN, n, g_mode34SampleHits, g_mode34VsRetHits, g_mode34VsTid);
+  for (int i = 0; i < n && i < 16; ++i) {
+    const Mode34Agg& a = g_mode34Agg[order[i]];
+    const float avg = static_cast<float>(a.totalHits) / static_cast<float>(a.rareFrames);
+    Log("Mode34: rare startRva=0x%X rareFrames=%u totalHits=%u avg=%.2f", a.rva, a.rareFrames,
+        a.totalHits, avg);
+  }
+
+  auto tryAdd = [&](uintptr_t fn, uint32_t fromRva, const char* how) {
+    if (!fn || g_mode34TryN >= 8)
+      return;
+    const uint32_t fnRva = static_cast<uint32_t>(fn - base);
+    const char* tag = "?";
+    if (Mode34ForbiddenRva(fnRva) || !Mode34IsCcPaddedThiscall0(fn, &tag)) {
+      const auto* b = reinterpret_cast<const uint8_t*>(fn);
+      Log("Mode34: %s fromRva=0x%X -> fnRva=0x%X REJECT abi=%s bytes=%02X %02X %02X %02X", how,
+          fromRva, fnRva, tag, b[0], b[1], b[2], b[3]);
+      return;
+    }
+    for (int j = 0; j < g_mode34TryN; ++j) {
+      if (g_mode34TryList[j] == fn)
+        return;
+    }
+    g_mode34TryList[g_mode34TryN++] = fn;
+    const auto* b = reinterpret_cast<const uint8_t*>(fn);
+    Log("Mode34: try[%d] %s fromRva=0x%X -> fnRva=0x%X abi=%s bytes=%02X %02X %02X %02X %02X %02X",
+        g_mode34TryN - 1, how, fromRva, fnRva, tag, b[0], b[1], b[2], b[3], b[4], b[5]);
+  };
+
+  // Agg already stores resolved FUNCTION STARTS (not mid epilogues).
+  for (int i = 0; i < n && g_mode34TryN < 8; ++i) {
+    const uint32_t startRva = g_mode34Agg[order[i]].rva;
+    tryAdd(base + startRva, startRva, "vsRetCallerStart");
+  }
+
+  if (g_mode34TryN == 0) {
+    Mode34FallbackPairHold("VsRet-caller hist found no CC-pad thiscall0 start");
+    return;
+  }
+  Mode34StartNextCount();
+}
+
+void Mode34FinishDiscoverFrame(uint32_t es) {
+  const uint32_t vsCalls = g_mode34VsCallsFrame.exchange(0);
+  const int slots = g_mode34FrameN;
+  for (int i = 0; i < g_mode34FrameN; ++i) {
+    const uint32_t c = g_mode34Frame[i].count;
+    // ~1x/frame among many VsRet uploads: keep rare starts only.
+    if (c >= 1 && c <= 8)
+      Mode34AggRare(g_mode34Frame[i].rva, c);
+  }
+  g_mode34FrameN = 0;
+  if (es <= 6 || (es % 30) == 0)
+    Log("Mode34: wait/discover es#%u onVs=%u rareAgg=%d frameSlots=%d sampleHits=%u "
+        "vsRetHits=%u tid=%u",
+        es, vsCalls, g_mode34AggN, slots, g_mode34SampleHits, g_mode34VsRetHits, g_mode34VsTid);
+}
+
+void Mode34OnEndScene(IDirect3DDevice9* device) {
+  if (!device)
+    return;
+  IDirect3DSurface9* bb = nullptr;
+  if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb)
+    return;
+  D3DSURFACE_DESC desc{};
+  bb->GetDesc(&desc);
+  bb->Release();
+  uint32_t rtW = desc.Width, rtH = desc.Height;
+  ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
+  if (!EnsureEyeRts(device, rtW, rtH))
+    return;
+  if (!IsCamMatrixOverrideEnabled())
+    return;
+
+  const int ph = g_mode34Phase.load();
+  const uint32_t es = ++g_mode34Es;
+
+  if (ph == static_cast<int>(Mode34Phase::SoftWaitSamples) ||
+      ph == static_cast<int>(Mode34Phase::FallbackPairHold)) {
+    TemporalCapturePairHold(device);
+    if (ph == static_cast<int>(Mode34Phase::SoftWaitSamples))
+      Mode34FinishDiscoverFrame(es);
+    if (ph == static_cast<int>(Mode34Phase::SoftWaitSamples)) {
+      if (g_mode34AggN > 0 && g_mode34SampleHits >= 8 && g_mode34VsRetHits >= 8 && es >= 45) {
+        g_mode34Phase.store(static_cast<int>(Mode34Phase::Discover));
+        Log("Mode34: DISCOVER armed (VsRet callers -> fn starts; rareAgg=%d sampleHits=%u "
+            "vsRetHits=%u; %u more ES) — pair-hold continues",
+            g_mode34AggN, g_mode34SampleHits, g_mode34VsRetHits, kMode34DiscoverEs);
+      } else if (es >= kMode34SoftWaitMaxEs) {
+        Mode34FallbackPairHold("no VsRet-caller starts after soft wait - keep Mode 30");
+      } else if (es >= 45 && (es % 60) == 0) {
+        Log("Mode34: still waiting for VsRet-caller starts es=%u rareAgg=%d sampleHits=%u "
+            "vsRetHits=%u",
+            es, g_mode34AggN, g_mode34SampleHits, g_mode34VsRetHits);
+      }
+    }
+    return;
+  }
+
+  if (ph == static_cast<int>(Mode34Phase::Discover)) {
+    TemporalCapturePairHold(device);
+    Mode34FinishDiscoverFrame(es);
+    static uint32_t s_discStart34 = 0;
+    if (s_discStart34 == 0)
+      s_discStart34 = es;
+    if (es - s_discStart34 >= kMode34DiscoverEs) {
+      s_discStart34 = 0;
+      Mode34BuildTryListFromDiscover();
+    }
+    return;
+  }
+
+  if (ph == static_cast<int>(Mode34Phase::Count)) {
+    TemporalCapturePairHold(device);
+    const uint32_t entries = g_drawWalkEntries.exchange(0);
+    if (entries == 0xFFFFFFFFu) {
+      Log("Mode34: count cand exeRva=0x%X died - try next", g_mode34ActiveRva);
+      if (!Mode34StartNextCount())
+        return;
+      return;
+    }
+    ++g_mode34CountEs;
+    g_mode34EntrySum += entries;
+    const uint32_t n = g_mode34CountEs.load();
+    if (n <= 6 || (n % 15) == 0)
+      Log("Mode34: count es#%u/%u entries=%u sum=%u fnRva=0x%X", n, kMode34CountEsNeed,
+          entries, g_mode34EntrySum, g_mode34ActiveRva);
+    if (n >= kMode34CountEsNeed) {
+      const float avg = static_cast<float>(g_mode34EntrySum) / static_cast<float>(n);
+      if (avg >= 0.8f && avg <= 4.f) {
+        g_mode34Phase.store(static_cast<int>(Mode34Phase::Dual));
+        g_mode34DualN.store(0);
+        g_mode34ZeroDiff.store(0);
+        g_drawWalkDead.store(false);
+        Log("Mode34: DUAL armed fnRva=0x%X avgEntries=%.2f (VS patch pass2, CCam Left-only, "
+            "pair-hold promote)",
+            g_mode34ActiveRva, avg);
+      } else {
+        Log("Mode34: count REJECT fnRva=0x%X avgEntries=%.2f (want [0.8,4]) - try next",
+            g_mode34ActiveRva, avg);
+        if (!Mode34StartNextCount())
+          return;
+      }
+    }
+    return;
+  }
+
+  if (ph == static_cast<int>(Mode34Phase::Dual)) {
+    if (g_haveL && g_haveR && (g_mode34DualN.load() == 5 || g_mode34DualN.load() == 30 ||
+                               (g_mode34DualN.load() > 0 && (g_mode34DualN.load() % 300) == 0))) {
+      const long long diff = CompareEyeCanvases(device);
+      if (diff >= 0 && diff < 200) {
+        const uint32_t z = ++g_mode34ZeroDiff;
+        if (z >= 3)
+          Mode34FallbackPairHold("StereoDiff~0 (dual same cam - VS patch not reaching draws)");
+      } else if (diff >= 200) {
+        g_mode34ZeroDiff.store(0);
+      }
+    }
+    if (es <= 8 || (es % 300) == 0)
+      Log("Mode34: dual EndScene es#%u dualN=%u haveL=%d haveR=%d vsPatch=%u", es,
+          g_mode34DualN.load(), g_haveL ? 1 : 0, g_haveR ? 1 : 0, StereoVsTranslateCount());
+    return;
   }
 }
 
@@ -929,20 +3649,48 @@ void RunExecViewPhaseDual(void* edx) {
   g_skipExecC = 1;
   g_skipExecD = 1;
   if (!ok) {
-    g_execDualDead.store(true);
     g_haveL = g_haveR = false;
     const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
-    Log("StereoExecPhase: EXCEPTION stage=%ld code=0x%08X addr=%p (exeRva 0x%X) - "
-        "PERMANENTLY disabled, native mono continues",
+    Log("StereoExecPhase: EXCEPTION stage=%ld code=0x%08X addr=%p (exeRva 0x%X)",
         g_execViewStage, g_execViewExcCode, reinterpret_cast<void*>(g_execViewExcAddr),
         static_cast<unsigned>(g_execViewExcAddr - base));
+    if (GetStereoMode() == StereoMode::PhaseDualDeviceVs)
+      Mode30FallbackPairHold("SEH in dual pass");
+    else {
+      g_execDualDead.store(true);
+      Log("StereoExecPhase: PERMANENTLY disabled, native mono continues");
+    }
     return;
   }
   const uint32_t n = ++g_execViewDualCount;
   if (n <= 6 || (n % 300) == 0)
-    Log("StereoExecPhase: #%u haveL=%d haveR=%d skips=%u sep=%.0fcm vsPatch=%u", n,
-        g_haveL ? 1 : 0, g_haveR ? 1 : 0, g_execViewSkips.load(),
-        GetStereoSepMeters() * 100.f, StereoVsTranslateCount());
+    Log("StereoExecPhase: #%u haveL=%d haveR=%d skips=%u sep=%.0fcm vsPatch=%u "
+        "vsCallsTotal=%u vsCallsR=%u mode30dev=%u",
+        n, g_haveL ? 1 : 0, g_haveR ? 1 : 0, g_execViewSkips.load(),
+        GetStereoSepMeters() * 100.f, StereoVsTranslateCount(), StereoVsTotalCalls(),
+        StereoVsRightPassCalls(), g_mode30DevPatches.load());
+  if (g_haveL && g_haveR && (n == 5 || n == 30 || (n % 300) == 0)) {
+    // Device VS push is the only Mode30 parallax lever. If it never matches,
+    // dual is Mode23-identical-camera (no fusion) — fall back to pair-hold.
+    if (GetStereoMode() == StereoMode::PhaseDualDeviceVs && n >= 5 &&
+        g_mode30DevPatches.load() == 0) {
+      Mode30FallbackPairHold(
+          "deviceVsPatches=0 (Get/SetVSConstF found no view regs — dual=same cam)");
+      return;
+    }
+    const long long diff = CompareEyeCanvases(g_device);
+    if (GetStereoMode() == StereoMode::PhaseDualDeviceVs && diff >= 0 && diff < 200) {
+      const uint32_t z = ++g_mode30ZeroDiff;
+      if (z >= 2) {
+        Mode30FallbackPairHold("StereoDiff~0 after device VS push (draws ignore device regs)");
+        return;
+      }
+    } else if (diff >= 200) {
+      g_mode30ZeroDiff.store(0);
+    }
+  }
+  if (n == 600 || n == 3000)
+    StereoVsDumpRets();
 }
 
 void __fastcall HookExecA(void* self, void* edx) {
@@ -960,7 +3708,15 @@ void __fastcall HookExecA(void* self, void* edx) {
     g_origExecA(self, edx);
     return;
   }
-  // Mode 23/24: per-phase double exec + exec-side cam matrix shift (+ VS const).
+  // Mode 30 soft-start / pair-hold: passthrough native exec; EndScene does temporal.
+  if (mode == StereoMode::PhaseDualDeviceVs) {
+    const int ph = g_mode30Phase.load();
+    if (ph != static_cast<int>(Mode30Phase::Dual) || g_execDualDead.load()) {
+      g_origExecA(self, edx);
+      return;
+    }
+  }
+  // Mode 23/24/30: per-phase double exec + cam / device-VS eye shift.
   if (IsExecViewPhaseMode(mode)) {
     if (g_execDualDead.load() || g_dualDoneThisFrame || !IsCamMatrixOverrideEnabled() ||
         !g_lastThisDraw || !g_origExecD || !g_texL || !g_texR || !g_device) {
@@ -1454,6 +4210,32 @@ void TemporalCaptureThisFrame(IDirect3DDevice9* device) {
         GetStereoSepMeters() * 100.f);
 }
 
+// Mode 30 soft-start / fallback: capture into hold RTs; promote BOTH submit RTs
+// only when a complete L→R pair is ready (Halo AFR parity lesson — no half-pair).
+void TemporalCapturePairHold(IDirect3DDevice9* device) {
+  if (!device || !g_holdL || !g_holdR || !g_texL || !g_texR)
+    return;
+  LogCachedIpdOnce();
+  const StereoEye eye = GetStereoEye();
+  if (eye == StereoEye::Left) {
+    if (CopyBbToEyeCanvas(device, g_holdL, vr::Eye_Left))
+      g_pairAwaitingR = true;
+    SetStereoEye(StereoEye::Right);
+  } else {
+    if (CopyBbToEyeCanvas(device, g_holdR, vr::Eye_Right) && g_pairAwaitingR) {
+      PromoteHoldPair(device);
+      g_pairAwaitingR = false;
+    }
+    SetStereoEye(StereoEye::Left);
+  }
+  RefreshLiveCamForStereoEye();
+  const uint32_t n = ++g_temporalFrames;
+  if (n <= 6 || (n % 120) == 0)
+    Log("StereoPairHold: frame #%u captured=%s awaitingR=%d haveSubmit=%d/%d sep=%.0fcm", n,
+        eye == StereoEye::Left ? "L" : "R", g_pairAwaitingR ? 1 : 0, g_haveL ? 1 : 0,
+        g_haveR ? 1 : 0, GetStereoSepMeters() * 100.f);
+}
+
 bool InstallAllThreePhases() {
   bool ok = true;
   ok &= HookOneBuild("DrawScene", FindDrawSceneBuildRenderList(),
@@ -1503,6 +4285,39 @@ bool InstallStereoRenderHooks() {
     return true;
   }
 
+  if (mode == StereoMode::ReplayRootProbe || mode == StereoMode::VsParentCountProbe) {
+    // FAILED 2026-07-24 (Mode 29 log): FindFnStartNear(Cand37C01) → 0x37BD0
+    // prologue 56 57 8B FA, then "Cand37C01 EXCEPTION" and crash after load.
+    // Same wrong-ABI site Mode 27 already rejected. Do NOT install count hooks.
+    SetStereoEye(StereoEye::Left);
+    g_haveL = g_haveR = false;
+    g_execDualDead.store(false);
+    g_execViewDualCount.store(0);
+    g_execViewSkips.store(0);
+    g_vsPatchOn.store(false);
+    g_ok = InstallRootProbeHooks(2);
+    Log("StereoRender: mode %d DISABLED (VsParent FindFnStartNear wrong ABI @0x37BD0 "
+        "crashed after load) → Mode26 temporal alias ok=%d — set stereo file to 26",
+        static_cast<int>(mode), g_ok.load() ? 1 : 0);
+    return g_ok.load();
+  }
+
+  if (mode == StereoMode::SameFrameWrapDual) {
+    // Crash after load (2026-07-24): VS wrapper hook @0x2C6AC is unsafe — do NOT
+    // install it. Behave exactly like Mode 26 temporal until a safer root exists.
+    SetStereoEye(StereoEye::Left);
+    g_haveL = g_haveR = false;
+    g_execDualDead.store(false);
+    g_execViewDualCount.store(0);
+    g_execViewSkips.store(0);
+    g_vsPatchOn.store(false);
+    g_ok = InstallRootProbeHooks(2);
+    Log("StereoRender: mode 28 DISABLED (wrap@0x%X crashed after load) → Mode26 temporal "
+        "alias ok=%d — set stereo file to 26",
+        kVsWrapRva, g_ok.load() ? 1 : 0);
+    return g_ok.load();
+  }
+
   if (mode == StereoMode::RootDispatchProbe) {
     g_ok = InstallRootProbeHooks(kNumRoots);
     Log("StereoRender: mode 19 ROOT-DISPATCH probe (passthrough counters on %d candidate "
@@ -1517,6 +4332,36 @@ bool InstallStereoRenderHooks() {
     Log("StereoRender: mode 21 VIEW-MATRIX scan (READ-ONLY; look for 'ViewScan:' lines; "
         "stand still in gameplay ~30s) ok=%d",
         g_ok.load() ? 1 : 0);
+    Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 0 if freeze");
+    return g_ok.load();
+  }
+
+  if (mode == StereoMode::RecordDualReplayShift) {
+    SetStereoEye(StereoEye::Left);
+    g_haveL = g_haveR = false;
+    g_execDualDead.store(false);
+    g_execViewDualCount.store(0);
+    g_execViewSkips.store(0);
+    g_vsPatchOn.store(false);
+    g_ok = InstallRootProbeHooks(2);  // ExecRoot (passthrough) + BuildRootA (count only)
+    Log("StereoRender: mode 26 = Mode14 CCam temporal (no VS stack; soft-start 90; "
+        "scale/IPD HMD defaults; bars=canvas) ok=%d",
+        g_ok.load() ? 1 : 0);
+    Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 14 or 0");
+    return g_ok.load();
+  }
+
+  if (mode == StereoMode::BuildDualViewShift) {
+    SetStereoEye(StereoEye::Left);
+    g_haveL = g_haveR = false;
+    g_execDualDead.store(false);
+    g_execViewDualCount.store(0);
+    g_execViewSkips.store(0);
+    g_vsPatchOn.store(false);
+    g_ok = InstallRootProbeHooks(2);  // ExecRoot (passthrough) + BuildRootA
+    Log("StereoRender: mode 25 BUILD dual + VIEW shift (BuildRootA x2, manager matrices "
+        "@0x%X/0x%X + VS-const translate in walk 2; expect ~half FPS) ok=%d",
+        kMgrCamPosRvaA, kMgrCamPosRvaB, g_ok.load() ? 1 : 0);
     Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 0 if freeze");
     return g_ok.load();
   }
@@ -1548,6 +4393,154 @@ bool InstallStereoRenderHooks() {
     return g_ok.load();
   }
 
+  if (mode == StereoMode::PhaseDualDeviceVs) {
+    // Pair-hold only: same install surface as Mode 26 (no exec dual hooks).
+    // Device-VS dual was probed this session (mode30dev=0) — do not re-arm.
+    SetStereoEye(StereoEye::Left);
+    g_haveL = g_haveR = false;
+    g_mode30Phase.store(static_cast<int>(Mode30Phase::PairHold));
+    g_execDualDead.store(true);
+    g_mode30SoftEs.store(0);
+    g_mode30DevPatches.store(0);
+    g_mode30ZeroDiff.store(0);
+    g_pairAwaitingR = false;
+    g_pairPromoteCount.store(0);
+    g_vsPatchOn.store(false);
+    g_ok = InstallRootProbeHooks(2);
+    Log("StereoRender: mode 30 PAIR-HOLD (CCam temporal + promote L+R together; "
+        "device-VS dual probed dead mode30dev=0; no 0x2C6AC/0x37BD0) ok=%d",
+        g_ok.load() ? 1 : 0);
+    Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 26 or 0");
+    return g_ok.load();
+  }
+
+  if (mode == StereoMode::SameFrameReplayDual) {
+    SetStereoEye(StereoEye::Left);
+    g_haveL = g_haveR = false;
+    g_mode31Phase.store(static_cast<int>(Mode31Phase::SoftPairHold));
+    g_mode31Es.store(0);
+    g_mode31CountEs.store(0);
+    g_mode31DualN.store(0);
+    g_mode31ZeroDiff.store(0);
+    g_mode31VsCallsFrame.store(0);
+    g_mode31VsTid = 0;
+    g_mode31EntrySum = 0;
+    g_mode31FrameN = 0;
+    g_mode31AggN = 0;
+    g_mode31TryN = 0;
+    g_mode31TryIdx = 0;
+    g_mode31ActiveRva = 0;
+    g_pairAwaitingR = false;
+    g_pairPromoteCount.store(0);
+    g_vsPatchOn.store(false);
+    g_drawWalkDead.store(false);
+    g_drawWalkAddr = nullptr;
+    g_origDrawWalk = nullptr;
+    g_ok = InstallRootProbeHooks(2);
+    Log("StereoRender: mode 31 SAME-FRAME REPLAY dual (soft=Mode30 pair-hold → discover "
+        "VsRet stack hist → count-only thiscall ≥45 ES → dual+VS; never 0x2C6AC/0x37BD0) "
+        "ok=%d",
+        g_ok.load() ? 1 : 0);
+    Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 30 or 26");
+    return g_ok.load();
+  }
+
+  if (mode == StereoMode::SameFrameVsParentDual) {
+    SetStereoEye(StereoEye::Left);
+    g_haveL = g_haveR = false;
+    g_mode32Phase.store(static_cast<int>(Mode32Phase::SoftPairHold));
+    g_mode32Es.store(0);
+    g_mode32CountEs.store(0);
+    g_mode32DualN.store(0);
+    g_mode32ZeroDiff.store(0);
+    g_mode32VsCallsFrame.store(0);
+    g_mode32VsTid = 0;
+    g_mode32EntrySum = 0;
+    g_mode32FrameN = 0;
+    g_mode32AggN = 0;
+    g_mode32TryN = 0;
+    g_mode32TryIdx = 0;
+    g_mode32ActiveRva = 0;
+    g_pairAwaitingR = false;
+    g_pairPromoteCount.store(0);
+    g_vsPatchOn.store(false);
+    g_drawWalkDead.store(false);
+    g_drawWalkAddr = nullptr;
+    g_origDrawWalk = nullptr;
+    g_ok = InstallRootProbeHooks(2);
+    Log("StereoRender: mode 32 SAME-FRAME VsParent dual (soft=Mode30 → discover at "
+        "HookSetVSConstF depth → count thiscall ≥45 ES → dual+VS; never 0x2C6AC/0x37BD0; "
+        "fail writes stereo=30) ok=%d",
+        g_ok.load() ? 1 : 0);
+    Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 30 or 26");
+    return g_ok.load();
+  }
+
+  if (mode == StereoMode::SameFrameLateVsParentDual) {
+    SetStereoEye(StereoEye::Left);
+    g_haveL = g_haveR = false;
+    g_mode33Phase.store(static_cast<int>(Mode33Phase::SoftWaitSamples));
+    g_mode33Es.store(0);
+    g_mode33CountEs.store(0);
+    g_mode33DualN.store(0);
+    g_mode33ZeroDiff.store(0);
+    g_mode33VsCallsFrame.store(0);
+    g_mode33VsTid = 0;
+    g_mode33EntrySum = 0;
+    g_mode33SampleHits = 0;
+    g_mode33FrameN = 0;
+    g_mode33AggN = 0;
+    g_mode33TryN = 0;
+    g_mode33TryIdx = 0;
+    g_mode33ActiveRva = 0;
+    g_pairAwaitingR = false;
+    g_pairPromoteCount.store(0);
+    g_vsPatchOn.store(false);
+    g_drawWalkDead.store(false);
+    g_drawWalkAddr = nullptr;
+    g_origDrawWalk = nullptr;
+    g_ok = InstallRootProbeHooks(2);
+    Log("StereoRender: mode 33 SAME-FRAME late-VsParent dual (WAIT live samples → "
+        "CC-pad thiscall0 count ≥45 ES → dual+VS; never 0x2C6AC/0x37BD0/0x32A40/0x372B0; "
+        "fail writes stereo=30) ok=%d",
+        g_ok.load() ? 1 : 0);
+    Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 30 or 26");
+    return g_ok.load();
+  }
+
+  if (mode == StereoMode::SameFrameVsRetCallerDual) {
+    SetStereoEye(StereoEye::Left);
+    g_haveL = g_haveR = false;
+    g_mode34Phase.store(static_cast<int>(Mode34Phase::SoftWaitSamples));
+    g_mode34Es.store(0);
+    g_mode34CountEs.store(0);
+    g_mode34DualN.store(0);
+    g_mode34ZeroDiff.store(0);
+    g_mode34VsCallsFrame.store(0);
+    g_mode34VsTid = 0;
+    g_mode34EntrySum = 0;
+    g_mode34SampleHits = 0;
+    g_mode34VsRetHits = 0;
+    g_mode34FrameN = 0;
+    g_mode34AggN = 0;
+    g_mode34TryN = 0;
+    g_mode34TryIdx = 0;
+    g_mode34ActiveRva = 0;
+    g_pairAwaitingR = false;
+    g_pairPromoteCount.store(0);
+    g_vsPatchOn.store(false);
+    g_drawWalkDead.store(false);
+    g_drawWalkAddr = nullptr;
+    g_origDrawWalk = nullptr;
+    g_ok = InstallRootProbeHooks(2);
+    Log("StereoRender: mode 34 SAME-FRAME VsRet-caller dual (WAIT ret==0x2C73E stack -> "
+        "fn starts CC-pad thiscall0 count >=45 ES -> dual+VS; never 0x2C6AC/0x37BD0; "
+        "fail writes stereo=30) ok=%d",
+        g_ok.load() ? 1 : 0);
+    Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 30 or 26");
+    return g_ok.load();
+  }
+
   if (IsExecViewPhaseMode(mode)) {
     SetStereoEye(StereoEye::Left);
     g_phaseLogLeft.store(0);
@@ -1570,7 +4563,7 @@ bool InstallStereoRenderHooks() {
       Log("StereoRender: mode 23 EXEC-VIEW PHASE dual (per-phase Execute x2 like mode 10 + "
           "cam matrices @0x%X/0x%X shifted between passes) ok=%d",
           kMgrCamPosRvaA, kMgrCamPosRvaB, g_ok.load() ? 1 : 0);
-    Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 0 if freeze");
+    Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 26 or 0 if freeze");
     return g_ok.load();
   }
 
@@ -1653,8 +4646,103 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
     return;
   }
 
-  if (mode == StereoMode::SameFrameRootDual || mode == StereoMode::ExecViewDual ||
-      IsExecViewPhaseMode(mode)) {
+  // Modes 27/29: count hooks removed — behave as Mode 26 temporal (below).
+  if (mode == StereoMode::RecordDualReplayShift || mode == StereoMode::SameFrameWrapDual ||
+      mode == StereoMode::ReplayRootProbe || mode == StereoMode::VsParentCountProbe) {
+    // After soft-start: Mode 14's full CCam temporal eye flip (moves ALL geometry —
+    // VS-only felt like a flat monitor because only identity-world draws shifted)
+    // PLUS VS view-translate armed for the next RIGHT frame (baked constants).
+    IDirect3DSurface9* bb = nullptr;
+    if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb)
+      return;
+    D3DSURFACE_DESC desc{};
+    bb->GetDesc(&desc);
+    bb->Release();
+    uint32_t rtW = desc.Width, rtH = desc.Height;
+    ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
+    if (!EnsureEyeRts(device, rtW, rtH))
+      return;
+
+    static uint32_t s_es = 0;
+    static uint32_t s_warm = 0;
+    if (++s_es == 1)
+      Log("StereoRecDual: EndScene threadId=%u (must equal VsRet tid)", GetCurrentThreadId());
+
+    if (!IsCamMatrixOverrideEnabled() || g_execDualDead.load() ||
+        g_execViewDualCount.load() < 30) {
+      g_vsPatchOn.store(false);
+      s_warm = 0;
+      return;
+    }
+    if (s_warm < 90) {
+      ++s_warm;
+      g_vsPatchOn.store(false);
+      if (s_warm == 1 || s_warm == 90)
+        Log("StereoRecDual: warm %u/90 (no eye flip yet)", s_warm);
+      return;
+    }
+
+    // Mode 14 temporal path ONLY. Do NOT also arm the VS view-translate: CCam
+    // already applies the full eye offset; stacking VS on identity-world draws
+    // doubled IPD on walls/floors while props stayed single → flat/"monitor" 3D
+    // and weird scale (headset 2026-07-24). Desktop L/R jump + look-smear are
+    // the remaining temporal artifacts (need same-frame next).
+    TemporalCaptureThisFrame(device);
+    g_vsPatchOn.store(false);
+
+    if (s_es <= 8 || (s_es % 600) == 0)
+      Log("StereoRecDual: es#%u nextEye=%s haveL=%d haveR=%d sep=%.0fcm scale=%.2f "
+          "(CCam only, no VS stack)",
+          s_es, GetStereoEye() == StereoEye::Right ? "R" : "L", g_haveL ? 1 : 0,
+          g_haveR ? 1 : 0, GetStereoSepMeters() * 100.f, GetWorldScale());
+    return;
+  }
+
+    // Mode 30: pair-hold temporal only (device-VS dual proven dead — mode30dev=0).
+    if (mode == StereoMode::PhaseDualDeviceVs) {
+      g_dualDoneThisFrame = false;
+      g_skipExecA = g_skipExecC = g_skipExecD = 0;
+      IDirect3DSurface9* bb = nullptr;
+      if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb)
+        return;
+      D3DSURFACE_DESC desc{};
+      bb->GetDesc(&desc);
+      bb->Release();
+      uint32_t rtW = desc.Width, rtH = desc.Height;
+      ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
+      if (!EnsureEyeRts(device, rtW, rtH))
+        return;
+      if (!IsCamMatrixOverrideEnabled())
+        return;
+      // Keep phase on PairHold even if an older build left SoftStart/Dual.
+      g_mode30Phase.store(static_cast<int>(Mode30Phase::PairHold));
+      g_execDualDead.store(true);
+      TemporalCapturePairHold(device);
+      return;
+    }
+
+    if (mode == StereoMode::SameFrameReplayDual) {
+      Mode31OnEndScene(device);
+      return;
+    }
+
+    if (mode == StereoMode::SameFrameVsParentDual) {
+      Mode32OnEndScene(device);
+      return;
+    }
+
+    if (mode == StereoMode::SameFrameLateVsParentDual) {
+      Mode33OnEndScene(device);
+      return;
+    }
+
+    if (mode == StereoMode::SameFrameVsRetCallerDual) {
+      Mode34OnEndScene(device);
+      return;
+    }
+
+    if (mode == StereoMode::SameFrameRootDual || mode == StereoMode::ExecViewDual ||
+      IsExecViewPhaseMode(mode) || mode == StereoMode::BuildDualViewShift) {
     if (IsExecViewPhaseMode(mode)) {
       g_dualDoneThisFrame = false;
       g_skipExecA = g_skipExecC = g_skipExecD = 0;
@@ -1735,7 +4823,12 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
       mode != StereoMode::GBufferRtDual && mode != StereoMode::FusionSwap &&
       mode != StereoMode::ExecuteDual && mode != StereoMode::BuildExecDual &&
       mode != StereoMode::D3dCamDual && mode != StereoMode::SameFrameRootDual &&
-      mode != StereoMode::ExecViewDual && !IsExecViewPhaseMode(mode))
+      mode != StereoMode::ExecViewDual && !IsExecViewPhaseMode(mode) &&
+      mode != StereoMode::BuildDualViewShift && mode != StereoMode::RecordDualReplayShift &&
+      mode != StereoMode::SameFrameWrapDual && mode != StereoMode::ReplayRootProbe &&
+      mode != StereoMode::VsParentCountProbe && mode != StereoMode::PhaseDualDeviceVs &&
+      mode != StereoMode::SameFrameReplayDual && mode != StereoMode::SameFrameVsParentDual &&
+      mode != StereoMode::SameFrameLateVsParentDual && mode != StereoMode::SameFrameVsRetCallerDual)
     return false;
   if (!device || !interop || !g_texL || !g_texR)
     return false;
@@ -1782,6 +4875,235 @@ bool StereoVsGetPatchParams(float cam3[3], float delta3[3]) {
   delta3[1] = g_vsPatchDelta[1];
   delta3[2] = g_vsPatchDelta[2];
   return true;
+}
+
+bool StereoMode31WantsDiscover() {
+  if (GetStereoMode() != StereoMode::SameFrameReplayDual)
+    return false;
+  const int ph = g_mode31Phase.load();
+  // Collect during Soft too — otherwise we miss uploads before DISCOVER arms.
+  return ph == static_cast<int>(Mode31Phase::SoftPairHold) ||
+         ph == static_cast<int>(Mode31Phase::Discover);
+}
+
+void StereoMode31OnVsConst(void* retAddr) {
+  if (!StereoMode31WantsDiscover())
+    return;
+  g_mode31VsCallsFrame.fetch_add(1);
+  const uint32_t tid = GetCurrentThreadId();
+  if (!g_mode31VsTid)
+    g_mode31VsTid = tid;
+  // Still record stack on other threads (log tid mismatch once).
+  static bool s_tidWarn = false;
+  if (tid != g_mode31VsTid && !s_tidWarn) {
+    s_tidWarn = true;
+    Log("Mode31: SetVSConstF tid mismatch first=%u other=%u", g_mode31VsTid, tid);
+  }
+
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  auto notePtr = [&](uintptr_t v) {
+    if (v < base + 0x1000 || v > base + 0xC00000)
+      return;
+    Mode31NoteFrameRva(static_cast<uint32_t>(v - base));
+  };
+  notePtr(reinterpret_cast<uintptr_t>(retAddr));
+
+  void* stack[10]{};
+  const USHORT n = CaptureStackBackTrace(1, 8, stack, nullptr);
+  if (n > 0) {
+    for (USHORT i = 0; i < n; ++i)
+      notePtr(reinterpret_cast<uintptr_t>(stack[i]));
+  }
+  // Always also scan stack words (FPO often makes CaptureStackBackTrace empty).
+  auto* sp = reinterpret_cast<uintptr_t*>(_AddressOfReturnAddress());
+  for (int i = 1; i < 40; ++i)
+    notePtr(sp[i]);
+
+  static int s_sample = 0;
+  if (s_sample < 8) {
+    ++s_sample;
+    Log("Mode31: VsSample #%d retRva=0x%X tid=%u frameSlots=%d", s_sample,
+        static_cast<unsigned>(reinterpret_cast<uintptr_t>(retAddr) - base), tid,
+        g_mode31FrameN);
+  }
+}
+
+bool StereoMode32WantsDiscover() {
+  if (GetStereoMode() != StereoMode::SameFrameVsParentDual)
+    return false;
+  const int ph = g_mode32Phase.load();
+  return ph == static_cast<int>(Mode32Phase::SoftPairHold) ||
+         ph == static_cast<int>(Mode32Phase::Discover);
+}
+
+void StereoMode32CollectVsParents(void* retAddr, void* hookSpWords) {
+  if (!StereoMode32WantsDiscover() || !hookSpWords)
+    return;
+  g_mode32VsCallsFrame.fetch_add(1);
+  const uint32_t tid = GetCurrentThreadId();
+  if (!g_mode32VsTid)
+    g_mode32VsTid = tid;
+  static bool s_tidWarn = false;
+  if (tid != g_mode32VsTid && !s_tidWarn) {
+    s_tidWarn = true;
+    Log("Mode32: SetVSConstF tid mismatch first=%u other=%u", g_mode32VsTid, tid);
+  }
+
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  auto notePtr = [&](uintptr_t v) {
+    if (v < base + 0x1000 || v > base + 0xC00000)
+      return;
+    Mode32NoteFrameRva(static_cast<uint32_t>(v - base));
+  };
+  // retAddr = VsRet (usually 0x2C73E) — filtered by Mode32NoteFrameRva.
+  notePtr(reinterpret_cast<uintptr_t>(retAddr));
+
+  // hookSpWords = _AddressOfReturnAddress() FROM HookSetVSConstF (Mode 26 depth).
+  // Slot 0 = return into caller of HookSetVSConstF (= VsRet). Slots 1+ = VsParents.
+  auto* sp = reinterpret_cast<uintptr_t*>(hookSpWords);
+  for (int i = 0; i < 64; ++i)
+    notePtr(sp[i]);
+
+  static int s_sample = 0;
+  if (s_sample < 12) {
+    ++s_sample;
+    int logged = 0;
+    for (int i = 0; i < 64 && logged < 6; ++i) {
+      const uintptr_t v = sp[i];
+      if (v < base + 0x1000 || v > base + 0xC00000)
+        continue;
+      const unsigned rva = static_cast<unsigned>(v - base);
+      if (Mode32ForbiddenRva(rva))
+        continue;
+      Log("Mode32: VsParent sample#%d slot=%d exeRva=0x%X tid=%u", s_sample, i, rva, tid);
+      ++logged;
+    }
+    Log("Mode32: VsSample #%d retRva=0x%X tid=%u frameSlots=%d", s_sample,
+        static_cast<unsigned>(reinterpret_cast<uintptr_t>(retAddr) - base), tid,
+        g_mode32FrameN);
+  }
+}
+
+bool StereoMode33WantsDiscover() {
+  if (GetStereoMode() != StereoMode::SameFrameLateVsParentDual)
+    return false;
+  const int ph = g_mode33Phase.load();
+  return ph == static_cast<int>(Mode33Phase::SoftWaitSamples) ||
+         ph == static_cast<int>(Mode33Phase::Discover);
+}
+
+void StereoMode33CollectVsParents(void* retAddr, void* hookSpWords) {
+  if (!StereoMode33WantsDiscover() || !hookSpWords)
+    return;
+  g_mode33VsCallsFrame.fetch_add(1);
+  const uint32_t tid = GetCurrentThreadId();
+  if (!g_mode33VsTid)
+    g_mode33VsTid = tid;
+  static bool s_tidWarn = false;
+  if (tid != g_mode33VsTid && !s_tidWarn) {
+    s_tidWarn = true;
+    Log("Mode33: SetVSConstF tid mismatch first=%u other=%u", g_mode33VsTid, tid);
+  }
+
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  auto notePtr = [&](uintptr_t v) {
+    if (v < base + 0x1000 || v > base + 0xC00000)
+      return;
+    Mode33NoteFrameRva(static_cast<uint32_t>(v - base));
+  };
+  notePtr(reinterpret_cast<uintptr_t>(retAddr));
+
+  auto* sp = reinterpret_cast<uintptr_t*>(hookSpWords);
+  for (int i = 0; i < 64; ++i)
+    notePtr(sp[i]);
+
+  static int s_sample = 0;
+  if (s_sample < 16) {
+    ++s_sample;
+    int logged = 0;
+    for (int i = 0; i < 64 && logged < 8; ++i) {
+      const uintptr_t v = sp[i];
+      if (v < base + 0x1000 || v > base + 0xC00000)
+        continue;
+      const unsigned rva = static_cast<unsigned>(v - base);
+      if (Mode33ForbiddenRva(rva))
+        continue;
+      Log("Mode33: VsParent sample#%d slot=%d exeRva=0x%X tid=%u", s_sample, i, rva, tid);
+      ++logged;
+    }
+    Log("Mode33: VsSample #%d retRva=0x%X tid=%u frameSlots=%d sampleHits=%u", s_sample,
+        static_cast<unsigned>(reinterpret_cast<uintptr_t>(retAddr) - base), tid, g_mode33FrameN,
+        g_mode33SampleHits);
+  }
+}
+
+
+bool StereoMode34WantsDiscover() {
+  if (GetStereoMode() != StereoMode::SameFrameVsRetCallerDual)
+    return false;
+  const int ph = g_mode34Phase.load();
+  return ph == static_cast<int>(Mode34Phase::SoftWaitSamples) ||
+         ph == static_cast<int>(Mode34Phase::Discover);
+}
+
+void StereoMode34CollectVsRetCallers(void* retAddr, void* hookSpWords) {
+  if (!StereoMode34WantsDiscover() || !hookSpWords || !retAddr)
+    return;
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  const uint32_t retRva =
+      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(retAddr) - base);
+  // KEY vs Mode 33: only harvest when the VS upload returns into VsRet itself.
+  if (retRva != kMode34VsRetRva)
+    return;
+  ++g_mode34VsRetHits;
+  g_mode34VsCallsFrame.fetch_add(1);
+  const uint32_t tid = GetCurrentThreadId();
+  if (!g_mode34VsTid)
+    g_mode34VsTid = tid;
+
+  auto* sp = reinterpret_cast<uintptr_t*>(hookSpWords);
+  // Resolve each stack word to a FUNCTION START (not mid epilogue).
+  for (int i = 0; i < 64; ++i) {
+    const uintptr_t v = sp[i];
+    if (v < base + 0x1000 || v > base + 0xC00000)
+      continue;
+    // Prefer near thiscall start; fall back to FindFnStartNear.
+    uintptr_t fn = FindThiscallNear(v, 0x300);
+    if (!fn)
+      fn = FindThiscallNear(v, 0x800);
+    if (!fn)
+      fn = FindFnStartNear(v);
+    if (!fn)
+      continue;
+    const uint32_t fnRva = static_cast<uint32_t>(fn - base);
+    if (Mode34ForbiddenRva(fnRva))
+      continue;
+    Mode34NoteFrameRva(fnRva);
+  }
+
+  static int s_sample = 0;
+  if (s_sample < 16) {
+    ++s_sample;
+    int logged = 0;
+    for (int i = 0; i < 64 && logged < 6; ++i) {
+      const uintptr_t v = sp[i];
+      if (v < base + 0x1000 || v > base + 0xC00000)
+        continue;
+      uintptr_t fn = FindThiscallNear(v, 0x800);
+      if (!fn)
+        fn = FindFnStartNear(v);
+      if (!fn)
+        continue;
+      const unsigned fnRva = static_cast<unsigned>(fn - base);
+      if (Mode34ForbiddenRva(fnRva))
+        continue;
+      Log("Mode34: VsRetCaller sample#%d slot=%d midRva=0x%X -> startRva=0x%X tid=%u",
+          s_sample, i, static_cast<unsigned>(v - base), fnRva, tid);
+      ++logged;
+    }
+    Log("Mode34: VsRet sample#%d retRva=0x%X tid=%u frameSlots=%d sampleHits=%u vsRetHits=%u",
+        s_sample, retRva, tid, g_mode34FrameN, g_mode34SampleHits, g_mode34VsRetHits);
+  }
 }
 
 }  // namespace asi
