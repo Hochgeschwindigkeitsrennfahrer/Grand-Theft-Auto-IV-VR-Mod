@@ -281,9 +281,9 @@ void ApplyHmdToCam(Matrix44* mat) {
     Normalize(&fx, &fy, &fz);
   }
 
-  // Mode 49: yaw follows live ped heading + HMD yaw delta (F9 resets ped baseline).
+  // Mode 49 and 50+: yaw follows live ped heading + HMD yaw delta (F9 resets ped baseline).
   bool pedCoupledYaw = false;
-  if (sm == StereoMode::HeadOwnedCamPedCoupled) {
+  if (UsesPedCoupledYaw(sm)) {
     float pedHeading = 0.f;
     if (TryGetPedHorizontalHeading(&pedHeading)) {
       if (!g_havePedHeadingBase) {
@@ -847,7 +847,11 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         sm == StereoMode::HeadOwnedCamFullPose ||
         sm == StereoMode::HeadOwnedCamLeveledPitchFlip ||
         sm == StereoMode::HeadOwnedCamPitchStable ||
-        sm == StereoMode::HeadOwnedCamPedCoupled)
+        sm == StereoMode::HeadOwnedCamPedCoupled ||
+        sm == StereoMode::HeadOwnedCamStereoAlways ||
+        sm == StereoMode::HeadOwnedCamStereoAer ||
+        sm == StereoMode::HeadOwnedCamStereoSwap ||
+        sm == StereoMode::HeadOwnedCamStereoSoftGuard)
       PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
 
     // Modes 45/46/47/48/49: Rage can revise a camera after CopyMat but before this already-safe
@@ -857,7 +861,11 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
     if (sm == StereoMode::HeadOwnedCamSpike || sm == StereoMode::HeadOwnedCamFullPose ||
         sm == StereoMode::HeadOwnedCamLeveledPitchFlip ||
         sm == StereoMode::HeadOwnedCamPitchStable ||
-        sm == StereoMode::HeadOwnedCamPedCoupled) {
+        sm == StereoMode::HeadOwnedCamPedCoupled ||
+        sm == StereoMode::HeadOwnedCamStereoAlways ||
+        sm == StereoMode::HeadOwnedCamStereoAer ||
+        sm == StereoMode::HeadOwnedCamStereoSwap ||
+        sm == StereoMode::HeadOwnedCamStereoSoftGuard) {
       RefreshLiveCamForStereoEye();
       static uint32_t s_headOwnedRefreshes = 0;
       const uint32_t refreshes = ++s_headOwnedRefreshes;
@@ -872,7 +880,7 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
             static_cast<int>(sm) >= static_cast<int>(StereoMode::HeadOwnedCamPitchStable)
                 ? 1
                 : 0,
-            sm == StereoMode::HeadOwnedCamPedCoupled ? 1 : 0);
+            sm == StereoMode::HeadOwnedCamPedCoupled || UsesPedCoupledYaw(sm) ? 1 : 0);
     }
     const uint32_t n = ++g_fovSiteCalls;
     if (n <= 4 || (n % 600) == 0)

@@ -1,26 +1,70 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~22:00
-**Deployed now:** stereo **`49`** (Mode-48 pitch-stable + pre-capture refresh, **leveledPitchFlip OFF**,
-**ped-yaw coupled** to live character heading + HMD yaw delta) + **`fovadd=18`**. The 6DoF `scale`
-file remains **`100`**. Mode 46 stays disabled (post-load freeze). Mode 45/47/48 remain kill baselines.
-**Hotkeys split:** **F9** = view recenter only (SteamVR zero + ped/veh heading baseline); **F10** = 6DoF
-translation origin reset (lean/strafe anchor). F6=stereo scale, F7=WorldScale, F8=IPD.
-**Mode 46 is disabled: it froze after the loading screen in the only headset test.** Its full
-OpenVR right/forward/up matrix write is not safe for the RAGE follow-camera path. A request for
-`46` is remapped to **`45`** at load; do not deploy a `46` stereo file. Mode 45 remains
-deliberately **not** same-frame distinct-eye stereo, but preserves the user-tested stable
-head-owned refresh, temporary-mono motion guard, locked 1536×1536 eye RTs, and 5% FOV-publish gate.
-Mode 40 is an honest intermediate, not true same-frame stereo: on rapid HMD motion it re-canvases
-the current R game frame to both eye textures for that pair (temporary mono), removing the stale-eye
-disparity during the turn; calm motion returns to normal Mode-37 temporal stereo.
-**Kill:** stereo **`48`**, **`45`**, **`47`**, **`44`**, **`37`**, or **`30`** + delete **`fovadd`**.
-Protected: **`36`/`35`**.
-Keep **`ipd`≥1**, canvas **zoom DISABLED**. F7 = 6DoF only (does **not** create “inside VR” alone).  
-**Expectation:** Mode-45 pitch sign (look up/down matches head), Mode-48 pitch-stable basis when
-looking nearly vertical, body turns carry the view (ped yaw + HMD delta), ped-eye + F10 6DoF anchor
-unchanged. Log proof: `leveledPitchFlip=0`, `pedCoupled=1`. Kill to **`45`** if coupling feels wrong;
-**`48`** if up/down warp returns; **`47`** only if pitch flip was actually correct.
+**As of:** 2026-07-24 ~22:18
+**Deployed now:** stereo **`51`** (Mode-50 always-distinct L/R + **`Submit_TextureWithPose`**
+AER) + **`fovadd=18`**, **`ipd=3`**, scale **`100`**, stereoscale **`125`**. Mode **50**
+(motion-guard OFF baseline), **53** (soft guard: 8°/6cm AER-only, 15°/12cm hard mono), and
+**52** (swap-eyes depth test) are built and freeze-tested. Mode **49** remains the full
+motion-guard stability baseline. Mode 46 stays disabled (post-load freeze). Mode 45/48 remain
+kill baselines.
+**Hotkeys split:** **F9** = view recenter only; **F10** = 6DoF translation origin reset.
+F6=stereo scale, F7=WorldScale, F8=IPD.
+**Root cause found (Mode 49 “no 3D”):** Mode-40 motion guard (≥1.5° / ≥2 cm between L/R capture
+poses) fired constantly on temporal pairs and copied the **same R frame to both eyes** → flat image
+even with correct IPD. Mode 50+ disables that guard; Mode 53 adds optional soft guard at much
+higher thresholds only.
+**Kill:** stereo **`49`** (motion-guard stability), **`50`** (no AER), **`45`**, **`48`**, **`44`**, **`37`**, or **`30`**
++ delete **`fovadd`**. Protected: **`36`/`35`**. Keep **`ipd`≥1**, canvas **zoom DISABLED**.
+**Expectation:** Real temporal parallax with AER reprojection comfort on rapid turns. Log proof:
+`motionGuard=0`, `StereoAudit avgDiff≈11000+` at ipd=3, `zeroRate≈1%`, distinct `CamMatrix ipd`
+L vs R (±0.016 at 3 cm), `AERPose submitWithPose=1 err=0`, **no** `MOTION-GUARD mono pair`
+lines. Headset must confirm depth vs Mode 49/50. Kill to **`50`** or **`49`** if jump worse.
+
+### Session 2026-07-24 ~22:18 (Mode 51 AER + ipd=3 + Mode 53 soft guard — shipped)
+
+**One behavior change (deployed):** Mode **51** = Mode 50 always-distinct temporal L/R +
+capture-time `Submit_TextureWithPose` (Luke AER lesson). IPD bumped **`2` → `3` cm** for stronger
+cam-matrix parallax (`CamMatrix ipd≈±0.016` vs ±0.009 at 2 cm).
+
+**Also shipped (not deployed):** Mode **53** = Mode 51 + soft motion guard: **8°/6 cm** → keep
+distinct L/R + AER (no flatten); **15°/12 cm** → full mono fallback only. Mode **52** unchanged
+(swap-eyes test).
+
+**Automated post-load freeze-test PASS (Mode 51, build `20260724-221207`):** `StereoMode: 51`,
+`mode 51 STEREO-AER … ok=1 fovSite=1`, `StereoSep: 3 cm`, continuous
+`StereoSubmit: L=1 R=1 mode=51` through `MonoSubmit #14400+`, `Mode50: StereoAudit pairs=6960
+avgDiff=11037 zeroRate=1.0% sep=3cm scale=1.25 motionGuard=0`, `CamMatrix … ipd=(-0.0166,…)
+sep=3cm pedCoupled=1`, `AERPose: eye=R submitWithPose=1 err=0`, `Mode44: RT lock … recreates=0`,
+and **zero** `MOTION-GUARD mono pair` lines.
+
+**Automated post-load freeze-test PASS (Mode 53, build `20260724-221516`):** `StereoMode: 53`,
+`mode 53 STEREO-SOFT-GUARD … ok=1`, `Mode53: StereoAudit pairs=7080 avgDiff=6596 zeroRate=1.1%
+softGuard=0 hardMono=0` (calm session — guard did not fire), continuous submits, no exception.
+
+**Headset check:** compare depth to Mode 50 — ipd=3 should feel stronger near-field parallax.
+AER should reduce turn jump without killing 3D. If jump still bad → try **`53`**. If depth
+inverted → **`52`**. Kill: **`50`**, **`49`**, **`45`**.
+
+### Session 2026-07-24 ~22:10 (Mode 50 stereo-always: motion-guard OFF — shipped + freeze-test PASS)
+
+**One behavior change:** Mode 50 = Mode 49 visuals/stability, but **never** runs the Mode-40
+motion-guard mono flatten. Temporal L/R pair-hold always promotes distinct eye captures when
+`ipd>0`. Adds periodic `Mode50: StereoAudit` logging (avg L-vs-R canvas diff, zeroRate,
+motionGuard=0).
+
+**Also shipped (not deployed):** Mode **51** = Mode 50 + `Submit_TextureWithPose`; Mode **52** =
+Mode 50 + swapped L/R submit (depth inversion test).
+
+**Automated post-load freeze-test PASS:** build `20260724-220655` logged `StereoMode: 50`,
+`StereoRender: mode 50 STEREO-ALWAYS … ok=1 fovSite=1`, continuous
+`StereoSubmit: L=1 R=1 mode=50` through `MonoSubmit #3600+`, `Mode50: StereoAudit pairs=1560
+avgDiff=13176 zeroRate=5.4% sep=2cm motionGuard=0`, `CamMatrix … ipd=(±0.009…) pedCoupled=1`,
+`Mode44: RT lock … recreates=0`, and **zero** `MOTION-GUARD mono pair` lines. No ASI exception
+or submit error during 2+ minute gameplay run.
+
+**Headset check:** compare depth/presence to Mode 49 — near objects should show parallax again.
+If depth feels inverted → try **`52`**. If turn jump worse than flatness → **`49`**. Optional:
+**`51`** for AER reprojection comfort.
 
 ### Session 2026-07-24 ~22:00 (F9/F10 hotkey split: recenter vs 6DoF reset)
 

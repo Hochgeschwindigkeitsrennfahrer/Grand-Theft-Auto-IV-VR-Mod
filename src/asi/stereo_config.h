@@ -243,7 +243,30 @@ enum class StereoMode : int {
   // ped heading: body turns carry the view; HMD yaw is delta on top. Ped eye +
   // F9-relative 6DoF unchanged. Kill: 48/45/47/44/37/30.
   HeadOwnedCamPedCoupled = 49,
+  // Mode 49 visuals/stability but motion-guard OFF — always promote distinct
+  // temporal L/R when ipd>0. Logs StereoAudit (L≠R diff) each pair. Kill: 49/45.
+  HeadOwnedCamStereoAlways = 50,
+  // Mode 50 + capture-time Submit_TextureWithPose (Luke AER). Kill: 50/49/45.
+  HeadOwnedCamStereoAer = 51,
+  // Mode 50 + swapped L/R submit (depth inversion test). Kill: 50/49/45.
+  HeadOwnedCamStereoSwap = 52,
+  // Mode 51 + soft motion guard: 8°/6cm → keep distinct L/R + AER (no flatten);
+  // 15°/12cm → full mono fallback. Kill: 51/50/49/45.
+  HeadOwnedCamStereoSoftGuard = 53,
 };
+
+// Mode 40–49: rapid HMD delta → temporary mono pair. Mode 50+ never flattens.
+bool UsesMotionGuardStereo(StereoMode mode);
+// Mode 50–53: stereo-first temporal path with pair audit logging.
+bool UsesStereoAlwaysDistinct(StereoMode mode);
+// Mode 38/51/53: Submit_TextureWithPose per eye.
+bool UsesAerPoseSubmit(StereoMode mode);
+// Mode 49 and 50+: ped yaw coupling (body turn carries view).
+bool UsesPedCoupledYaw(StereoMode mode);
+// Mode 48–53: refresh CopyMat immediately before each eye capture.
+bool UsesPreCaptureCamRefresh(StereoMode mode);
+// Mode 44/45/47–53: locked 1536 RTs + 5% FOV publish gate.
+bool UsesRtLockFovGate(StereoMode mode);
 
 StereoMode GetStereoMode();
 void ReloadStereoMode();
