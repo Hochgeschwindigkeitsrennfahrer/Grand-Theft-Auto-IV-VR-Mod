@@ -215,6 +215,12 @@ enum class StereoMode : int {
   // four submit/hold textures.  True FOV, pair-hold, and the fast motion guard
   // remain unchanged; this is an RT-stability/FPS experiment, not true stereo.
   FovCanvasMotionGuardRtLock = 44,
+  // Mode 44 visual path plus a second application of the existing safe
+  // ped-eye + relative-HMD CopyMat matrix immediately after the verified CCam
+  // FOV recompute site. This makes the render-time view head-owned when Rage
+  // performs a late camera update, without changing gameplay collision/culling,
+  // touching VS constants, or replaying a draw. Kill: 44/37/30.
+  HeadOwnedCamSpike = 45,
 };
 
 StereoMode GetStereoMode();

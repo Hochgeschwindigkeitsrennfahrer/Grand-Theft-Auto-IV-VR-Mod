@@ -645,6 +645,8 @@ void PushLiveCamToD3D(IDirect3DDevice9* device) {
 // Mode 17 wrote mat+0x50 after CopyMat and lost to this recompute. We chain
 // AFTER the current target (often FusionFix stub with FOV=0) so our ADD sticks.
 // Mode 36: also publish post-ADD FOV to canvas (Rage ignores D3DTS_PROJECTION).
+void RefreshLiveCamForStereoEye();
+
 using CamFovSite_t = void(__fastcall*)(void* self, void* edx);
 CamFovSite_t g_origCamFovSite = nullptr;
 std::atomic<bool> g_fovSiteOk{false};
@@ -708,8 +710,21 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion ||
         sm == StereoMode::FovCanvasMotionGuard || sm == StereoMode::ReplayCallChainProbe ||
         sm == StereoMode::ReplayOwnerCountProbe || sm == StereoMode::FovCanvasMotionGuardFast ||
-        sm == StereoMode::FovCanvasMotionGuardRtLock)
+        sm == StereoMode::FovCanvasMotionGuardRtLock || sm == StereoMode::HeadOwnedCamSpike)
       PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
+
+    // Mode 45: Rage can revise a camera after CopyMat but before this already-safe
+    // post-process FOV site. Re-apply the exact same ped-eye + relative HMD pose
+    // here, late in the game-thread camera path. This does not move gameplay's
+    // collision camera, add a VS offset, or make another render/replay pass.
+    if (sm == StereoMode::HeadOwnedCamSpike) {
+      RefreshLiveCamForStereoEye();
+      static uint32_t s_headOwnedRefreshes = 0;
+      const uint32_t refreshes = ++s_headOwnedRefreshes;
+      if (refreshes <= 4 || (refreshes % 600) == 0)
+        Log("Mode45: late head-owned CopyMat refresh #%u (CCam site; collision unchanged)",
+            refreshes);
+    }
     const uint32_t n = ++g_fovSiteCalls;
     if (n <= 4 || (n % 600) == 0)
       Log("FovSite: #%u CCam+0x60 %.3f -> %.3f (add=%.0f) self=%p trueCanvas=%d", n, before,
@@ -718,7 +733,7 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
            sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion ||
            sm == StereoMode::FovCanvasMotionGuard || sm == StereoMode::ReplayCallChainProbe ||
            sm == StereoMode::ReplayOwnerCountProbe || sm == StereoMode::FovCanvasMotionGuardFast ||
-           sm == StereoMode::FovCanvasMotionGuardRtLock)
+           sm == StereoMode::FovCanvasMotionGuardRtLock || sm == StereoMode::HeadOwnedCamSpike)
               ? 1
               : 0);
   } __except (EXCEPTION_EXECUTE_HANDLER) {

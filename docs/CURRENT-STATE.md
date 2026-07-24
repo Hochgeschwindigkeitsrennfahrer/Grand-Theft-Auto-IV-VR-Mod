@@ -1,25 +1,42 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~20:05
-**Deployed now:** stereo **`44`** (Mode 43 fast motion guard + RT lock) +
+**As of:** 2026-07-24 ~20:25
+**Deployed now:** stereo **`45`** (Mode 44 RT lock + late head-owned camera refresh) +
 **`fovadd=18`**.
-Mode 44 is deliberately **not** same-frame distinct-eye stereo. It keeps Mode 43's temporary
-mono guard/direct-submit route and locks the four 1536×1536 eye RTs after their first allocation.
-It also ignores ordinary CCam tangent noise below a 5% change, so FOV publish noise cannot churn
-the eye resources. It installs no game-function hook, does not replay a draw, and has no 0x309D0 probe.
+Mode 45 is deliberately **not** same-frame distinct-eye stereo. It retains Mode 44's temporary
+mono guard/direct-submit route, locked 1536×1536 eye RTs, and 5% FOV-publish gate. Its single new
+behavior is to re-apply the existing ped-eye + relative-HMD CopyMat matrix at the already-safe
+post-CCam-FOV site. That makes the late render view head-owned if Rage revised it after CopyMat;
+it does **not** change gameplay collision/culling, add a VS offset, replay a draw, or touch 0x309D0.
 Mode 40 is an honest intermediate, not true same-frame stereo: on rapid HMD motion it re-canvases
 the current R game frame to both eye textures for that pair (temporary mono), removing the stale-eye
 disparity during the turn; calm motion returns to normal Mode-37 temporal stereo.
-**Kill:** stereo **`43`** (same guard without the hard lock), **`40`** (conservative guard),
-**`37`** (always temporal stereo + full FOV),
+**Kill:** stereo **`44`** (remove only late refresh), **`37`** (always temporal stereo + full FOV),
 or **`30`** + delete **`fovadd`**.
 Protected: **`36`/`35`**.
 Keep **`ipd`≥1**, canvas **zoom DISABLED**. F7 = 6DoF only (does **not** create “inside VR” alone).  
-**Expectation:** the bars remain gone. Rapid head turns should no longer show a stale-eye stereo jump,
-but will briefly lose depth while Mode 40 submits the coherent current-frame mono pair. Motion from the
-game itself can still expose temporal stereo. A real fix needs same-frame **distinct-eye** rendering;
-independent head-owned view remains a later, risky camera/collision spike. AER v2 optical-flow is
-**not** implemented.
+**Expectation:** the bars, RT stability, and motion guard stay unchanged; when Rage performs a late
+camera overwrite, head turns/leans should now remain owned by the HMD rather than snapping to its
+follow-camera view. It cannot bypass physical wall collision, and game motion can still expose
+temporal stereo. Risks are camera/collision, sound-origin, AI-aim, weapon/HUD, and culling desync
+because only the render matrix is refreshed. A real stereo fix still needs same-frame distinct eyes.
+
+### Session 2026-07-24 ~20:25 (Mode 45 head-owned view spike: shipped)
+
+**Shipped Mode 45:** Mode 44 is intact, with one added call at the verified FusionFix-style CCam
+FOV recompute site: after the game camera process completes, it re-applies the exact existing safe
+CopyMat calculation (ped eye + F9-relative HMD translation × WorldScale, HMD orientation, eyefwd,
+camoff, and normal IPD). It does not layer a second camera/VS translation; it writes the same tracked
+CopyMat matrix later in the game thread. **Deployed + launch-log verified**
+(`ASI_BUILD_ID 20260724-201131`): `mode 45 HEAD-OWNED CAM SPIKE ... ok=1 fovSite=1`,
+`Mode45: late head-owned CopyMat refresh #1`, `FovSite ... 45.000 -> 63.000`, paired
+`StereoSubmit: L=1 R=1 mode=45`, and the Mode-44 RT counter stayed `recreates=0`.
+
+**Honest risk:** gameplay camera collision remains authoritative, so a wall can still constrain the
+body anchor. Because this is render-only, collision, sound, AI/aim, weapons/HUD, shadows, and culling
+can disagree with a late head pose. If any snap, wall issue, bad audio/aim, or crash occurs, write
+**`44`** (exact Mode 44 visual path without late refresh); broader kills: **`37`** or **`30`** +
+delete `fovadd`. No unattended build can establish headset comfort.
 
 ### Session 2026-07-24 ~20:05 (Mode 44 RT lock: shipped)
 
