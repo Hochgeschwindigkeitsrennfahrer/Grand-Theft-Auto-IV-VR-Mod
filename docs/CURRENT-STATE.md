@@ -1,9 +1,10 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~17:20  
+**As of:** 2026-07-24 ~17:25  
 **Playable / deployed default:** stereo **`30`** (pair-hold) + **`ipd=1`** + **`scale=50`** + **`stereoscale=125`** + **`eyefwd=42`** + **`pedhide=1`**. Kill stereo → **`26`** or **`0`**. Kill PedHide → **`pedhide=0`**.  
 F8 presets **`1,2,3,4,6,7,10`**. `scale` preserved (F7 = 6DoF only). Do **not** multiply IPD×WorldScale.  
-Mode **34:** dual **DISABLED** (0x4DDAD0 COUNT ok but `vsPatch=0`/`vsCallsR=0` — no parallax). Forbidden `0x4DDAD0`. Playable stays **30**.
+Mode **34:** dual **DISABLED** (0x4DDAD0 COUNT ok but `vsPatch=0`/`vsCallsR=0` — no parallax). Forbidden `0x4DDAD0`. Playable stays **30**.  
+**Live proof (buildId `20260724-172208`):** `StereoSep: 1 cm (file)` · `mode 30 PAIR-HOLD` · `PedHide … ok=… dead=0` · `StereoSubmit … mode=30` · `sep=1cm`.
 
 ### Session 2026-07-24 ~17:15–17:25 (consolidate: Mode34 dual dead → Mode30)
 
