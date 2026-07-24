@@ -1,5 +1,6 @@
 #include "vr_display.h"
 #include "log.h"
+#include "stereo_config.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -249,9 +250,10 @@ void PublishGameFovFromCCamDegrees(float ccamDeg, float aspectWH) {
     return;
 
   const float curH = g_gameTanH.load();
-  // Coarser gate: Mode 36/37 published every ~0.8% wobble → canvas flap → RT recreate
-  // → jump. Require ~2.5% (≈1.5° at mid FOV) before committing a new gameTan.
-  const bool changed = !(curH > 0.05f) || std::fabs(tanH - curH) > 0.025f * curH;
+  // Mode 44 owns fixed-size eye RTs, so retain the first stable true-FOV tangent
+  // through ordinary CCam noise. A real zoom/camera change still exceeds 5%.
+  const float gate = GetStereoMode() == StereoMode::FovCanvasMotionGuardRtLock ? 0.05f : 0.025f;
+  const bool changed = !(curH > 0.05f) || std::fabs(tanH - curH) > gate * curH;
   if (!changed && g_fovFromCCam.load())
     return;
   g_gameTanH.store(tanH);

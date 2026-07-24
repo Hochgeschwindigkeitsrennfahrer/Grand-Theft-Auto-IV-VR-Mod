@@ -1,16 +1,17 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~20:00
-**Deployed now:** stereo **`43`** (Mode 40 motion guard fast path) +
+**As of:** 2026-07-24 ~20:05
+**Deployed now:** stereo **`44`** (Mode 43 fast motion guard + RT lock) +
 **`fovadd=18`**.
-Mode 43 is deliberately **not** same-frame distinct-eye stereo. It keeps Mode 40's temporary
-mono guard but, only when that guard fires, writes the current R frame directly to the two submit
-canvases: three copies rather than Mode 40's five-copy hold/recanvas/promotion route. It installs
-no game-function hook, does not replay a draw, and has no 0x309D0 probe.
+Mode 44 is deliberately **not** same-frame distinct-eye stereo. It keeps Mode 43's temporary
+mono guard/direct-submit route and locks the four 1536×1536 eye RTs after their first allocation.
+It also ignores ordinary CCam tangent noise below a 5% change, so FOV publish noise cannot churn
+the eye resources. It installs no game-function hook, does not replay a draw, and has no 0x309D0 probe.
 Mode 40 is an honest intermediate, not true same-frame stereo: on rapid HMD motion it re-canvases
 the current R game frame to both eye textures for that pair (temporary mono), removing the stale-eye
 disparity during the turn; calm motion returns to normal Mode-37 temporal stereo.
-**Kill:** stereo **`40`** (conservative guard), **`37`** (always temporal stereo + full FOV),
+**Kill:** stereo **`43`** (same guard without the hard lock), **`40`** (conservative guard),
+**`37`** (always temporal stereo + full FOV),
 or **`30`** + delete **`fovadd`**.
 Protected: **`36`/`35`**.
 Keep **`ipd`≥1**, canvas **zoom DISABLED**. F7 = 6DoF only (does **not** create “inside VR” alone).  
@@ -19,6 +20,23 @@ but will briefly lose depth while Mode 40 submits the coherent current-frame mon
 game itself can still expose temporal stereo. A real fix needs same-frame **distinct-eye** rendering;
 independent head-owned view remains a later, risky camera/collision spike. AER v2 optical-flow is
 **not** implemented.
+
+### Session 2026-07-24 ~20:05 (Mode 44 RT lock: shipped)
+
+**Shipped Mode 44:** Mode 43's visual behavior is unchanged: the bars-gone true-FOV canvas,
+Mode-37 temporal pair-hold, and rapid-motion direct-submit mono guard stay enabled. The one
+behavior change is RT/publish stability. Once the four 1536×1536 submit+hold textures exist on
+the same device, Mode 44 keeps them instead of considering a later requested canvas size; only a
+lost/replaced resource can allocate again. Its true-FOV publisher now requires a 5% tangent
+change rather than 2.5%, filtering ordinary CCam jitter while retaining meaningful camera/zoom
+changes. It periodically reports `Mode44: RT lock ... recreates=...`.
+
+**Deployed + launch-log verified** (`ASI_BUILD_ID 20260724-200503`): `StereoMode: 44`,
+`mode 44 RT-LOCK ... ok=1 fovSite=1`, `eye RTs 1536x1536 OK`, and
+`Mode44: RT lock 1536x1536 initialized recreates=0`; paired
+`StereoSubmit: L=1 R=1 mode=44` followed. The automatic launch did not include a headset stress
+test, so a sustained live session must still confirm the periodic counter remains `recreates=0`
+and assess actual FPS. **Kill:** `43`, `40`, `37`, or `30` + delete `fovadd`.
 
 ### Session 2026-07-24 ~20:00 (Mode 43 fast motion guard: shipped)
 

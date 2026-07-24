@@ -66,6 +66,9 @@ IDirect3DDevice9* g_device = nullptr;
 IDirect3DTexture9* g_texL = nullptr;
 IDirect3DTexture9* g_texR = nullptr;
 uint32_t g_rtW = 0, g_rtH = 0;
+std::atomic<uint32_t> g_mode44RtChecks{0};
+std::atomic<uint32_t> g_mode44RtRecreates{0};
+std::atomic<uint32_t> g_mode44RtSuppressed{0};
 
 bool g_haveL = false;
 bool g_haveR = false;
@@ -100,7 +103,8 @@ bool UsesFovComfortPath(StereoMode mode) {
   return mode == StereoMode::FovCanvasComfort || mode == StereoMode::AerPoseSubmit ||
          mode == StereoMode::FovCanvasLowMotion || mode == StereoMode::FovCanvasMotionGuard ||
          mode == StereoMode::ReplayCallChainProbe || mode == StereoMode::ReplayOwnerCountProbe ||
-         mode == StereoMode::FovCanvasMotionGuardFast;
+         mode == StereoMode::FovCanvasMotionGuardFast ||
+         mode == StereoMode::FovCanvasMotionGuardRtLock;
 }
 
 bool UsesTrueFovCanvasPublish(StereoMode mode) {
@@ -133,7 +137,8 @@ bool Mode40NeedsMonoGuard(float* outRotDeg, float* outMoveCm) {
   const StereoMode mode = GetStereoMode();
   if ((mode != StereoMode::FovCanvasMotionGuard && mode != StereoMode::ReplayCallChainProbe &&
        mode != StereoMode::ReplayOwnerCountProbe &&
-       mode != StereoMode::FovCanvasMotionGuardFast) ||
+       mode != StereoMode::FovCanvasMotionGuardFast &&
+       mode != StereoMode::FovCanvasMotionGuardRtLock) ||
       !g_holdPoseLValid || !g_holdPoseRValid)
     return false;
   const vr::HmdMatrix34_t& l = g_holdPoseL;
@@ -393,8 +398,22 @@ void ReleaseEyeRts() {
 bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
   if (!dev || w < 16 || h < 16)
     return false;
+  const bool mode44 = GetStereoMode() == StereoMode::FovCanvasMotionGuardRtLock;
+  const bool haveRts =
+      g_texL && g_texR && g_holdL && g_holdR && g_device == dev && g_rtW > 0 && g_rtH > 0;
+  if (mode44 && haveRts) {
+    // Keep all four default-pool eye textures through harmless FOV publish
+    // noise. A lost/replaced device still falls through to allocate again.
+    if (w != g_rtW || h != g_rtH)
+      ++g_mode44RtSuppressed;
+    const uint32_t checks = ++g_mode44RtChecks;
+    if ((checks % 600) == 0)
+      Log("Mode44: RT lock %ux%u checks=%u recreates=%u suppressed=%u", g_rtW, g_rtH, checks,
+          g_mode44RtRecreates.load(), g_mode44RtSuppressed.load());
+    return true;
+  }
   // Hysteresis: tiny FOV/publish flaps must not recreate 4 RTs (stutter/jump).
-  if (g_texL && g_texR && g_holdL && g_holdR && g_device == dev && g_rtW > 0 && g_rtH > 0) {
+  if (haveRts) {
     const int dw = static_cast<int>(w) - static_cast<int>(g_rtW);
     const int dh = static_cast<int>(h) - static_cast<int>(g_rtH);
     if (dw > -48 && dw < 48 && dh > -48 && dh < 48)
@@ -402,6 +421,7 @@ bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
   }
   if (g_texL && g_texR && g_holdL && g_holdR && g_device == dev && g_rtW == w && g_rtH == h)
     return true;
+  const bool replacingRts = g_texL || g_texR || g_holdL || g_holdR;
   ReleaseEyeRts();
   g_device = dev;
   if (FAILED(dev->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
@@ -419,6 +439,11 @@ bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
   g_rtW = w;
   g_rtH = h;
   Log("StereoRender: eye RTs %ux%u OK (submit+hold)", w, h);
+  if (mode44) {
+    if (replacingRts)
+      ++g_mode44RtRecreates;
+    Log("Mode44: RT lock %ux%u initialized recreates=%u", w, h, g_mode44RtRecreates.load());
+  }
   return true;
 }
 
@@ -4218,7 +4243,8 @@ void __fastcall HookExecA(void* self, void* edx) {
       mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion ||
       mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe ||
       mode == StereoMode::ReplayOwnerCountProbe ||
-      mode == StereoMode::FovCanvasMotionGuardFast) {
+      mode == StereoMode::FovCanvasMotionGuardFast ||
+      mode == StereoMode::FovCanvasMotionGuardRtLock) {
     const int ph = g_mode30Phase.load();
     if (ph != static_cast<int>(Mode30Phase::Dual) || g_execDualDead.load()) {
       g_origExecA(self, edx);
@@ -4777,7 +4803,8 @@ void TemporalCapturePairHold(IDirect3DDevice9* device) {
         // Both eye canvases now originate from this exact backbuffer epoch.
         // They retain their correct per-eye canvas geometry, but intentionally
         // contain one camera view until the next calm L/R temporal pair.
-        const bool fast = GetStereoMode() == StereoMode::FovCanvasMotionGuardFast;
+        const bool fast = GetStereoMode() == StereoMode::FovCanvasMotionGuardFast ||
+                          GetStereoMode() == StereoMode::FovCanvasMotionGuardRtLock;
         IDirect3DTexture9* dstL = fast ? g_texL : g_holdL;
         IDirect3DTexture9* dstR = fast ? g_texR : g_holdR;
         const bool sameFrameL = CopyBbToEyeCanvas(device, dstL, vr::Eye_Left);
@@ -4984,7 +5011,8 @@ bool InstallStereoRenderHooks() {
       mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion ||
       mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe ||
       mode == StereoMode::ReplayOwnerCountProbe ||
-      mode == StereoMode::FovCanvasMotionGuardFast) {
+      mode == StereoMode::FovCanvasMotionGuardFast ||
+      mode == StereoMode::FovCanvasMotionGuardRtLock) {
     // Pair-hold only: same install surface as Mode 26 (no exec dual hooks).
     // Device-VS dual was probed this session (mode30dev=0) — do not re-arm.
     SetStereoEye(StereoEye::Left);
@@ -5039,6 +5067,17 @@ bool InstallStereoRenderHooks() {
           "not true stereo) ok=%d fovSite=%d",
           g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
       Log("StereoRender: kill-switch - stereo=40 (conservative guard), 37, or 30 + delete "
+          "gtaiv_dxvk_vr.fovadd");
+    } else if (mode == StereoMode::FovCanvasMotionGuardRtLock) {
+      const bool fovOk = InstallFovRecomputeSiteHook();
+      g_mode40MonoPairs.store(0);
+      g_mode44RtChecks.store(0);
+      g_mode44RtRecreates.store(0);
+      g_mode44RtSuppressed.store(0);
+      Log("StereoRender: mode 44 RT-LOCK (Mode43 fast motion guard + locked 1536 eye RTs; "
+          "5%% FOV tangent publish gate; no FOV/RT thrash; not true stereo) ok=%d fovSite=%d",
+          g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=43, 40, 37, or 30 + delete "
           "gtaiv_dxvk_vr.fovadd");
     } else if (mode == StereoMode::ReplayCallChainProbe) {
       const bool fovOk = InstallFovRecomputeSiteHook();
@@ -5403,7 +5442,8 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
         mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion ||
         mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe ||
         mode == StereoMode::ReplayOwnerCountProbe ||
-        mode == StereoMode::FovCanvasMotionGuardFast) {
+        mode == StereoMode::FovCanvasMotionGuardFast ||
+        mode == StereoMode::FovCanvasMotionGuardRtLock) {
       g_dualDoneThisFrame = false;
       g_skipExecA = g_skipExecC = g_skipExecD = 0;
       IDirect3DSurface9* bb = nullptr;
@@ -5541,7 +5581,8 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
       mode != StereoMode::FovCanvasComfort && mode != StereoMode::AerPoseSubmit &&
       mode != StereoMode::FovCanvasLowMotion && mode != StereoMode::FovCanvasMotionGuard &&
       mode != StereoMode::ReplayCallChainProbe && mode != StereoMode::ReplayOwnerCountProbe &&
-      mode != StereoMode::FovCanvasMotionGuardFast)
+      mode != StereoMode::FovCanvasMotionGuardFast &&
+      mode != StereoMode::FovCanvasMotionGuardRtLock)
     return false;
   if (!device || !interop || !g_texL || !g_texR)
     return false;

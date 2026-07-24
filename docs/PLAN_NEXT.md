@@ -4,6 +4,29 @@ Read with `docs/CURRENT-STATE.md` and `docs/HANDOFF_GROK.md`.
 
 ---
 
+## Session note 2026-07-24 ~20:05 — Mode 44 RT lock
+
+**Shipped Mode 44:** this is the Mode-43 fast current-frame mono guard with exactly one
+additional behavior: after the first 1536×1536 submit+hold RT allocation, later canvas/tangent
+requests on the same D3D9 device cannot release and recreate those four default-pool textures.
+The true-FOV publish gate is also 5% for this mode (rather than the normal 2.5%), filtering
+ordinary CCam FOV jitter before it can alter canvas geometry. Bars-gone `fovadd=18`, pair-hold,
+and the Mode-43 three-copy guarded path remain unchanged. No game function is hooked, replayed,
+or probed.
+
+**Launch proof:** build `20260724-200503` logged `StereoMode: 44`, the RT-LOCK install,
+one `eye RTs 1536x1536 OK`, `Mode44: RT lock 1536x1536 initialized recreates=0`, and paired
+`StereoSubmit: L=1 R=1 mode=44`. The unattended launch cannot prove a performance gain or a
+long-session `recreates=0` periodic counter. **Kill:** `43`, `40`, `37`, or `30` + delete
+`fovadd`.
+
+**Next true-VR work:** do not mistake resource stability for same-frame stereo. The open
+root problem remains a safe replay-thread seam that renders distinct L/R views in one game tick;
+the forbidden/disproved addresses and the 0x309D0 indirect edge stay off limits. Get a headset
+FPS/rapid-turn check of Mode 44 before a new visual experiment.
+
+---
+
 ## Session note 2026-07-24 ~20:00 — Mode 43 fast motion guard
 
 **Shipped Mode 43:** keep Mode 40's thresholds, temporary-mono result, pair-held true-FOV geometry,

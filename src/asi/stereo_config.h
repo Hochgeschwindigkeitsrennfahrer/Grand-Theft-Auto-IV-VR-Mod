@@ -210,6 +210,11 @@ enum class StereoMode : int {
   // extra hold-RT recanvas and pair-promotion copies during a rapid HMD turn.
   // It remains temporary mono, not same-frame distinct-eye stereo. Kill: 40/37/30.
   FovCanvasMotionGuardFast = 43,
+  // Mode 43 visual path plus a hard 1536 eye-RT allocation lock.  It rejects
+  // harmless CCam tangent/publish wobble instead of releasing/recreating all
+  // four submit/hold textures.  True FOV, pair-hold, and the fast motion guard
+  // remain unchanged; this is an RT-stability/FPS experiment, not true stereo.
+  FovCanvasMotionGuardRtLock = 44,
 };
 
 StereoMode GetStereoMode();
