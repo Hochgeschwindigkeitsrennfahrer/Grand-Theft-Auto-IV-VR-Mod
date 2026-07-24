@@ -1,13 +1,23 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~18:05  
-**Playable / deployed default:** stereo **`30`** (pair-hold) + **`ipd=1`** + **`scale=50`** + **`stereoscale=125`** + **`eyefwd=20`** + **`pedhide=1`**. Canvas **zoom DISABLED** (warp rejected). Kill stereo → **`26`** or **`0`**. Kill PedHide → **`pedhide=0`**.  
-F8 presets **`1,2,3,4,6,7,10`**. `scale` preserved (F7 = 6DoF only). Do **not** multiply IPD×WorldScale. Do **not** re-enable FusionFix FieldOfView or canvas zoom.  
-Mode **34:** dual **DISABLED**. Forbidden `0x4DDAD0` / `0x2C6AC` / `0x37BD0` / `0x1BF010`. Playable stays **30**.  
-**Live proof (buildId `20260724-180320`):**  
-`CanvasZoom: DISABLED (warp rejected)` · `gameTan=(1.000,0.562)` · `mode 30 PAIR-HOLD` ·  
-`StereoSubmit … mode=30` · `sep=1cm` · `eyeFwd=20cm` · PedHide `dead=0` ·  
-`VsRetStatic: callSites=0` (no static E8→`0x2C73E` — confirms indirect-only; stack discover still needed).
+**As of:** 2026-07-24 ~18:25  
+**Playable fallback:** stereo **`30`** (pair-hold). **Headset test now:** stereo **`35`** + **`fovadd=15`** (engine FOV ADD at FusionFix recompute site). Keep **`ipd`≥1**, **`scale`/`stereoscale`/`eyefwd`/`pedhide`**. Canvas **zoom DISABLED**. Kill Mode35 → stereo **`30`** + delete **`fovadd`**. Kill PedHide → **`pedhide=0`**.  
+F8 presets **`1,2,3,4,6,7,10`**. F7 = 6DoF only. Do **not** multiply IPD×WorldScale. Do **not** re-enable FusionFix menu FieldOfView or canvas zoom (we own FOV via `fovadd`).  
+Mode **34:** dual **DISABLED**. Forbidden `0x4DDAD0` / `0x2C6AC` / `0x37BD0` / `0x1BF010`.  
+**Live proof (buildId `20260724-182205`):**  
+`StereoMode: 35` · `FovSite: hooked CALL … exeRva=0x706F7C` · `fovadd=15` ·  
+`FovSite: #1200 CCam+0x60 45.000 -> 60.000 (add=15)` · `mode 35 FOV-RECOMPUTE … fovSite=1` ·  
+`StereoSubmit … mode=35` · `StereoPairHold: promoted pair` · `CanvasZoom: DISABLED` · PedHide `dead=0`.
+
+### Session 2026-07-24 ~18:10–18:25 (Mode 35 FOV recompute — research + spike)
+
+**User ask:** feel inside the game with real 6DoF; Mode 30 fusion OK but warping + screen-on-face.  
+**Research:** Luke Ross / Halo / L4D2 / UEVR / FusionFix — kill monitor-on-face with **true engine FOV**, not canvas zoom / theater. FusionFix `fixes.ixx` = cam process CALL then `*(CCam+0x60) += n*5` = our Mode 17 recompute site.  
+**Shipped Mode 35:** Mode 30 pair-hold + chain-hook that CALL; `gtaiv_dxvk_vr.fovadd` ADD degrees (deployed **15**). Additive preserves aim zoom.  
+**Log proof:** 45→60 stable; thousands of FovSite calls; submits mode=35; game stayed up.  
+**Headset check:** less black-bar / monitor feel? No look-warp? If warp/bad → kill to 30 + delete fovadd. Keep FusionFix menu FOV at **0**.
+
+**Deferred:** independent VR cam vs wall collision; Mode 34 dual; theater quad.
 
 ### Session 2026-07-24 ~17:50–18:05 (kill canvas zoom + research)
 

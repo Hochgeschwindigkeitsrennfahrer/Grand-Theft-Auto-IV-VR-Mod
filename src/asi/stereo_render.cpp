@@ -3890,8 +3890,8 @@ void __fastcall HookExecA(void* self, void* edx) {
     g_origExecA(self, edx);
     return;
   }
-  // Mode 30 soft-start / pair-hold: passthrough native exec; EndScene does temporal.
-  if (mode == StereoMode::PhaseDualDeviceVs) {
+  // Mode 30/35 soft-start / pair-hold: passthrough native exec; EndScene does temporal.
+  if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite) {
     const int ph = g_mode30Phase.load();
     if (ph != static_cast<int>(Mode30Phase::Dual) || g_execDualDead.load()) {
       g_origExecA(self, edx);
@@ -4575,7 +4575,7 @@ bool InstallStereoRenderHooks() {
     return g_ok.load();
   }
 
-  if (mode == StereoMode::PhaseDualDeviceVs) {
+  if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite) {
     // Pair-hold only: same install surface as Mode 26 (no exec dual hooks).
     // Device-VS dual was probed this session (mode30dev=0) — do not re-arm.
     SetStereoEye(StereoEye::Left);
@@ -4589,11 +4589,20 @@ bool InstallStereoRenderHooks() {
     g_pairPromoteCount.store(0);
     g_vsPatchOn.store(false);
     g_ok = InstallRootProbeHooks(2);
-    LogStaticVsRetCallersOnce();
-    Log("StereoRender: mode 30 PAIR-HOLD (CCam temporal + promote L+R together; "
-        "device-VS dual probed dead mode30dev=0; no 0x2C6AC/0x37BD0; canvas zoom OFF) ok=%d",
-        g_ok.load() ? 1 : 0);
-    Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 26 or 0");
+    if (mode == StereoMode::FovRecomputeSite) {
+      const bool fovOk = InstallFovRecomputeSiteHook();
+      Log("StereoRender: mode 35 FOV-RECOMPUTE + Mode30 pair-hold "
+          "(FusionFix CCam+0x60 site; fovadd=ADD deg; canvas zoom OFF) ok=%d fovSite=%d",
+          g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 30 + delete "
+          "gtaiv_dxvk_vr.fovadd");
+    } else {
+      LogStaticVsRetCallersOnce();
+      Log("StereoRender: mode 30 PAIR-HOLD (CCam temporal + promote L+R together; "
+          "device-VS dual probed dead mode30dev=0; no 0x2C6AC/0x37BD0; canvas zoom OFF) ok=%d",
+          g_ok.load() ? 1 : 0);
+      Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 26 or 0");
+    }
     return g_ok.load();
   }
 
@@ -4901,8 +4910,8 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
     return;
   }
 
-    // Mode 30: pair-hold temporal only (device-VS dual proven dead — mode30dev=0).
-    if (mode == StereoMode::PhaseDualDeviceVs) {
+    // Mode 30 / 35: pair-hold temporal only (device-VS dual proven dead — mode30dev=0).
+    if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite) {
       g_dualDoneThisFrame = false;
       g_skipExecA = g_skipExecC = g_skipExecD = 0;
       IDirect3DSurface9* bb = nullptr;
@@ -5031,7 +5040,8 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
       mode != StereoMode::SameFrameWrapDual && mode != StereoMode::ReplayRootProbe &&
       mode != StereoMode::VsParentCountProbe && mode != StereoMode::PhaseDualDeviceVs &&
       mode != StereoMode::SameFrameReplayDual && mode != StereoMode::SameFrameVsParentDual &&
-      mode != StereoMode::SameFrameLateVsParentDual && mode != StereoMode::SameFrameVsRetCallerDual)
+      mode != StereoMode::SameFrameLateVsParentDual && mode != StereoMode::SameFrameVsRetCallerDual &&
+      mode != StereoMode::FovRecomputeSite)
     return false;
   if (!device || !interop || !g_texL || !g_texR)
     return false;

@@ -106,5 +106,17 @@ Local: `inspiration/real vr all mods/` (gitignored). Contains `RealVR.ini`, per-
 3. Mode 5 phase probe = path to "shared prep, two views per frame" without engine fork.  
 4. Theater menu + HUD layer = later, after fusion.
 5. **Playable now:** Mode **30** pair-hold + PedHide + ipd≥1. Canvas zoom **OFF**. Independent VR cam = deferred.
+6. **Mode 35 (2026-07-24):** engine FOV via FusionFix recompute CALL + `fovadd` ADD at CCam+0x60
+   (Halo/Luke lesson). Stereo default stays **30** unless headset prefers 35.
+
+### More public-repo notes (2026-07-24 evening)
+
+| Repo | Monitor-on-face fix | 6DoF | Transfer |
+|------|---------------------|------|---------|
+| Luke Ross GTA5 FAQ | FOV must match HMD; UniversalFOVFix | HMD pose + pitch overrides | FOV site, not canvas lie |
+| Halo-MCC-VR | Engine FOV 120 | True per-eye same-frame | FOV first, then same-frame |
+| L4D2VR | GetProjectionRaw → cover FOV + TextureBounds | VRScale + eye origins | We already split F7/F8 |
+| UEVR | Per-eye projection matrices | Full 6DoF | Rage has no UE stereo path |
+| FusionFix fixes.ixx | `CCam+0x60 += n*5` after cam process | N/A | **Mode 35 chain-hook** |
 
 When the VC VR **source** is published later: read `src/vr/` + librw stereo/swapchain path first — not controller physics.

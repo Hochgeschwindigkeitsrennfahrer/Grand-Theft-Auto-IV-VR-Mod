@@ -258,7 +258,7 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 int ParseModeFile(const char* buf, size_t n) {
   if (n >= 2 && buf[0] >= '1' && buf[0] <= '3' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 34)
+    if (v <= 35)
       return v;
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
@@ -287,7 +287,7 @@ void ReloadStereoMode() {
   if (n > 0)
     v = ParseModeFile(buf, n);
   int prev = g_mode.load();
-  if (v >= 0 && v <= 34) {
+  if (v >= 0 && v <= 35) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -305,7 +305,8 @@ void ReloadStereoMode() {
                            v == static_cast<int>(StereoMode::SameFrameReplayDual) ||
                            v == static_cast<int>(StereoMode::SameFrameVsParentDual) ||
                            v == static_cast<int>(StereoMode::SameFrameLateVsParentDual) ||
-                           v == static_cast<int>(StereoMode::SameFrameVsRetCallerDual))) {
+                           v == static_cast<int>(StereoMode::SameFrameVsRetCallerDual) ||
+                           v == static_cast<int>(StereoMode::FovRecomputeSite))) {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadWorldScale();
@@ -318,7 +319,7 @@ void ReloadStereoMode() {
 }
 
 void WriteStereoModeFile(int mode) {
-  if (mode < 0 || mode > 34)
+  if (mode < 0 || mode > 35)
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -351,7 +352,8 @@ bool UsesAngleCorrectCanvas(StereoMode mode) {
          mode == StereoMode::VsParentCountProbe || mode == StereoMode::PhaseDualDeviceVs ||
          mode == StereoMode::SameFrameReplayDual || mode == StereoMode::SameFrameVsParentDual ||
          mode == StereoMode::SameFrameLateVsParentDual ||
-         mode == StereoMode::SameFrameVsRetCallerDual;
+         mode == StereoMode::SameFrameVsRetCallerDual ||
+         mode == StereoMode::FovRecomputeSite;
 }
 
 float GetStereoSepMeters() {
@@ -526,6 +528,26 @@ bool GetFovPatchConfig(int* offsetBytes, float* scale) {
   *offsetBytes = s_off.load();
   *scale = s_scale.load();
   return true;
+}
+
+float GetFovAddDegrees() {
+  static std::atomic<float> s_add{-1.f};
+  if (s_add.load() < 0.f) {
+    char buf[16]{};
+    int deg = 0;
+    float add = 0.f;
+    if (ReadSmallFile("gtaiv_dxvk_vr.fovadd", buf, sizeof(buf)) > 0 &&
+        sscanf_s(buf, "%d", &deg) == 1 && deg >= 0 && deg <= 40) {
+      add = static_cast<float>(deg);
+      Log("Config: fovadd=%.0f deg (gtaiv_dxvk_vr.fovadd) — ADD at CCam+0x60 after recompute; "
+          "kill: delete file or set 0",
+          add);
+    } else {
+      Log("Config: fovadd=0 (absent) — Mode 35 FOV site READ-ONLY log");
+    }
+    s_add.store(add);
+  }
+  return s_add.load();
 }
 
 void PollWorldScaleHotkey() {

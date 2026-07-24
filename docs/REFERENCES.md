@@ -71,8 +71,20 @@ All important external links for this project.
 | Parallel projection (OpenMR) | https://forum.openmr.com/t/why-do-some-games-require-parallel-projection-but-others-dont/29411 | Apps that ignore eye rotation break on canted HMDs |
 | GTA V R.E.A.L. FAQ (public) | https://github.com/LukeRoss00/gta5-real-mod | FOV match HMD; AER; pitch override; body/helmet fixes — inspiration only |
 | Halo MCC VR | https://github.com/pancreations/Halo-MCC-VR | Same-frame stereo + wide FOV priority |
+| UEVR (praydog) | https://github.com/praydog/UEVR | Native per-eye view+proj; do not fake FOV in compositor |
+| FusionFix Custom FOV | https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix `fixes.ixx` | Hook cam process CALL → `*(CCam+0x60) += n*5` — **our Mode 35 site** |
+| FusionFix FOV issue #1326 | https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix/issues/1326 | Hipfire/driving FOV instruction RVAs (classic); additive preferred |
 
-## Related (optional, not a prerequisite)
+## Flat→VR presence lessons (research 2026-07-24 evening)
+
+| Approach | Kills “monitor on face”? | Breaks look-around? | Transfer to GTA IV CE |
+|----------|--------------------------|---------------------|------------------------|
+| **True engine FOV ≈ HMD** (Luke/Halo/L4D2) | Yes — fills frustum, correct scale | No if canvas/submit uses **true** tangents | Mode **35** = FusionFix CCam+0x60 site ADD |
+| Claimed canvas FOV / zoom | Fake fill | **Yes** (warp) — REJECTED | Do not re-enable |
+| FusionFix menu FOV alone | Partial | Look-up warp with our old path | Keep menu at **0**; we own ADD via `fovadd` |
+| Theater / OpenVR quad | Menus only | N/A | Later (Mode C deferred) |
+| Stretched BB / nullptr Submit | No — diplopia | Yes | Mode 14 canvas already fixed |
+| Independent VR cam vs wall collision | Presence near walls | Invasive | Deferred (`PLAN_NEXT`) |
 
 ASI + D3D11 + OpenXR (WMR): `Documents\gtaiv-openxr` — separate home guide there: `gtaiv-openxr\docs\HOME_CURSOR.md`.  
 **This repo is standalone** and does not require it.

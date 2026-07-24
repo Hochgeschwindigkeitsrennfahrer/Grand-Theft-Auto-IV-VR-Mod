@@ -163,6 +163,13 @@ enum class StereoMode : int {
   // 0x4DDAD0 COUNT ok but vsPatch=0/vsCallsR=0 (no parallax). Forbidden list
   // includes 0x4DDAD0. Fail/COUNT-ok → write stereo=30. Kill → 30/26.
   SameFrameVsRetCallerDual = 34,
+  // Mode 30 pair-hold rendering + FusionFix-style FOV recompute-site hook:
+  // chain-hook the cam process CALL that finalizes CCam+0x60 (same AOB as
+  // FusionFix PREF_CUSTOMFOV), then ADD degrees from gtaiv_dxvk_vr.fovadd.
+  // Additive (not absolute pin) preserves aim/sniper zoom. Mode 17 wrote
+  // mat+0x50 (=CCam+0x60) after CopyMat and lost to recompute — this writes
+  // AFTER the recompute. Kill: stereo=30 + delete fovadd. Not FusionFix menu.
+  FovRecomputeSite = 35,
 };
 
 StereoMode GetStereoMode();
@@ -215,5 +222,9 @@ int GetVehicleFollowMode();
 
 // gtaiv_dxvk_vr.fovpatch: "<offsetBytes> <scalePercent>" for Mode 17.
 bool GetFovPatchConfig(int* offsetBytes, float* scale);
+
+// gtaiv_dxvk_vr.fovadd: degrees to ADD at CCam+0x60 after cam FOV recompute
+// (FusionFix-style; Mode 35). 0 / absent = read-only log. Clamp 0..40.
+float GetFovAddDegrees();
 
 }  // namespace asi

@@ -4,6 +4,14 @@ Read with `docs/CURRENT-STATE.md` and `docs/HANDOFF_GROK.md`.
 
 ---
 
+## Session note 2026-07-24 ~18:20 — Mode 35 FOV recompute spike
+
+Research (Luke/Halo/L4D2/UEVR/FusionFix): **true engine FOV** kills monitor-on-face; canvas zoom / claimed FOV warp = REJECTED.  
+**Shipped:** Mode **35** = Mode 30 pair-hold + chain-hook FusionFix Custom FOV CALL → ADD at `CCam+0x60` via `gtaiv_dxvk_vr.fovadd`.  
+Playable fallback stays **30**. Independent VR cam still deferred.
+
+---
+
 ## Session note 2026-07-24 ~18:00 — canvas zoom KILLED
 
 Headset: `gtaiv_dxvk_vr.zoom` claimed-FOV warp made every head move warp the world (same class as FusionFix FOV look-up warp).  
@@ -24,6 +32,10 @@ Invasive: culling, weapons, shadows, HUD. Keep PedHide + eyefwd for head embed; 
 
 COUNT may probe; **dual stays DISABLED** (`0x4DDAD0` vsPatch=0). New read-only `VsRetStatic:` E8→`0x2C73E` scan logs safe CC-pad starts for a future same-frame attempt. Playable = **30**.
 
+### Mode 35 theater/quad A/B
+
+Research: theater = menus/cutscenes only (Luke/VC VR). Not the presence fix. Skip unless FOV site fails.
+
 ---
 
 ## 1. What the last tests proved
@@ -34,8 +46,9 @@ COUNT may probe; **dual stays DISABLED** (`0x4DDAD0` vsPatch=0). New read-only `
 | Mode 26, scale 150%, IPD×scale | **top** | **gone** | **violent** | effective eye sep ≈ 9 cm |
 | Mode 26, scale 150% 6DoF only, IPD = HMD ~6 cm | too big again | jump less | better | size feel was mostly from **extra parallax**, not 6DoF |
 | Mode 30 + canvas zoom 85 | less telephoto? | — | **warp on head move** | **REJECTED** — kill zoom |
+| Mode 35 + fovadd | TBD headset | keep Mode30 path | — | engine FOV ADD at recompute |
 
-**Conclusion:** F7 “WorldScale” was doing two jobs at once (L4D2-style). Cranking it for size also cranked stereo disparity → temporal stereo cannot fuse that. Decoupling was correct for fusion; size must be fixed by **another lever** (real engine FOV later — not claimed canvas FOV).
+**Conclusion:** F7 “WorldScale” was doing two jobs at once (L4D2-style). Cranking it for size also cranked stereo disparity → temporal stereo cannot fuse that. Decoupling was correct for fusion; size must be fixed by **another lever** (real engine FOV — Mode 35 — not claimed canvas FOV).
 
 ---
 
@@ -63,7 +76,7 @@ Repo: https://github.com/pancreations/Halo-MCC-VR (OpenXR, D3D11 — different s
 | Halo practice | Meaning for GTA IV |
 |---------------|--------------------|
 | **True per-eye stereo same-frame** | Our #1 remaining stereo bug is temporal. Same-frame is mandatory for “real 3D” without jump. |
-| **Engine FOV ≈ 120** (user setting) | Their #1 display rule: wrong FOV = wrong scale + edge pop-in. For us: **raise Rage vertical FOV** (Mode 16/17 path), not square resolution / not canvas zoom. |
+| **Engine FOV ≈ 120** (user setting) | Their #1 display rule: wrong FOV = wrong scale + edge pop-in. For us: **raise Rage vertical FOV** (Mode 35 / FusionFix site), not square resolution / not canvas zoom. |
 | **`resolution_scale` ≠ world/IPD** | Separate knobs. We must keep **F7 size** and **F8 IPD** separate (already started). |
 | **Motion blur off** | Reduces stereo echo / smear. Check FusionFix / GTA blur settings. |
 | **FSR off (breaks VR scale)** | Analog: don’t let post-process stretch fight the canvas. |
@@ -79,7 +92,7 @@ Do **not** copy their OpenXR/D3D11 code 1:1. Copy the **priority order**: FOV fi
 
 **A1. Soft stereo scale** — shipped (`stereoscale`). Keep.
 
-**A2. Engine FOV (Halo lesson)** — Mode 17 proved `+80` recomputed. Next: recompute-site hook. Kill: stereo 30/26.  
+**A2. Engine FOV (Halo lesson)** — Mode **35** FOV recompute site + `fovadd`. Headset-verify.  
 **A2-REJECTED:** canvas `zoom` claimed-FOV (warp).
 
 **A3. Motion blur off** — FusionFix. Keep.
@@ -111,11 +124,12 @@ Do **not** copy their OpenXR/D3D11 code 1:1. Copy the **priority order**: FOV fi
 
 ## 6. Suggested next session (pick ONE)
 
-→ **Headset:** Mode 30 + ipd=1 + zoom OFF — confirm no warp, fusion at 1 cm.  
-→ **Same-frame:** pick one `VsRetStatic safe=1` RVA, COUNT-only, still no dual until vsPatch>0.  
-→ **Engine FOV recompute** (size without warp).
+→ **Headset:** Mode **35** + `fovadd=15` — less monitor-on-face? No look-warp?  
+→ Kill → stereo **30**, delete `fovadd`.  
+→ If FOV good: keep `fovadd` and return stereo to **30** (hook can be enabled for 30 later) OR stay on 35.  
+→ **Same-frame:** pick one `VsRetStatic safe=1` RVA, COUNT-only.
 
-Protect playable: **`stereo=30`**, **`ipd=1`**, pedhide/eyefwd/scale/stereoscale unchanged.
+Protect playable: **`stereo=30`** fallback, **`ipd=1`**, pedhide/eyefwd/scale/stereoscale unchanged.
 
 ---
 
@@ -123,7 +137,8 @@ Protect playable: **`stereo=30`**, **`ipd=1`**, pedhide/eyefwd/scale/stereoscale
 
 | File / key | Role now |
 |------------|----------|
-| `gtaiv_dxvk_vr.stereo` = **`30`** | Pair-hold playable (kill → `26` or `0`) |
+| `gtaiv_dxvk_vr.stereo` = **`30`** (test **`35`**) | Pair-hold / FOV site test |
+| `gtaiv_dxvk_vr.fovadd` | Degrees ADD at CCam+0x60 (Mode 35). Kill = delete/`0` |
 | `gtaiv_dxvk_vr.ipd` = **`1`** | Closest F8 preset (cycles 1,2,3,4,6,7,10) |
 | `gtaiv_dxvk_vr.scale` = `50` | 6DoF head move only |
 | `gtaiv_dxvk_vr.stereoscale` = `125` | Soft disparity |

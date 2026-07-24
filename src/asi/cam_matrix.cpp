@@ -639,5 +639,86 @@ void PushLiveCamToD3D(IDirect3DDevice9* device) {
   }
 }
 
+// ---- Mode 35: FusionFix FOV recompute site (CCam+0x60) ----------------------
+// FusionFix hooks the same CALL and does: orig(); *(this+0x60) += n*5.
+// Mode 17 wrote mat+0x50 after CopyMat and lost to this recompute. We chain
+// AFTER the current target (often FusionFix stub with FOV=0) so our ADD sticks.
+using CamFovSite_t = void(__fastcall*)(void* self, void* edx);
+CamFovSite_t g_origCamFovSite = nullptr;
+std::atomic<bool> g_fovSiteOk{false};
+std::atomic<uint32_t> g_fovSiteCalls{0};
+
+void __fastcall HookCamFovSite(void* self, void* edx) {
+  if (g_origCamFovSite)
+    g_origCamFovSite(self, edx);
+  if (!self)
+    return;
+  __try {
+    float* fov = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(self) + 0x60);
+    const float before = *fov;
+    if (!std::isfinite(before) || before < 5.f || before > 160.f)
+      return;
+    const float add = GetFovAddDegrees();
+    float after = before;
+    if (add > 0.05f) {
+      after = before + add;
+      if (after > 130.f)
+        after = 130.f;
+      *fov = after;
+    }
+    const uint32_t n = ++g_fovSiteCalls;
+    if (n <= 4 || (n % 600) == 0)
+      Log("FovSite: #%u CCam+0x60 %.3f -> %.3f (add=%.0f) self=%p", n, before, after, add,
+          self);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    static bool once = false;
+    if (!once) {
+      once = true;
+      Log("FovSite: EXCEPTION reading/writing CCam+0x60 — disabled for process");
+    }
+    g_fovSiteOk.store(false);
+  }
+}
+
+bool InstallFovRecomputeSiteHook() {
+  if (g_fovSiteOk.load())
+    return true;
+  // Same AOBs as FusionFix fixes.ixx "Custom FOV" (CE + classic patterns).
+  static const char* kPatterns[] = {
+      "E8 ? ? ? ? F6 87 ? ? ? ? ? 5B",
+      "E8 ? ? ? ? 8B CE E8 ? ? ? ? F6 86 ? ? ? ? ? 5F",
+  };
+  uintptr_t site = 0;
+  const char* hitPat = nullptr;
+  for (const char* pat : kPatterns) {
+    site = FindPattern(nullptr, pat);
+    if (site) {
+      hitPat = pat;
+      break;
+    }
+  }
+  if (!site) {
+    Log("FovSite: AOB MISS (FusionFix Custom FOV CALL) — Mode 35 FOV write unavailable");
+    return false;
+  }
+  const uintptr_t orig = HookCallSite(site, reinterpret_cast<void*>(&HookCamFovSite));
+  if (!orig) {
+    Log("FovSite: hook FAIL site=%p", reinterpret_cast<void*>(site));
+    return false;
+  }
+  g_origCamFovSite = reinterpret_cast<CamFovSite_t>(orig);
+  g_fovSiteOk.store(true);
+  HMODULE exe = GetModuleHandleA(nullptr);
+  const uintptr_t rva = site - reinterpret_cast<uintptr_t>(exe);
+  Log("FovSite: hooked CALL @ %p exeRva=0x%X (FusionFix FOV recompute; chain→%p; "
+      "add via gtaiv_dxvk_vr.fovadd)",
+      reinterpret_cast<void*>(site), static_cast<unsigned>(rva),
+      reinterpret_cast<void*>(orig));
+  (void)hitPat;
+  // Force config log once.
+  (void)GetFovAddDegrees();
+  return true;
+}
+
 }  // namespace asi
 
