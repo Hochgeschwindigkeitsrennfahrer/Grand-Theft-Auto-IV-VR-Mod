@@ -256,10 +256,10 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  // Two-digit modes 10..41 (Mode 41 = read-only replay-chain probe). Cap must track enum max.
+  // Two-digit modes 10..42 (Mode 42 = read-only indirect-call decoder). Cap must track enum max.
   if (n >= 2 && buf[0] >= '1' && buf[0] <= '4' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 41)
+    if (v <= 42)
       return v;
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
@@ -288,7 +288,7 @@ void ReloadStereoMode() {
   if (n > 0)
     v = ParseModeFile(buf, n);
   int prev = g_mode.load();
-  if (v >= 0 && v <= 41) {
+  if (v >= 0 && v <= 42) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -313,7 +313,8 @@ void ReloadStereoMode() {
                            v == static_cast<int>(StereoMode::AerPoseSubmit) ||
                            v == static_cast<int>(StereoMode::FovCanvasLowMotion) ||
                            v == static_cast<int>(StereoMode::FovCanvasMotionGuard) ||
-                           v == static_cast<int>(StereoMode::ReplayCallChainProbe))) {
+                           v == static_cast<int>(StereoMode::ReplayCallChainProbe) ||
+                           v == static_cast<int>(StereoMode::ReplayOwnerCountProbe))) {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadWorldScale();
@@ -326,7 +327,7 @@ void ReloadStereoMode() {
 }
 
 void WriteStereoModeFile(int mode) {
-  if (mode < 0 || mode > 41)
+  if (mode < 0 || mode > 42)
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -347,9 +348,7 @@ StereoMode GetStereoMode() {
 
 bool IsTemporalStereoMode(StereoMode mode) {
   return mode == StereoMode::DualRtSubmit ||
-         (mode >= StereoMode::StereoFusion && mode <= StereoMode::CamFovWrite) ||
-         mode == StereoMode::FovCanvasMotionGuard ||
-         mode == StereoMode::ReplayCallChainProbe;
+         (mode >= StereoMode::StereoFusion && mode <= StereoMode::CamFovWrite);
 }
 
 bool UsesAngleCorrectCanvas(StereoMode mode) {
@@ -368,7 +367,8 @@ bool UsesAngleCorrectCanvas(StereoMode mode) {
          mode == StereoMode::AerPoseSubmit ||
          mode == StereoMode::FovCanvasLowMotion ||
          mode == StereoMode::FovCanvasMotionGuard ||
-         mode == StereoMode::ReplayCallChainProbe;
+         mode == StereoMode::ReplayCallChainProbe ||
+         mode == StereoMode::ReplayOwnerCountProbe;
 }
 
 float GetStereoSepMeters() {

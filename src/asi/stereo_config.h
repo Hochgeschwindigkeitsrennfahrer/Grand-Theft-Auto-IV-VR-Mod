@@ -199,6 +199,12 @@ enum class StereoMode : int {
   // It installs no game-function hook and never duplicates draws. It maps a
   // future same-tick seam; it is NOT distinct-eye same-frame stereo. Kill: 40/37/30.
   ReplayCallChainProbe = 41,
+  // Mode 41's frequent 0x30D13 stack node resolves near 0x309D0, but the original
+  // decoder only recognized E8 and FF 15 calls. Mode 42 remains READ-ONLY and
+  // decodes the exact preceding FF /2 indirect-call form (including vtable calls)
+  // before any game-function hook can even be considered. It keeps Mode 40's
+  // temporal motion guard; it never calls/replays a game function or changes view.
+  ReplayOwnerCountProbe = 42,
 };
 
 StereoMode GetStereoMode();

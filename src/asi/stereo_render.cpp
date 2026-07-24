@@ -99,7 +99,7 @@ bool g_submitPoseRValid = false;
 bool UsesFovComfortPath(StereoMode mode) {
   return mode == StereoMode::FovCanvasComfort || mode == StereoMode::AerPoseSubmit ||
          mode == StereoMode::FovCanvasLowMotion || mode == StereoMode::FovCanvasMotionGuard ||
-         mode == StereoMode::ReplayCallChainProbe;
+         mode == StereoMode::ReplayCallChainProbe || mode == StereoMode::ReplayOwnerCountProbe;
 }
 
 bool UsesTrueFovCanvasPublish(StereoMode mode) {
@@ -130,8 +130,8 @@ void SnapshotHoldPose(bool rightEye) {
 // pair. Re-canvas the CURRENT R frame into both eye textures instead.
 bool Mode40NeedsMonoGuard(float* outRotDeg, float* outMoveCm) {
   const StereoMode mode = GetStereoMode();
-  if ((mode != StereoMode::FovCanvasMotionGuard && mode != StereoMode::ReplayCallChainProbe) ||
-      !g_holdPoseLValid || !g_holdPoseRValid)
+  if ((mode != StereoMode::FovCanvasMotionGuard && mode != StereoMode::ReplayCallChainProbe &&
+       mode != StereoMode::ReplayOwnerCountProbe) || !g_holdPoseLValid || !g_holdPoseRValid)
     return false;
   const vr::HmdMatrix34_t& l = g_holdPoseL;
   const vr::HmdMatrix34_t& r = g_holdPoseR;
@@ -3996,11 +3996,16 @@ void Mode41NoteFrameNode(uint32_t retRva, uint8_t slot) {
 }
 
 const char* Mode41CallBeforeReturn(uintptr_t base, uint32_t retRva, uint32_t* outCallRva,
-                                   uint32_t* outTargetRva) {
+                                   uint32_t* outTargetRva, uint8_t* outModrm,
+                                   uint8_t* outLength) {
   if (outCallRva)
     *outCallRva = 0;
   if (outTargetRva)
     *outTargetRva = 0;
+  if (outModrm)
+    *outModrm = 0;
+  if (outLength)
+    *outLength = 0;
   const uintptr_t ret = base + retRva;
   if (ret < base + 6)
     return "none";
@@ -4023,6 +4028,44 @@ const char* Mode41CallBeforeReturn(uintptr_t base, uint32_t retRva, uint32_t* ou
     if (outCallRva)
       *outCallRva = retRva - 6;
     return "FF15";
+  }
+  // x86's FF /2 covers vtable and register-indirect calls too. Mode 41 only
+  // recognized FF 15, so common forms such as `FF 90 disp32` appeared to have
+  // no caller at all. Decode the instruction length only; never dereference the
+  // operand or alter execution. This is the missing evidence for 0x30D13.
+  for (uint8_t len = 2; len <= 7; ++len) {
+    const uint8_t* p = b - len;
+    if (p[0] != 0xFF || ((p[1] >> 3) & 7) != 2)
+      continue;
+    const uint8_t mod = p[1] >> 6;
+    const uint8_t rm = p[1] & 7;
+    uint8_t expected = 2;
+    if (rm == 4) {
+      const uint8_t sib = p[2];
+      if (mod == 0 && (sib & 7) == 5)
+        expected = 6;
+      else if (mod == 1)
+        expected = 3;
+      else if (mod == 2)
+        expected = 6;
+    } else if (mod == 0 && rm == 5) {
+      expected = 6;
+    } else if (mod == 1) {
+      expected = 3;
+    } else if (mod == 2) {
+      expected = 6;
+    }
+    if (mod == 3)
+      expected = 2;
+    if (expected != len)
+      continue;
+    if (outCallRva)
+      *outCallRva = retRva - len;
+    if (outModrm)
+      *outModrm = p[1];
+    if (outLength)
+      *outLength = len;
+    return "FF/2";
   }
   return "none";
 }
@@ -4047,8 +4090,10 @@ void Mode41FinishFrame() {
 
   if (es > 8 && (es % 90) != 0)
     return;
-  Log("Mode41: replay-chain epoch=%u VsRetHits=%u nodes=%d tid=%u SameFrame=0 distinctEyes=0",
-      es, g_mode41VsRetHits.load(), g_mode41AggN, g_mode41VsTid);
+  const bool mode42 = GetStereoMode() == StereoMode::ReplayOwnerCountProbe;
+  const char* label = mode42 ? "Mode42" : "Mode41";
+  Log("%s: replay-chain epoch=%u VsRetHits=%u nodes=%d tid=%u SameFrame=0 distinctEyes=0",
+      label, es, g_mode41VsRetHits.load(), g_mode41AggN, g_mode41VsTid);
   int order[96]{};
   int count = g_mode41AggN;
   for (int i = 0; i < count; ++i)
@@ -4076,10 +4121,18 @@ void Mode41FinishFrame() {
     if (fn)
       (void)Mode32ClassifyPrologue(fn, &abi);
     uint32_t callRva = 0, targetRva = 0;
-    const char* call = Mode41CallBeforeReturn(base, node.retRva, &callRva, &targetRva);
-    Log("Mode41: CHAIN slot=%u ret=0x%X fn=0x%X abi=%s call=%s@0x%X->0x%X "
-        "frames=%u hits=%u hook=NO",
-        node.slot, node.retRva, fnRva, abi, call, callRva, targetRva, node.frames, node.hits);
+    uint8_t modrm = 0, callLen = 0;
+    const char* call =
+        Mode41CallBeforeReturn(base, node.retRva, &callRva, &targetRva, &modrm, &callLen);
+    Log("%s: CHAIN slot=%u ret=0x%X fn=0x%X abi=%s call=%s@0x%X->0x%X "
+        "modrm=0x%02X len=%u frames=%u hits=%u hook=NO",
+        label, node.slot, node.retRva, fnRva, abi, call, callRva, targetRva, modrm, callLen,
+        node.frames, node.hits);
+    if (mode42 && node.retRva == 0x30D13) {
+      Log("Mode42: OWNER-EDGE ret=0x30D13 enclosing=0x%X abi=%s call=%s@0x%X "
+          "modrm=0x%02X len=%u cadenceFrames=%u hits=%u hook=NO replay=NO",
+          fnRva, abi, call, callRva, modrm, callLen, node.frames, node.hits);
+    }
   }
 }
 
@@ -4160,7 +4213,8 @@ void __fastcall HookExecA(void* self, void* edx) {
   if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
       mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort ||
       mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion ||
-      mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe) {
+      mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe ||
+      mode == StereoMode::ReplayOwnerCountProbe) {
     const int ph = g_mode30Phase.load();
     if (ph != static_cast<int>(Mode30Phase::Dual) || g_execDualDead.load()) {
       g_origExecA(self, edx);
@@ -4767,7 +4821,7 @@ bool InstallStereoRenderHooks() {
     return true;
 
   ReloadStereoMode();
-  const StereoMode mode = GetStereoMode();
+  StereoMode mode = GetStereoMode();
   if (mode == StereoMode::Off) {
     Log("StereoRender: mode 0 - skipped");
     return false;
@@ -4909,7 +4963,8 @@ bool InstallStereoRenderHooks() {
   if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
       mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort ||
       mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion ||
-      mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe) {
+      mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe ||
+      mode == StereoMode::ReplayOwnerCountProbe) {
     // Pair-hold only: same install surface as Mode 26 (no exec dual hooks).
     // Device-VS dual was probed this session (mode30dev=0) — do not re-arm.
     SetStereoEye(StereoEye::Left);
@@ -4970,6 +5025,20 @@ bool InstallStereoRenderHooks() {
           g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
       Log("StereoRender: Mode41 cannot claim SameFrame/DISTINCT eyes; kill-switch - stereo=40, "
           "37, or 30 + delete gtaiv_dxvk_vr.fovadd");
+    } else if (mode == StereoMode::ReplayOwnerCountProbe) {
+      const bool fovOk = InstallFovRecomputeSiteHook();
+      g_mode40MonoPairs.store(0);
+      g_mode41FrameN = 0;
+      g_mode41AggN = 0;
+      g_mode41VsRetHits.store(0);
+      g_mode41Es.store(0);
+      g_mode41VsTid = 0;
+      Log("StereoRender: mode 42 INDIRECT-CALL PROBE (Mode40 true-FOV pair-hold + motion "
+          "guard; READ-ONLY FF /2 decoder around 0x309D0; no game hook, no replay) "
+          "ok=%d fovSite=%d",
+          g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: Mode42 cannot claim SameFrame/DISTINCT eyes; kill-switch - stereo=41, "
+          "40, 37, or 30 + delete gtaiv_dxvk_vr.fovadd");
     } else if (mode == StereoMode::FovRecomputeTrueCanvas) {
       const bool fovOk = InstallFovRecomputeSiteHook();
       Log("StereoRender: mode 36 FOV-RECOMPUTE + TRUE-CANVAS + Mode30 pair-hold "
@@ -5299,11 +5368,12 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
     return;
   }
 
-    // Mode 30 / 35..41: pair-hold temporal only (device-VS dual proven dead — mode30dev=0).
+    // Mode 30 / 35..42: pair-hold temporal only (device-VS dual proven dead — mode30dev=0).
     if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
         mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort ||
         mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion ||
-        mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe) {
+        mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe ||
+        mode == StereoMode::ReplayOwnerCountProbe) {
       g_dualDoneThisFrame = false;
       g_skipExecA = g_skipExecC = g_skipExecD = 0;
       IDirect3DSurface9* bb = nullptr;
@@ -5321,7 +5391,8 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
       // Keep phase on PairHold even if an older build left SoftStart/Dual.
       g_mode30Phase.store(static_cast<int>(Mode30Phase::PairHold));
       g_execDualDead.store(true);
-      if (mode == StereoMode::ReplayCallChainProbe)
+      if (mode == StereoMode::ReplayCallChainProbe ||
+          mode == StereoMode::ReplayOwnerCountProbe)
         Mode41OnEndScene(device);
       else
         TemporalCapturePairHold(device);
@@ -5721,7 +5792,8 @@ void StereoMode34CollectVsRetCallers(void* retAddr, void* hookSpWords) {
 }
 
 bool StereoMode41WantsTrace() {
-  return GetStereoMode() == StereoMode::ReplayCallChainProbe;
+  const StereoMode mode = GetStereoMode();
+  return mode == StereoMode::ReplayCallChainProbe || mode == StereoMode::ReplayOwnerCountProbe;
 }
 
 void StereoMode41CollectVsRetChain(void* retAddr, void* hookSpWords) {
@@ -5750,7 +5822,8 @@ void StereoMode41CollectVsRetChain(void* retAddr, void* hookSpWords) {
   static int s_sample = 0;
   if (s_sample < 8) {
     ++s_sample;
-    Log("Mode41: VsRet sample#%d tid=%u (stack slots retained; no hook/dual)", s_sample, tid);
+    Log("%s: VsRet sample#%d tid=%u (stack slots retained; no hook/dual)",
+        GetStereoMode() == StereoMode::ReplayOwnerCountProbe ? "Mode42" : "Mode41", s_sample, tid);
   }
 }
 

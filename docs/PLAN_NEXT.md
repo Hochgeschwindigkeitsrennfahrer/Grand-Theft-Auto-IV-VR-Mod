@@ -29,6 +29,21 @@ Mode 34 dual.
 
 ---
 
+## Session note 2026-07-24 ~19:50 — Mode 42 resolved the indirect edge
+
+Mode 42 deployed as another **read-only** Mode-40-compatible build. The live replay chain now proves
+that `0x30D13` returns from `FF 90 disp32`: `FF /2@0x30D0D`, ModRM `0x90`, length 6. In other words,
+the frequent `0x309D0` chain node is reached through `call [eax+disp32]`, not a directly callable
+owner function. `mode=42` paired submit remained healthy, and the log honestly reports
+`SameFrame=0 distinctEyes=0`, `hook=NO`, and `replay=NO`.
+
+**Next safe probe:** observe `eax` plus the resolved `[eax+disp32]` vtable target at that exact
+indirect call site, without invoking it. Do not count-hook/replay `0x309D0` based on its outer
+thiscall-looking prologue alone. The target's object lifetime and ABI must be proven before a
+same-tick dual attempt.
+
+---
+
 ## Session note 2026-07-24 ~19:45 — Mode 39 rejected; Mode 37 restored
 
 **User feedback:** Mode 39 brought black bars back and did not improve jumping or FPS. This is
