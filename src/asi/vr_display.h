@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 #include <openvr.h>
 
 struct IDirect3DDevice9;
@@ -16,6 +18,19 @@ bool GetCoverFovTangents(float* tanHalfHoriz, float* tanHalfVert);
 
 void UpdateGameFovFromDevice(IDirect3DDevice9* device);
 
+// Mode 36: publish TRUE engine FOV from CCam+0x60 (after fovadd write).
+// Rage ignores D3DTS_PROJECTION (Mode 15 dead) — canvas must NOT trust GetTransform.
+// ccamDeg = live CCam FOV degrees; aspectWH = backbuffer W/H (0 = last known / 16:9).
+// Conversion: Mode 16 probe — CCam 45° → rendered V ≈ 58.7° (factor 58.7/45).
+void PublishGameFovFromCCamDegrees(float ccamDeg, float aspectWH = 0.f);
+bool IsGameFovFromCCamActive();
+// Monotonic counter bumped when gameTan changes from CCam (StereoCanvas re-logs).
+uint32_t GetGameFovPublishGeneration();
+
+// Last backbuffer aspect (W/H); updated by UpdateGameFovFromDevice / EndScene.
+void SetBackbufferAspect(float aspectWH);
+float GetBackbufferAspect();
+
 // Mode 13: game BB aspect + optional center-square crop (Luke Ross style) + HMD inset.
 // Does NOT render at SteamVR recommended res — Submit uses the game backbuffer as-is.
 bool GetNativeFovInsetBounds(vr::EVREye eye, vr::VRTextureBounds_t* out);
@@ -25,7 +40,7 @@ bool GetNativeFovInsetBounds(vr::EVREye eye, vr::VRTextureBounds_t* out);
 bool GetEyeRawProjection(vr::EVREye eye, float* left, float* right, float* top, float* bottom);
 
 // Game half-FOV tangents (horizontal/vertical). Sources, in priority order:
-// gtaiv_dxvk_vr.fov (horiz deg 30..150), D3D probe, 70° fallback.
+// CCam publish (Mode 36), gtaiv_dxvk_vr.fov override, D3D probe, 70° fallback.
 // Canvas zoom (gtaiv_dxvk_vr.zoom) is DISABLED — claimed-FOV warp on head move.
 void GetGameFovTangents(float* tanHalfH, float* tanHalfV);
 

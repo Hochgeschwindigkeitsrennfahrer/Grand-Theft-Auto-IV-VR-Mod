@@ -170,6 +170,10 @@ enum class StereoMode : int {
   // mat+0x50 (=CCam+0x60) after CopyMat and lost to recompute — this writes
   // AFTER the recompute. Kill: stereo=30 + delete fovadd. Not FusionFix menu.
   FovRecomputeSite = 35,
+  // Mode 35 + canvas reads TRUE CCam FOV after fovadd (not stale D3DTS_PROJECTION).
+  // Shrinks black bars without CanvasZoom. Protect Mode 35 as fallback.
+  // Kill: stereo=35 (keep fovadd) or stereo=30 + delete fovadd.
+  FovRecomputeTrueCanvas = 36,
 };
 
 StereoMode GetStereoMode();
@@ -224,7 +228,7 @@ int GetVehicleFollowMode();
 bool GetFovPatchConfig(int* offsetBytes, float* scale);
 
 // gtaiv_dxvk_vr.fovadd: degrees to ADD at CCam+0x60 after cam FOV recompute
-// (FusionFix-style; Mode 35). 0 / absent = read-only log. Clamp 0..40.
+// (FusionFix-style; Mode 35/36). 0 / absent = read-only log. Clamp 0..40.
 float GetFovAddDegrees();
 
 }  // namespace asi

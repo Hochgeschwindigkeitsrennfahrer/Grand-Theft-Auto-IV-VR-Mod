@@ -5,6 +5,7 @@
 #include "ped_hide.h"
 #include "stereo_config.h"
 #include "stereo_eye.h"
+#include "vr_display.h"
 #include "vr_move.h"
 
 #include <d3d9.h>
@@ -639,10 +640,11 @@ void PushLiveCamToD3D(IDirect3DDevice9* device) {
   }
 }
 
-// ---- Mode 35: FusionFix FOV recompute site (CCam+0x60) ----------------------
+// ---- Mode 35/36: FusionFix FOV recompute site (CCam+0x60) ----------------------
 // FusionFix hooks the same CALL and does: orig(); *(this+0x60) += n*5.
 // Mode 17 wrote mat+0x50 after CopyMat and lost to this recompute. We chain
 // AFTER the current target (often FusionFix stub with FOV=0) so our ADD sticks.
+// Mode 36: also publish post-ADD FOV to canvas (Rage ignores D3DTS_PROJECTION).
 using CamFovSite_t = void(__fastcall*)(void* self, void* edx);
 CamFovSite_t g_origCamFovSite = nullptr;
 std::atomic<bool> g_fovSiteOk{false};
@@ -660,16 +662,40 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
       return;
     const float add = GetFovAddDegrees();
     float after = before;
-    if (add > 0.05f) {
-      after = before + add;
-      if (after > 130.f)
-        after = 130.f;
-      *fov = after;
+    // Idempotent ADD: the cam CALL usually resets CCam+0x60 to the base FOV, then
+    // we ADD. Sometimes the CALL leaves our previous write in place — adding again
+    // compounds (67→89) and blows canvas fill past 100% (headset 2026-07-24).
+    // Skip when before ≈ lastWritten (already has our ADD).
+    // Also: only ADD in the normal gameplay FOV band. Cutscene/menu bases (~70+)
+    // must not get +fovadd (load spike 76→98 → 193% fill / heavy crop).
+    static float s_lastWritten = -1.f;
+    constexpr float kGameplayFovHi = 55.f;
+    if (add > 0.05f && before <= kGameplayFovHi) {
+      if (s_lastWritten > 0.f && std::fabs(before - s_lastWritten) < 0.4f) {
+        after = before;
+      } else {
+        after = before + add;
+        if (after > 130.f)
+          after = 130.f;
+        *fov = after;
+        s_lastWritten = after;
+      }
+    } else if (before > kGameplayFovHi) {
+      // Special cam — leave engine FOV alone; clear sticky lastWritten.
+      s_lastWritten = -1.f;
+      after = before;
+    } else {
+      s_lastWritten = -1.f;
     }
+    // Mode 36 only: canvas must track TRUE engine FOV (not stale GetTransform).
+    // Mode 35 baseline left unchanged (protect headset-good warp).
+    const StereoMode sm = GetStereoMode();
+    if (sm == StereoMode::FovRecomputeTrueCanvas)
+      PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
     const uint32_t n = ++g_fovSiteCalls;
     if (n <= 4 || (n % 600) == 0)
-      Log("FovSite: #%u CCam+0x60 %.3f -> %.3f (add=%.0f) self=%p", n, before, after, add,
-          self);
+      Log("FovSite: #%u CCam+0x60 %.3f -> %.3f (add=%.0f) self=%p trueCanvas=%d", n, before,
+          after, add, self, sm == StereoMode::FovRecomputeTrueCanvas ? 1 : 0);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     static bool once = false;
     if (!once) {

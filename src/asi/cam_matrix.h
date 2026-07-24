@@ -36,7 +36,8 @@ void PushLiveCamToD3D(IDirect3DDevice9* device);
 // Row-major 4x4 D3D LH view from live Rage cam. Returns false if no cam.
 bool BuildLiveViewMatrix16(float* out16);
 
-// Mode 35: chain-hook FusionFix FOV recompute CALL (CCam+0x60 after cam process).
+// Mode 35/36: chain-hook FusionFix FOV recompute CALL (CCam+0x60 after cam process).
+// Mode 36 also publishes the post-ADD FOV to the angle-correct canvas.
 // Safe to call repeatedly; installs once. Returns true if AOB+hook OK.
 bool InstallFovRecomputeSiteHook();
 

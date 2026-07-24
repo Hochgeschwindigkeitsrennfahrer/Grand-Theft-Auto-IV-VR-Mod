@@ -478,6 +478,18 @@ void ComputeCanvasSize(uint32_t bbW, uint32_t bbH, uint32_t* outW, uint32_t* out
     h = kCanvasMaxDim;
   *outW = w;
   *outH = h;
+
+  static uint32_t s_loggedGen = 0xFFFFFFFFu;
+  const uint32_t gen = GetGameFovPublishGeneration();
+  if (gen != s_loggedGen && gen > 0) {
+    s_loggedGen = gen;
+    const float fillH = (coverH > 0.05f) ? (gameH / coverH) : 0.f;
+    const float fillV = (coverV > 0.05f) ? (gameV / coverV) : 0.f;
+    Log("StereoCanvasSize: bb=%ux%u canvas=%ux%u sx=%.2f sy=%.2f gameTan=(%.3f,%.3f) "
+        "coverTan=(%.3f,%.3f) fill≈%.0f%%h/%.0f%%v trueFov=%d gen=%u",
+        bbW, bbH, w, h, sx, sy, gameH, gameV, coverH, coverV, fillH * 100.f, fillV * 100.f,
+        IsGameFovFromCCamActive() ? 1 : 0, gen);
+  }
 }
 
 // Mode 14: clear canvas to black, then StretchRect the game backbuffer to the
@@ -607,13 +619,20 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
   }
 
   static bool s_loggedL = false, s_loggedR = false;
+  static uint32_t s_loggedGen = 0;
+  const uint32_t gen = GetGameFovPublishGeneration();
+  if (gen != s_loggedGen) {
+    s_loggedL = s_loggedR = false;
+    s_loggedGen = gen;
+  }
   bool* logged = (eye == vr::Eye_Right) ? &s_loggedR : &s_loggedL;
   if (!*logged) {
     *logged = true;
     Log("StereoCanvas: %s canvas=%ux%u dst=(%ld,%ld)-(%ld,%ld) src=(%ld,%ld)-(%ld,%ld) "
-        "gameTan=(%.3f,%.3f) eyeTan=(%.3f..%.3f, %.3f..%.3f)",
+        "gameTan=(%.3f,%.3f) eyeTan=(%.3f..%.3f, %.3f..%.3f) trueFov=%d gen=%u",
         eye == vr::Eye_Right ? "R" : "L", dd.Width, dd.Height, rc.left, rc.top, rc.right,
-        rc.bottom, src.left, src.top, src.right, src.bottom, gameH, gameV, l, r, t, b);
+        rc.bottom, src.left, src.top, src.right, src.bottom, gameH, gameV, l, r, t, b,
+        IsGameFovFromCCamActive() ? 1 : 0, gen);
   }
   return true;
 }
@@ -3890,8 +3909,9 @@ void __fastcall HookExecA(void* self, void* edx) {
     g_origExecA(self, edx);
     return;
   }
-  // Mode 30/35 soft-start / pair-hold: passthrough native exec; EndScene does temporal.
-  if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite) {
+  // Mode 30/35/36 soft-start / pair-hold: passthrough native exec; EndScene does temporal.
+  if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
+      mode == StereoMode::FovRecomputeTrueCanvas) {
     const int ph = g_mode30Phase.load();
     if (ph != static_cast<int>(Mode30Phase::Dual) || g_execDualDead.load()) {
       g_origExecA(self, edx);
@@ -4575,7 +4595,8 @@ bool InstallStereoRenderHooks() {
     return g_ok.load();
   }
 
-  if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite) {
+  if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
+      mode == StereoMode::FovRecomputeTrueCanvas) {
     // Pair-hold only: same install surface as Mode 26 (no exec dual hooks).
     // Device-VS dual was probed this session (mode30dev=0) — do not re-arm.
     SetStereoEye(StereoEye::Left);
@@ -4589,7 +4610,15 @@ bool InstallStereoRenderHooks() {
     g_pairPromoteCount.store(0);
     g_vsPatchOn.store(false);
     g_ok = InstallRootProbeHooks(2);
-    if (mode == StereoMode::FovRecomputeSite) {
+    if (mode == StereoMode::FovRecomputeTrueCanvas) {
+      const bool fovOk = InstallFovRecomputeSiteHook();
+      Log("StereoRender: mode 36 FOV-RECOMPUTE + TRUE-CANVAS + Mode30 pair-hold "
+          "(CCam FOV after fovadd → canvas tangents; no CanvasZoom; no D3DTS_PROJECTION) "
+          "ok=%d fovSite=%d",
+          g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=35 (keep fovadd) or stereo=30 + delete "
+          "gtaiv_dxvk_vr.fovadd");
+    } else if (mode == StereoMode::FovRecomputeSite) {
       const bool fovOk = InstallFovRecomputeSiteHook();
       Log("StereoRender: mode 35 FOV-RECOMPUTE + Mode30 pair-hold "
           "(FusionFix CCam+0x60 site; fovadd=ADD deg; canvas zoom OFF) ok=%d fovSite=%d",
@@ -4910,8 +4939,9 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
     return;
   }
 
-    // Mode 30 / 35: pair-hold temporal only (device-VS dual proven dead — mode30dev=0).
-    if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite) {
+    // Mode 30 / 35 / 36: pair-hold temporal only (device-VS dual proven dead — mode30dev=0).
+    if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
+        mode == StereoMode::FovRecomputeTrueCanvas) {
       g_dualDoneThisFrame = false;
       g_skipExecA = g_skipExecC = g_skipExecD = 0;
       IDirect3DSurface9* bb = nullptr;
@@ -5041,7 +5071,7 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
       mode != StereoMode::VsParentCountProbe && mode != StereoMode::PhaseDualDeviceVs &&
       mode != StereoMode::SameFrameReplayDual && mode != StereoMode::SameFrameVsParentDual &&
       mode != StereoMode::SameFrameLateVsParentDual && mode != StereoMode::SameFrameVsRetCallerDual &&
-      mode != StereoMode::FovRecomputeSite)
+      mode != StereoMode::FovRecomputeSite && mode != StereoMode::FovRecomputeTrueCanvas)
     return false;
   if (!device || !interop || !g_texL || !g_texR)
     return false;

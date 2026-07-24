@@ -1,13 +1,25 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~18:25  
-**Playable fallback:** stereo **`30`** (pair-hold). **Headset test now:** stereo **`35`** + **`fovadd=15`** (engine FOV ADD at FusionFix recompute site). Keep **`ipd`≥1**, **`scale`/`stereoscale`/`eyefwd`/`pedhide`**. Canvas **zoom DISABLED**. Kill Mode35 → stereo **`30`** + delete **`fovadd`**. Kill PedHide → **`pedhide=0`**.  
+**As of:** 2026-07-24 ~18:45  
+**Playable fallback:** stereo **`30`** (pair-hold). **Protected baseline:** stereo **`35`** + **`fovadd=15`**. **Headset test now:** stereo **`36`** + **`fovadd=22`** (Mode 35 + canvas reads TRUE CCam FOV after ADD). Keep **`ipd`≥1**, **`scale`/`stereoscale`/`eyefwd`/`pedhide`**. Canvas **zoom DISABLED**.  
+Kill Mode36 → stereo **`35`** (keep fovadd) or **`30`** + delete **`fovadd`**. Kill PedHide → **`pedhide=0`**.  
 F8 presets **`1,2,3,4,6,7,10`**. F7 = 6DoF only. Do **not** multiply IPD×WorldScale. Do **not** re-enable FusionFix menu FieldOfView or canvas zoom (we own FOV via `fovadd`).  
 Mode **34:** dual **DISABLED**. Forbidden `0x4DDAD0` / `0x2C6AC` / `0x37BD0` / `0x1BF010`.  
-**Live proof (buildId `20260724-182205`):**  
-`StereoMode: 35` · `FovSite: hooked CALL … exeRva=0x706F7C` · `fovadd=15` ·  
-`FovSite: #1200 CCam+0x60 45.000 -> 60.000 (add=15)` · `mode 35 FOV-RECOMPUTE … fovSite=1` ·  
-`StereoSubmit … mode=35` · `StereoPairHold: promoted pair` · `CanvasZoom: DISABLED` · PedHide `dead=0`.
+**Live proof (buildId `20260724-184022`):**  
+`StereoMode: 36` · `fovadd=22` · `FovSite: #1..#1200 CCam+0x60 45.000 -> 67.000` ·  
+`gameTan from TRUE CCam FOV=67.0 -> tan=(1.699,0.956)` · `StereoCanvasSize: fill≈146%h/90%v trueFov=1` ·  
+`StereoSubmit … mode=36` · `CanvasZoom: DISABLED` · no FOV compound after idempotent+gameplay-band guard.
+
+### Session 2026-07-24 ~18:25–18:45 (Mode 36 true-canvas FOV — fill HMD / kill bars)
+
+**User feedback (Mode 35):** better presence / less warp, still screen-on-face + black bars; protect as baseline; push harder.  
+**Root cause:** engine `fovadd` wrote CCam+0x60, but canvas still used stale `D3DTS_PROJECTION` tangents (Rage ignores that transform — Mode 15 dead) → bars stayed.  
+**Shipped Mode 36:** Mode 35 pair-hold + FOV site + `PublishGameFovFromCCamDegrees` (Mode 16 factor 58.7/45) → canvas/rect track TRUE FOV. No CanvasZoom.  
+**Also fixed:** `ParseModeFile` capped at 35 (file `36` became mode 3!); FOV ADD idempotent (no 67→89 compound); ADD only when base FOV ≤55° (skip cutscene/menu spikes).  
+**Deployed:** stereo=`36`, fovadd=`22` (toward G2 ~94°; vertical fill ~90%). Mode **35** unchanged as kill/protect.  
+**Headset check:** smaller/no bars? Still fused? No look-warp? If bad → stereo **35** or **30**. Try fovadd **18–25** if needed.
+
+**Deferred:** independent VR cam; Mode 34 dual; soft TextureBounds fill; theater quad.
 
 ### Session 2026-07-24 ~18:10–18:25 (Mode 35 FOV recompute — research + spike)
 

@@ -4,6 +4,14 @@ Read with `docs/CURRENT-STATE.md` and `docs/HANDOFF_GROK.md`.
 
 ---
 
+## Session note 2026-07-24 ~18:45 — Mode 36 true-canvas FOV
+
+Mode 35 engine FOV worked but **canvas still used stale D3DTS_PROJECTION** → black bars remained.  
+**Shipped Mode 36:** publish post-`fovadd` CCam FOV → canvas tangents (no CanvasZoom). Deployed **fovadd=22** (~90% v fill). Mode **35** protected as kill.  
+Also: ParseModeFile max 36; idempotent ADD; ADD only if base FOV ≤55°.
+
+---
+
 ## Session note 2026-07-24 ~18:20 — Mode 35 FOV recompute spike
 
 Research (Luke/Halo/L4D2/UEVR/FusionFix): **true engine FOV** kills monitor-on-face; canvas zoom / claimed FOV warp = REJECTED.  
@@ -46,9 +54,10 @@ Research: theater = menus/cutscenes only (Luke/VC VR). Not the presence fix. Ski
 | Mode 26, scale 150%, IPD×scale | **top** | **gone** | **violent** | effective eye sep ≈ 9 cm |
 | Mode 26, scale 150% 6DoF only, IPD = HMD ~6 cm | too big again | jump less | better | size feel was mostly from **extra parallax**, not 6DoF |
 | Mode 30 + canvas zoom 85 | less telephoto? | — | **warp on head move** | **REJECTED** — kill zoom |
-| Mode 35 + fovadd | TBD headset | keep Mode30 path | — | engine FOV ADD at recompute |
+| Mode 35 + fovadd | better presence | keep Mode30 path | — | engine FOV ADD; bars remain (canvas ignored ADD) |
+| Mode 36 + fovadd=22 | ~90% v fill (log) | keep Mode30 path | — | true-canvas FOV; Mode 35 protected |
 
-**Conclusion:** F7 “WorldScale” was doing two jobs at once (L4D2-style). Cranking it for size also cranked stereo disparity → temporal stereo cannot fuse that. Decoupling was correct for fusion; size must be fixed by **another lever** (real engine FOV — Mode 35 — not claimed canvas FOV).
+**Conclusion:** F7 “WorldScale” was doing two jobs at once (L4D2-style). Cranking it for size also cranked stereo disparity → temporal stereo cannot fuse that. Decoupling was correct for fusion; size must be fixed by **another lever** (real engine FOV — Mode 35/36 — not claimed canvas FOV).
 
 ---
 
@@ -124,12 +133,12 @@ Do **not** copy their OpenXR/D3D11 code 1:1. Copy the **priority order**: FOV fi
 
 ## 6. Suggested next session (pick ONE)
 
-→ **Headset:** Mode **35** + `fovadd=15` — less monitor-on-face? No look-warp?  
-→ Kill → stereo **30**, delete `fovadd`.  
-→ If FOV good: keep `fovadd` and return stereo to **30** (hook can be enabled for 30 later) OR stay on 35.  
+→ **Headset:** Mode **36** + `fovadd=22` — smaller bars / more inside? No look-warp? Fusion OK?  
+→ Soft kill → stereo **35** (keep fovadd). Hard kill → **30** + delete `fovadd`.  
+→ Tune fovadd **18–25** if bars or too wide.  
 → **Same-frame:** pick one `VsRetStatic safe=1` RVA, COUNT-only.
 
-Protect playable: **`stereo=30`** fallback, **`ipd=1`**, pedhide/eyefwd/scale/stereoscale unchanged.
+Protect playable: **`stereo=30`** fallback, Mode **35** baseline, **`ipd≥1`**, pedhide/eyefwd/scale/stereoscale unchanged.
 
 ---
 
@@ -137,8 +146,8 @@ Protect playable: **`stereo=30`** fallback, **`ipd=1`**, pedhide/eyefwd/scale/st
 
 | File / key | Role now |
 |------------|----------|
-| `gtaiv_dxvk_vr.stereo` = **`30`** (test **`35`**) | Pair-hold / FOV site test |
-| `gtaiv_dxvk_vr.fovadd` | Degrees ADD at CCam+0x60 (Mode 35). Kill = delete/`0` |
+| `gtaiv_dxvk_vr.stereo` = **`36`** (protect **`35`**, fallback **`30`**) | True-canvas FOV / Mode35 / pair-hold |
+| `gtaiv_dxvk_vr.fovadd` = **`22`** | Degrees ADD at CCam+0x60 (Mode 35/36). Kill = delete/`0` |
 | `gtaiv_dxvk_vr.ipd` = **`1`** | Closest F8 preset (cycles 1,2,3,4,6,7,10) |
 | `gtaiv_dxvk_vr.scale` = `50` | 6DoF head move only |
 | `gtaiv_dxvk_vr.stereoscale` = `125` | Soft disparity |

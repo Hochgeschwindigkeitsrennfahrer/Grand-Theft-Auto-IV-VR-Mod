@@ -37,6 +37,11 @@ float g_rawR[4]{};
 std::atomic<float> g_gameTanH{std::tan(0.5f * 70.f * 3.14159265f / 180.f)};
 std::atomic<float> g_gameTanV{std::tan(0.5f * 70.f * 3.14159265f / 180.f) * 9.f / 16.f};
 std::atomic<bool> g_loggedInset{false};
+// Mode 36: true engine FOV from CCam+0x60 (after fovadd). Blocks D3DTS_PROJECTION
+// probe from clobbering — Rage ignores Set/GetTransform projection (Mode 15 dead).
+std::atomic<bool> g_fovFromCCam{false};
+std::atomic<float> g_bbAspect{16.f / 9.f};
+std::atomic<uint32_t> g_fovPublishGen{0};
 
 float FovFromProjectionRaw(float left, float right) {
   const float fovRad = std::atan(right) - std::atan(left);
@@ -204,6 +209,55 @@ bool GetCoverFovTangents(float* tanHalfHoriz, float* tanHalfVert) {
   return g_tanHalfH > 0.05f && g_tanHalfV > 0.05f;
 }
 
+void SetBackbufferAspect(float aspectWH) {
+  if (aspectWH > 0.5f && aspectWH < 3.f)
+    g_bbAspect.store(aspectWH);
+}
+
+float GetBackbufferAspect() {
+  return g_bbAspect.load();
+}
+
+bool IsGameFovFromCCamActive() {
+  return g_fovFromCCam.load();
+}
+
+uint32_t GetGameFovPublishGeneration() {
+  return g_fovPublishGen.load();
+}
+
+void PublishGameFovFromCCamDegrees(float ccamDeg, float aspectWH) {
+  if (!(ccamDeg >= 5.f) || !(ccamDeg <= 160.f) || !std::isfinite(ccamDeg))
+    return;
+  // Mode 16 probe: CCam 45.000 → rendered vertical ≈ 58.7° (tanV≈0.562 at 16:9).
+  constexpr float kEng = 58.7f / 45.f;
+  float vDeg = ccamDeg * kEng;
+  if (vDeg > 170.f)
+    vDeg = 170.f;
+  const float tanV = std::tan(0.5f * vDeg * 3.14159265f / 180.f);
+  float aspect = aspectWH;
+  if (!(aspect > 0.5f) || !(aspect < 3.f))
+    aspect = g_bbAspect.load();
+  if (!(aspect > 0.5f) || !(aspect < 3.f))
+    aspect = 16.f / 9.f;
+  const float tanH = tanV * aspect;
+  if (!(tanH > 0.05f) || !(tanV > 0.05f) || !(tanH < 5.f) || !(tanV < 5.f))
+    return;
+
+  const float curH = g_gameTanH.load();
+  const bool changed = !(curH > 0.05f) || std::fabs(tanH - curH) > 0.008f * curH;
+  g_gameTanH.store(tanH);
+  g_gameTanV.store(tanV);
+  g_fovFromCCam.store(true);
+  if (changed) {
+    const uint32_t gen = ++g_fovPublishGen;
+    if (gen <= 6 || (gen % 120) == 0)
+      Log("VrDisplay: gameTan from TRUE CCam FOV=%.1f -> tan=(%.3f,%.3f) gen=%u "
+          "(canvas uses engine FOV; not D3DTS_PROJECTION)",
+          ccamDeg, tanH, tanV, gen);
+  }
+}
+
 void UpdateGameFovFromDevice(IDirect3DDevice9* device) {
   if (!device)
     return;
@@ -218,6 +272,15 @@ void UpdateGameFovFromDevice(IDirect3DDevice9* device) {
     }
     bb->Release();
   }
+  if (bw >= 16 && bh >= 16) {
+    const float aspect = static_cast<float>(bw) / static_cast<float>(bh);
+    if (aspect > 0.5f && aspect < 3.f)
+      g_bbAspect.store(aspect);
+  }
+
+  // Mode 36: canvas FOV comes from live CCam — do NOT revert to stale projection.
+  if (g_fovFromCCam.load())
+    return;
 
   D3DMATRIX proj{};
   if (FAILED(device->GetTransform(D3DTS_PROJECTION, &proj)))

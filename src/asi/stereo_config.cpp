@@ -256,9 +256,10 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
+  // Two-digit modes 10..36 (Mode 36 = true-canvas FOV). Cap must track enum max.
   if (n >= 2 && buf[0] >= '1' && buf[0] <= '3' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 35)
+    if (v <= 36)
       return v;
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
@@ -287,7 +288,7 @@ void ReloadStereoMode() {
   if (n > 0)
     v = ParseModeFile(buf, n);
   int prev = g_mode.load();
-  if (v >= 0 && v <= 35) {
+  if (v >= 0 && v <= 36) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -306,7 +307,8 @@ void ReloadStereoMode() {
                            v == static_cast<int>(StereoMode::SameFrameVsParentDual) ||
                            v == static_cast<int>(StereoMode::SameFrameLateVsParentDual) ||
                            v == static_cast<int>(StereoMode::SameFrameVsRetCallerDual) ||
-                           v == static_cast<int>(StereoMode::FovRecomputeSite))) {
+                           v == static_cast<int>(StereoMode::FovRecomputeSite) ||
+                           v == static_cast<int>(StereoMode::FovRecomputeTrueCanvas))) {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadWorldScale();
@@ -319,7 +321,7 @@ void ReloadStereoMode() {
 }
 
 void WriteStereoModeFile(int mode) {
-  if (mode < 0 || mode > 35)
+  if (mode < 0 || mode > 36)
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -353,7 +355,8 @@ bool UsesAngleCorrectCanvas(StereoMode mode) {
          mode == StereoMode::SameFrameReplayDual || mode == StereoMode::SameFrameVsParentDual ||
          mode == StereoMode::SameFrameLateVsParentDual ||
          mode == StereoMode::SameFrameVsRetCallerDual ||
-         mode == StereoMode::FovRecomputeSite;
+         mode == StereoMode::FovRecomputeSite ||
+         mode == StereoMode::FovRecomputeTrueCanvas;
 }
 
 float GetStereoSepMeters() {
