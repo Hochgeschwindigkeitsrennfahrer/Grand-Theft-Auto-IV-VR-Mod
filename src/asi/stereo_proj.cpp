@@ -206,6 +206,8 @@ HRESULT STDMETHODCALLTYPE HookSetVSConstF(IDirect3DDevice9* self, UINT startReg,
     StereoMode33CollectVsParents(_ReturnAddress(), _AddressOfReturnAddress());
   if (StereoMode34WantsDiscover())
     StereoMode34CollectVsRetCallers(_ReturnAddress(), _AddressOfReturnAddress());
+  if (StereoMode41WantsTrace())
+    StereoMode41CollectVsRetChain(_ReturnAddress(), _AddressOfReturnAddress());
   float cam[3], d[3];
   if (!data || cnt < 4 || cnt > 256 || !StereoVsGetPatchParams(cam, d))
     return g_origSetVSConstF(self, startReg, data, cnt);

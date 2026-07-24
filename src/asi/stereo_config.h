@@ -194,6 +194,11 @@ enum class StereoMode : int {
   // temporarily becomes mono (not same-frame stereo), so it removes stale-eye
   // jump on rapid head turns without unsafe replay-thread hooks. Kill: 37/30.
   FovCanvasMotionGuard = 40,
+  // Mode 40's true-FOV pair-hold and rapid-motion mono guard, plus a READ-ONLY
+  // trace of the replay-thread chain behind SetVSConstF's live 0x2C73E return.
+  // It installs no game-function hook and never duplicates draws. It maps a
+  // future same-tick seam; it is NOT distinct-eye same-frame stereo. Kill: 40/37/30.
+  ReplayCallChainProbe = 41,
 };
 
 StereoMode GetStereoMode();

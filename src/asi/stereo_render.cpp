@@ -98,7 +98,8 @@ bool g_submitPoseRValid = false;
 
 bool UsesFovComfortPath(StereoMode mode) {
   return mode == StereoMode::FovCanvasComfort || mode == StereoMode::AerPoseSubmit ||
-         mode == StereoMode::FovCanvasLowMotion || mode == StereoMode::FovCanvasMotionGuard;
+         mode == StereoMode::FovCanvasLowMotion || mode == StereoMode::FovCanvasMotionGuard ||
+         mode == StereoMode::ReplayCallChainProbe;
 }
 
 bool UsesTrueFovCanvasPublish(StereoMode mode) {
@@ -128,8 +129,9 @@ void SnapshotHoldPose(bool rightEye) {
 // disparity much more objectionable than losing stereo for that one submitted
 // pair. Re-canvas the CURRENT R frame into both eye textures instead.
 bool Mode40NeedsMonoGuard(float* outRotDeg, float* outMoveCm) {
-  if (GetStereoMode() != StereoMode::FovCanvasMotionGuard || !g_holdPoseLValid ||
-      !g_holdPoseRValid)
+  const StereoMode mode = GetStereoMode();
+  if ((mode != StereoMode::FovCanvasMotionGuard && mode != StereoMode::ReplayCallChainProbe) ||
+      !g_holdPoseLValid || !g_holdPoseRValid)
     return false;
   const vr::HmdMatrix34_t& l = g_holdPoseL;
   const vr::HmdMatrix34_t& r = g_holdPoseR;
@@ -303,6 +305,30 @@ uintptr_t g_mode34TryList[8]{};
 int g_mode34TryN = 0;
 int g_mode34TryIdx = 0;
 uint32_t g_mode34ActiveRva = 0;
+
+// ---- Mode 41: read-only replay-thread call-chain probe -----------------------
+// The Mode 34 stack trace identified only return addresses, which can be inside
+// epilogues. Mode 41 preserves each address's stack slot and its direct CALL
+// predecessor (when statically recoverable), then ranks it by EndScene epochs.
+// No game-function hook or replay is attempted here.
+struct Mode41FrameNode {
+  uint32_t retRva;
+  uint8_t slot;
+  uint16_t hits;
+};
+struct Mode41AggNode {
+  uint32_t retRva;
+  uint32_t frames;
+  uint32_t hits;
+  uint8_t slot;
+};
+Mode41FrameNode g_mode41Frame[96]{};
+int g_mode41FrameN = 0;
+Mode41AggNode g_mode41Agg[96]{};
+int g_mode41AggN = 0;
+std::atomic<uint32_t> g_mode41VsRetHits{0};
+std::atomic<uint32_t> g_mode41Es{0};
+uint32_t g_mode41VsTid = 0;
 
 enum class Mode32Abi : int {
   Reject = 0,
@@ -3952,6 +3978,116 @@ void Mode34OnEndScene(IDirect3DDevice9* device) {
   }
 }
 
+bool Mode41ForbiddenRva(uint32_t rva) {
+  return rva == 0x2C6AC || rva == 0x37BD0 || rva == 0x1BF010 || rva == 0x4DDAD0;
+}
+
+void Mode41NoteFrameNode(uint32_t retRva, uint8_t slot) {
+  if (retRva == kMode34VsRetRva || Mode41ForbiddenRva(retRva))
+    return;
+  for (int i = 0; i < g_mode41FrameN; ++i) {
+    if (g_mode41Frame[i].retRva == retRva && g_mode41Frame[i].slot == slot) {
+      ++g_mode41Frame[i].hits;
+      return;
+    }
+  }
+  if (g_mode41FrameN < 96)
+    g_mode41Frame[g_mode41FrameN++] = {retRva, slot, 1};
+}
+
+const char* Mode41CallBeforeReturn(uintptr_t base, uint32_t retRva, uint32_t* outCallRva,
+                                   uint32_t* outTargetRva) {
+  if (outCallRva)
+    *outCallRva = 0;
+  if (outTargetRva)
+    *outTargetRva = 0;
+  const uintptr_t ret = base + retRva;
+  if (ret < base + 6)
+    return "none";
+  const auto* b = reinterpret_cast<const uint8_t*>(ret);
+  // Direct relative call: its five-byte instruction ends exactly at the saved
+  // return. This is stronger evidence than merely resolving an FPO stack word.
+  if (b[-5] == 0xE8) {
+    const int32_t rel = *reinterpret_cast<const int32_t*>(b - 4);
+    if (outCallRva)
+      *outCallRva = retRva - 5;
+    if (outTargetRva)
+      *outTargetRva = static_cast<uint32_t>(ret + static_cast<intptr_t>(rel) - base);
+    return "E8";
+  }
+  // Indirect call sites are still useful chain nodes, but need a later, safe
+  // object/vtable trace before they can become a replay seam.
+  if (b[-2] == 0xFF)
+    return "FF";
+  if (b[-6] == 0xFF && b[-5] == 0x15) {
+    if (outCallRva)
+      *outCallRva = retRva - 6;
+    return "FF15";
+  }
+  return "none";
+}
+
+void Mode41FinishFrame() {
+  const uint32_t es = ++g_mode41Es;
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  for (int i = 0; i < g_mode41FrameN; ++i) {
+    const Mode41FrameNode& node = g_mode41Frame[i];
+    for (int j = 0; j < g_mode41AggN; ++j) {
+      if (g_mode41Agg[j].retRva == node.retRva && g_mode41Agg[j].slot == node.slot) {
+        ++g_mode41Agg[j].frames;
+        g_mode41Agg[j].hits += node.hits;
+        goto next_node;
+      }
+    }
+    if (g_mode41AggN < 96)
+      g_mode41Agg[g_mode41AggN++] = {node.retRva, 1, node.hits, node.slot};
+  next_node:;
+  }
+  g_mode41FrameN = 0;
+
+  if (es > 8 && (es % 90) != 0)
+    return;
+  Log("Mode41: replay-chain epoch=%u VsRetHits=%u nodes=%d tid=%u SameFrame=0 distinctEyes=0",
+      es, g_mode41VsRetHits.load(), g_mode41AggN, g_mode41VsTid);
+  int order[96]{};
+  int count = g_mode41AggN;
+  for (int i = 0; i < count; ++i)
+    order[i] = i;
+  for (int i = 0; i < count; ++i) {
+    for (int j = i + 1; j < count; ++j) {
+      const Mode41AggNode& a = g_mode41Agg[order[i]];
+      const Mode41AggNode& b = g_mode41Agg[order[j]];
+      if (b.frames > a.frames || (b.frames == a.frames && b.hits > a.hits)) {
+        const int t = order[i];
+        order[i] = order[j];
+        order[j] = t;
+      }
+    }
+  }
+  const int limit = (std::min)(count, 12);
+  for (int i = 0; i < limit; ++i) {
+    const Mode41AggNode& node = g_mode41Agg[order[i]];
+    const uintptr_t ret = base + node.retRva;
+    uintptr_t fn = FindThiscallNear(ret, 0x800);
+    if (!fn)
+      fn = FindFnStartNear(ret);
+    const uint32_t fnRva = fn ? static_cast<uint32_t>(fn - base) : 0;
+    const char* abi = "no-start";
+    if (fn)
+      (void)Mode32ClassifyPrologue(fn, &abi);
+    uint32_t callRva = 0, targetRva = 0;
+    const char* call = Mode41CallBeforeReturn(base, node.retRva, &callRva, &targetRva);
+    Log("Mode41: CHAIN slot=%u ret=0x%X fn=0x%X abi=%s call=%s@0x%X->0x%X "
+        "frames=%u hits=%u hook=NO",
+        node.slot, node.retRva, fnRva, abi, call, callRva, targetRva, node.frames, node.hits);
+  }
+}
+
+void Mode41OnEndScene(IDirect3DDevice9* device) {
+  TemporalCapturePairHold(device);  // Same safe behavior as Mode 40.
+  Mode41FinishFrame();
+}
+
 void RunExecViewPhaseDual(void* edx) {
   g_inDual.store(true);
   const bool ok = RunExecViewPhaseDualGuarded(edx);
@@ -4020,11 +4156,11 @@ void __fastcall HookExecA(void* self, void* edx) {
     g_origExecA(self, edx);
     return;
   }
-  // Mode 30/35/36/37/38/39 pair-hold: passthrough native exec; EndScene does temporal.
+  // Mode 30/35..41 pair-hold: passthrough native exec; EndScene does temporal.
   if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
       mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort ||
       mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion ||
-      mode == StereoMode::FovCanvasMotionGuard) {
+      mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe) {
     const int ph = g_mode30Phase.load();
     if (ph != static_cast<int>(Mode30Phase::Dual) || g_execDualDead.load()) {
       g_origExecA(self, edx);
@@ -4589,9 +4725,9 @@ void TemporalCapturePairHold(IDirect3DDevice9* device) {
           g_holdPoseLValid = g_holdPoseRValid;
           const uint32_t guarded = ++g_mode40MonoPairs;
           if (guarded <= 6 || (guarded % 120) == 0)
-            Log("Mode40: MOTION-GUARD mono pair #%u SameFrame: L+R from current R frame "
+            Log("Mode%d: MOTION-GUARD mono pair #%u SameFrame: L+R from current R frame "
                 "rot=%.2fdeg move=%.2fcm",
-                guarded, rotDeg, moveCm);
+                static_cast<int>(GetStereoMode()), guarded, rotDeg, moveCm);
         } else {
           Log("Mode40: motion guard copy failed; promoting normal temporal pair");
         }
@@ -4772,7 +4908,8 @@ bool InstallStereoRenderHooks() {
 
   if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
       mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort ||
-      mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion) {
+      mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion ||
+      mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe) {
     // Pair-hold only: same install surface as Mode 26 (no exec dual hooks).
     // Device-VS dual was probed this session (mode30dev=0) — do not re-arm.
     SetStereoEye(StereoEye::Left);
@@ -4819,6 +4956,20 @@ bool InstallStereoRenderHooks() {
           g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
       Log("StereoRender: kill-switch - stereo=37 (always stereo) or stereo=30 + delete "
           "gtaiv_dxvk_vr.fovadd");
+    } else if (mode == StereoMode::ReplayCallChainProbe) {
+      const bool fovOk = InstallFovRecomputeSiteHook();
+      g_mode40MonoPairs.store(0);
+      g_mode41FrameN = 0;
+      g_mode41AggN = 0;
+      g_mode41VsRetHits.store(0);
+      g_mode41Es.store(0);
+      g_mode41VsTid = 0;
+      Log("StereoRender: mode 41 REPLAY-CHAIN PROBE (Mode40 true-FOV pair-hold + motion "
+          "guard; READ-ONLY VsRet=0x2C73E stack/call map; no replay hook, no dual draw) "
+          "ok=%d fovSite=%d",
+          g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: Mode41 cannot claim SameFrame/DISTINCT eyes; kill-switch - stereo=40, "
+          "37, or 30 + delete gtaiv_dxvk_vr.fovadd");
     } else if (mode == StereoMode::FovRecomputeTrueCanvas) {
       const bool fovOk = InstallFovRecomputeSiteHook();
       Log("StereoRender: mode 36 FOV-RECOMPUTE + TRUE-CANVAS + Mode30 pair-hold "
@@ -5148,11 +5299,11 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
     return;
   }
 
-    // Mode 30 / 35 / 36 / 37 / 38 / 39: pair-hold temporal only (device-VS dual proven dead — mode30dev=0).
+    // Mode 30 / 35..41: pair-hold temporal only (device-VS dual proven dead — mode30dev=0).
     if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
         mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort ||
         mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion ||
-        mode == StereoMode::FovCanvasMotionGuard) {
+        mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe) {
       g_dualDoneThisFrame = false;
       g_skipExecA = g_skipExecC = g_skipExecD = 0;
       IDirect3DSurface9* bb = nullptr;
@@ -5170,7 +5321,10 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
       // Keep phase on PairHold even if an older build left SoftStart/Dual.
       g_mode30Phase.store(static_cast<int>(Mode30Phase::PairHold));
       g_execDualDead.store(true);
-      TemporalCapturePairHold(device);
+      if (mode == StereoMode::ReplayCallChainProbe)
+        Mode41OnEndScene(device);
+      else
+        TemporalCapturePairHold(device);
       return;
     }
 
@@ -5563,6 +5717,40 @@ void StereoMode34CollectVsRetCallers(void* retAddr, void* hookSpWords) {
     }
     Log("Mode34: VsRet sample#%d retRva=0x%X tid=%u frameSlots=%d sampleHits=%u vsRetHits=%u",
         s_sample, retRva, tid, g_mode34FrameN, g_mode34SampleHits, g_mode34VsRetHits);
+  }
+}
+
+bool StereoMode41WantsTrace() {
+  return GetStereoMode() == StereoMode::ReplayCallChainProbe;
+}
+
+void StereoMode41CollectVsRetChain(void* retAddr, void* hookSpWords) {
+  if (!StereoMode41WantsTrace() || !hookSpWords || !retAddr)
+    return;
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  const uint32_t retRva =
+      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(retAddr) - base);
+  // Restrict tracing to the real replay uploader. This keeps the hot path small
+  // and avoids conflating unrelated D3D9 VS uploads with the Rage replay chain.
+  if (retRva != kMode34VsRetRva)
+    return;
+
+  ++g_mode41VsRetHits;
+  const uint32_t tid = GetCurrentThreadId();
+  if (!g_mode41VsTid)
+    g_mode41VsTid = tid;
+  auto* sp = reinterpret_cast<uintptr_t*>(hookSpWords);
+  for (int i = 1; i < 64; ++i) {
+    const uintptr_t v = sp[i];
+    if (v < base + 0x1000 || v > base + 0xC00000)
+      continue;
+    Mode41NoteFrameNode(static_cast<uint32_t>(v - base), static_cast<uint8_t>(i));
+  }
+
+  static int s_sample = 0;
+  if (s_sample < 8) {
+    ++s_sample;
+    Log("Mode41: VsRet sample#%d tid=%u (stack slots retained; no hook/dual)", s_sample, tid);
   }
 }
 

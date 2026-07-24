@@ -4,6 +4,31 @@ Read with `docs/CURRENT-STATE.md` and `docs/HANDOFF_GROK.md`.
 
 ---
 
+## Session note 2026-07-24 ~20:15 — Mode 41 replay-chain probe
+
+**Shipped Mode 41:** retain Mode 40's Mode-37 true-FOV pair-hold and its rapid-motion temporary-mono
+guard, but add a **read-only** trace only when the real replay-thread VS upload returns to
+`VsRet=0x2C73E`. It records each valid stack return with its slot, detects the direct/indirect CALL
+immediately before that return where possible, resolves a candidate function start/ABI for logging, and
+ranks the result by EndScene epochs. It uses the already-installed D3D9 `SetVSConstF` observation hook:
+**no game-function hook, no draw replay, no camera write, and no claimed same-frame stereo.**
+
+**Live result:** build `20260724-194401` reached `VsRetHits=142077` with `SameFrame=0
+distinctEyes=0`, paired eye submits (`mode=41`), and no new hook. The trace reconfirmed the forbidden
+`0x37BD0` chain and the stackarg chains. It also exposed a frequent `0x30D13 → 0x309D0`
+`thiscall-56` node, but its caller is not statically recoverable; direct-call nodes
+`0x3199A/0x319A4` resolve only to an unaligned enclosing start. Therefore neither is a safe next
+count/replay target yet.
+
+The next probe must establish `0x309D0`'s actual caller ABI/object lifetime without calling it, or map
+the indirect edge around it. Do not call it yet. Keep Mode 40/41 as the safe interim and do not revive
+Mode 34 dual.
+
+**Kill:** write **`40`** (same headset behavior, no trace), **`37`** (always temporal stereo), or
+**`30`** then delete `fovadd`. Mode 41 is a seam-finding step, not the true-VR finish.
+
+---
+
 ## Session note 2026-07-24 ~19:45 — Mode 39 rejected; Mode 37 restored
 
 **User feedback:** Mode 39 brought black bars back and did not improve jumping or FPS. This is

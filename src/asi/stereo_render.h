@@ -35,5 +35,8 @@ bool StereoMode33WantsDiscover();
 void StereoMode33CollectVsParents(void* retAddr, void* hookSpWords);
 bool StereoMode34WantsDiscover();
 void StereoMode34CollectVsRetCallers(void* retAddr, void* hookSpWords);
+// Mode 41: read-only replay-thread chain map. No game-function hooks.
+bool StereoMode41WantsTrace();
+void StereoMode41CollectVsRetChain(void* retAddr, void* hookSpWords);
 
 }  // namespace asi

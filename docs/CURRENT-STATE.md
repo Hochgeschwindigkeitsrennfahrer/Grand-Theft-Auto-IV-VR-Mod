@@ -1,7 +1,11 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~19:38
-**Headset test now:** stereo **`40`** (Mode 37 true-FOV canvas + motion guard) + **`fovadd=18`**.
+**As of:** 2026-07-24 ~20:15
+**Headset test now:** stereo **`41`** (Mode 40 motion guard + read-only replay-chain probe) +
+**`fovadd=18`**.
+Mode 41 is deliberately **not** same-frame distinct-eye stereo. It keeps Mode 40's temporary
+mono guard during a rapid HMD turn, while passively maps the real replay-thread callers behind
+`VsRet=0x2C73E`; it installs no game-function hook and duplicates no draw.
 Mode 40 is an honest intermediate, not true same-frame stereo: on rapid HMD motion it re-canvases
 the current R game frame to both eye textures for that pair (temporary mono), removing the stale-eye
 disparity during the turn; calm motion returns to normal Mode-37 temporal stereo.
@@ -13,6 +17,34 @@ but will briefly lose depth while Mode 40 submits the coherent current-frame mon
 game itself can still expose temporal stereo. A real fix needs same-frame **distinct-eye** rendering;
 independent head-owned view remains a later, risky camera/collision spike. AER v2 optical-flow is
 **not** implemented.
+
+### Session 2026-07-24 ~20:15 (Mode 41 replay-chain probe: shipped)
+
+**Why no new dual pass:** same-frame Phase execution is stable, but its view constants are already
+baked; the actual `SetVSConstF` uploads happen on a separate replay thread. The known replay starts
+are forbidden or disproven (`0x2C6AC`, `0x37BD0`, `0x1BF010`, `0x4DDAD0`), so blindly calling another
+candidate would not be a defensible true-VR test.
+
+**Shipped Mode 41:** the headset behavior is exactly Mode 40's Mode-37 true-FOV, pair-held stereo plus
+rapid-motion temporary mono guard. On the live `VsRet=0x2C73E` replay-thread path only, Mode 41 retains
+each valid stack return **with its stack slot**, statically recovers a preceding direct/indirect CALL
+when possible, resolves a candidate function start/ABI for logging, and ranks the chain by EndScene
+epochs. It never MinHooks a game function, replays draws, changes the camera, or claims distinct eyes.
+Expected log proof is `Mode41: replay-chain ... SameFrame=0 distinctEyes=0` followed by
+`Mode41: CHAIN ... hook=NO`.
+
+**Deployed + live-log verified** (`ASI_BUILD_ID 20260724-194401`): `StereoMode: 41`,
+`StereoSubmit: L=1 R=1 mode=41`, `Mode41: replay-chain epoch=630 VsRetHits=142077 ...
+SameFrame=0 distinctEyes=0`, and `hook=NO` chain rows. The original stack facts were confirmed
+without a new crash: slot 10 `0x22187 → E8@0x22182 → 0x2C6A0`; slot 15 `0x37C01 → 0x37BD0`;
+slot 22 `0x37520 → 0x372B0` (stackarg); and slot 27 `0x32BD7 → 0x32A40` (stackarg).
+New high-frequency nodes include `0x30D13 → 0x309D0` (thiscall-56) but have no statically recoverable
+CALL at that return, while `0x3199A/0x319A4` do resolve direct calls but their enclosing start is
+unaligned. Neither is safe to hook or replay yet.
+
+**Next decision from the log:** probe only a chain node after its actual call ABI and object lifetime
+are established—currently `0x309D0` is observationally interesting but unproven, and `0x30720`
+is not an approved target. Keep Mode 40/41 as the safe interim; do not re-arm Mode 34 dual.
 
 ### Session 2026-07-24 ~19:38 (Mode 40 motion guard: shipped)
 
