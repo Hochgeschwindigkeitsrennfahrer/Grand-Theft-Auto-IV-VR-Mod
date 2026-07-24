@@ -36,6 +36,8 @@ that `0x30D13` returns from `FF 90 disp32`: `FF /2@0x30D0D`, ModRM `0x90`, lengt
 the frequent `0x309D0` chain node is reached through `call [eax+disp32]`, not a directly callable
 owner function. `mode=42` paired submit remained healthy, and the log honestly reports
 `SameFrame=0 distinctEyes=0`, `hook=NO`, and `replay=NO`.
+The deployed `20260724-195512` artifact also restores modes 41/42 to the explicit stereo-submit
+gate; its log confirms `StereoSubmit: L=1 R=1 mode=42`.
 
 **Next safe probe:** observe `eax` plus the resolved `[eax+disp32]` vtable target at that exact
 indirect call site, without invoking it. Do not count-hook/replay `0x309D0` based on its outer

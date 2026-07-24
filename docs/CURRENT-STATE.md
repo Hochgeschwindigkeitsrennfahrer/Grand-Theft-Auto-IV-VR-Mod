@@ -52,11 +52,13 @@ is not an approved target. Keep Mode 40/41 as the safe interim; do not re-arm Mo
 x86 `FF /2` indirect CALLs that Mode 41 could not identify. No game function is hooked or called,
 no camera/view/RT behavior changes, and it explicitly logs `SameFrame=0 distinctEyes=0`.
 
-**Deployed + live-log verified** (`ASI_BUILD_ID 20260724-195038`): `StereoMode: 42`,
+**Deployed + live-log verified** (`ASI_BUILD_ID 20260724-195512`): `StereoMode: 42`,
 `StereoSubmit: L=1 R=1 mode=42`, `Mode42: OWNER-EDGE ret=0x30D13 enclosing=0x309D0
 abi=thiscall-56 call=FF/2@0x30D0D modrm=0x90 len=6 ... hook=NO replay=NO`.
 `modrm=0x90` proves the call is a six-byte **indirect** `call [eax+disp32]`, not a static
 call to a safely reusable function. That explains why Mode 41 could not resolve an owner caller.
+The initial Mode-42 artifact omitted modes 41/42 from the stereo-submit gate; the deployed
+`195512` correction restores the proven paired OpenVR submit without changing the probe.
 
 **Decision:** no Mode-43 replay hook yet. The required next seam evidence is the live `eax` object and
 the displacement/vtable target at that exact call, gathered without calling `0x309D0`. Mode 42 stays
