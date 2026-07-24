@@ -40,8 +40,14 @@ bool GetNativeFovInsetBounds(vr::EVREye eye, vr::VRTextureBounds_t* out);
 bool GetEyeRawProjection(vr::EVREye eye, float* left, float* right, float* top, float* bottom);
 
 // Game half-FOV tangents (horizontal/vertical). Sources, in priority order:
-// CCam publish (Mode 36), gtaiv_dxvk_vr.fov override, D3D probe, 70° fallback.
-// Canvas zoom (gtaiv_dxvk_vr.zoom) is DISABLED — claimed-FOV warp on head move.
+// pair latch (Mode 37), CCam publish (Mode 36/37), gtaiv_dxvk_vr.fov override,
+// D3D probe, 70° fallback. Canvas zoom DISABLED — claimed-FOV warp on head move.
 void GetGameFovTangents(float* tanHalfH, float* tanHalfV);
+
+// Mode 37: freeze gameTan for one L→R pair so canvas rects match (less temporal jump).
+void LatchGameFovForPair();
+void ClearGameFovPairLatch();
+// True when a Mode 37 pair latch is active (CopySurf uses these, not size calc).
+bool GetLatchedGameFovTangents(float* tanHalfH, float* tanHalfV);
 
 }  // namespace asi

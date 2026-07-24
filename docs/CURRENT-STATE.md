@@ -1,14 +1,21 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~18:45  
-**Playable fallback:** stereo **`30`** (pair-hold). **Protected baseline:** stereo **`35`** + **`fovadd=15`**. **Headset test now:** stereo **`36`** + **`fovadd=22`** (Mode 35 + canvas reads TRUE CCam FOV after ADD). Keep **`ipd`≥1**, **`scale`/`stereoscale`/`eyefwd`/`pedhide`**. Canvas **zoom DISABLED**.  
-Kill Mode36 → stereo **`35`** (keep fovadd) or **`30`** + delete **`fovadd`**. Kill PedHide → **`pedhide=0`**.  
-F8 presets **`1,2,3,4,6,7,10`**. F7 = 6DoF only. Do **not** multiply IPD×WorldScale. Do **not** re-enable FusionFix menu FieldOfView or canvas zoom (we own FOV via `fovadd`).  
+**As of:** 2026-07-24 ~19:00  
+**Playable fallback:** stereo **`30`** (pair-hold). **Protected:** stereo **`36`** / **`35`**. **Headset test now:** stereo **`37`** + **`fovadd=18`** + **`scale=100`** (Mode 36 true-FOV comfort: softer ADD, canvas cap 1536 locked, pair-latch rects, WorldScale for size). Keep **`ipd`≥1**, **`stereoscale`/`eyefwd`/`pedhide`**. Canvas **zoom DISABLED**.  
+Kill Mode37 → stereo **`36`** or **`35`** (keep fovadd) or **`30`** + delete **`fovadd`**. Kill PedHide → **`pedhide=0`**.  
+F8 presets **`1,2,3,4,6,7,10`**. F7 = 6DoF only (HIGHER = smaller world). Do **not** multiply IPD×WorldScale. Do **not** re-enable FusionFix menu FieldOfView or canvas zoom.  
 Mode **34:** dual **DISABLED**. Forbidden `0x4DDAD0` / `0x2C6AC` / `0x37BD0` / `0x1BF010`.  
-**Live proof (buildId `20260724-184022`):**  
-`StereoMode: 36` · `fovadd=22` · `FovSite: #1..#1200 CCam+0x60 45.000 -> 67.000` ·  
-`gameTan from TRUE CCam FOV=67.0 -> tan=(1.699,0.956)` · `StereoCanvasSize: fill≈146%h/90%v trueFov=1` ·  
-`StereoSubmit … mode=36` · `CanvasZoom: DISABLED` · no FOV compound after idempotent+gameplay-band guard.
+**Live proof (buildId `20260724-185819`):**  
+`StereoMode: 37` · `fovadd=18` · `WorldScale: 1.00` · `mode 37 FOV-CANVAS COMFORT` ·  
+`StereoCanvasSize: LOCKED … 1536x1536` · `eye RTs` count **1** · `fill≈143%h/88%v` ·  
+`StereoPairHold: … latch=1` · `StereoSubmit … mode=37` · `CanvasZoom: DISABLED`.
+
+### Session 2026-07-24 ~18:45–19:00 (Mode 37 comfort — Mode36 bars-gone + Mode30 smooth)
+
+**User feedback (Mode 36):** bars completely gone (keep); still screen-on-face; **FPS much worse**; **jump/jitter very strong** (Mode 30 was smooth); world **too close/huge**. Continue.  
+**Diagnose:** Mode 36 pair-hold path was intact. Jump/FPS from (1) fovadd=22 wide engine FOV + temporal edge disparity, (2) FOV wobble recreating 4 eye RTs every few frames, (3) scale=50 = huge 6DoF feel.  
+**Shipped Mode 37:** same true-FOV canvas + Mode30 pair-hold; **fovadd=18**; canvas **maxDim=1536 LOCKED**; pair-latched rect tangents; publish gate ~2.5%; **WorldScale→100** (one size lever; IPD untouched). No CanvasZoom / no IPD×scale / no forbidden hooks.  
+**Deferred:** independent VR cam; Mode 34 dual.
 
 ### Session 2026-07-24 ~18:25–18:45 (Mode 36 true-canvas FOV — fill HMD / kill bars)
 

@@ -174,6 +174,11 @@ enum class StereoMode : int {
   // Shrinks black bars without CanvasZoom. Protect Mode 35 as fallback.
   // Kill: stereo=35 (keep fovadd) or stereo=30 + delete fovadd.
   FovRecomputeTrueCanvas = 36,
+  // Mode 36 comfort retune: SAME true-FOV canvas + Mode30 pair-hold, but
+  // softer fovadd (deploy ~18), canvas max-dim cap (~1536), pair-latched
+  // gameTan for L+R rects, WorldScale lever for "huge world" (not IPD).
+  // Protect: Mode 36 / 35. Kill: stereo=30 + delete fovadd.
+  FovCanvasComfort = 37,
 };
 
 StereoMode GetStereoMode();
@@ -228,7 +233,8 @@ int GetVehicleFollowMode();
 bool GetFovPatchConfig(int* offsetBytes, float* scale);
 
 // gtaiv_dxvk_vr.fovadd: degrees to ADD at CCam+0x60 after cam FOV recompute
-// (FusionFix-style; Mode 35/36). 0 / absent = read-only log. Clamp 0..40.
+// (FusionFix-style; Mode 35/36/37). 0 / absent = read-only log. Clamp 0..40.
+// Mode 37 headset default ~18 (Mode 36 used 22 — jump/FPS).
 float GetFovAddDegrees();
 
 }  // namespace asi

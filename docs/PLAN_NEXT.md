@@ -4,6 +4,13 @@ Read with `docs/CURRENT-STATE.md` and `docs/HANDOFF_GROK.md`.
 
 ---
 
+## Session note 2026-07-24 ~19:00 — Mode 37 comfort retune
+
+Mode 36 killed bars but cost **jump + FPS + huge world**. Pair-hold was still active.  
+**Shipped Mode 37:** true-FOV canvas kept + Mode30 pair-hold; fovadd **18**; canvas **1536 locked** (no RT flap); pair-latch rects; WorldScale **100**. Protect 36/35; fallback 30.
+
+---
+
 ## Session note 2026-07-24 ~18:45 — Mode 36 true-canvas FOV
 
 Mode 35 engine FOV worked but **canvas still used stale D3DTS_PROJECTION** → black bars remained.  
@@ -55,9 +62,10 @@ Research: theater = menus/cutscenes only (Luke/VC VR). Not the presence fix. Ski
 | Mode 26, scale 150% 6DoF only, IPD = HMD ~6 cm | too big again | jump less | better | size feel was mostly from **extra parallax**, not 6DoF |
 | Mode 30 + canvas zoom 85 | less telephoto? | — | **warp on head move** | **REJECTED** — kill zoom |
 | Mode 35 + fovadd | better presence | keep Mode30 path | — | engine FOV ADD; bars remain (canvas ignored ADD) |
-| Mode 36 + fovadd=22 | ~90% v fill (log) | keep Mode30 path | — | true-canvas FOV; Mode 35 protected |
+| Mode 36 + fovadd=22 | bars gone | keep Mode30 path | **strong jump + FPS hit** | true-canvas; RT flap from FOV wobble |
+| Mode 37 + fovadd=18 + scale=100 | F7 smaller lever | Mode30 pair-hold | RT locked | comfort retune; headset-verify |
 
-**Conclusion:** F7 “WorldScale” was doing two jobs at once (L4D2-style). Cranking it for size also cranked stereo disparity → temporal stereo cannot fuse that. Decoupling was correct for fusion; size must be fixed by **another lever** (real engine FOV — Mode 35/36 — not claimed canvas FOV).
+**Conclusion:** F7 “WorldScale” was doing two jobs at once (L4D2-style). Cranking it for size also cranked stereo disparity → temporal stereo cannot fuse that. Decoupling was correct for fusion; size must be fixed by **another lever** (real engine FOV — Mode 35/36/37 — not claimed canvas FOV).
 
 ---
 
@@ -133,12 +141,12 @@ Do **not** copy their OpenXR/D3D11 code 1:1. Copy the **priority order**: FOV fi
 
 ## 6. Suggested next session (pick ONE)
 
-→ **Headset:** Mode **36** + `fovadd=22` — smaller bars / more inside? No look-warp? Fusion OK?  
-→ Soft kill → stereo **35** (keep fovadd). Hard kill → **30** + delete `fovadd`.  
-→ Tune fovadd **18–25** if bars or too wide.  
-→ **Same-frame:** pick one `VsRetStatic safe=1` RVA, COUNT-only.
+→ **Headset:** Mode **37** + `fovadd=18` + `scale=100` — bars still gone? Less jump than 36? Better FPS? World less huge?  
+→ Soft kill → stereo **36** or **35** (keep fovadd). Hard kill → **30** + delete `fovadd`.  
+→ If still huge: F7 to **125/150** (6DoF only) — do **not** touch IPD.  
+→ If still jump: try fovadd **15**; same-frame remains the real jump kill.
 
-Protect playable: **`stereo=30`** fallback, Mode **35** baseline, **`ipd≥1`**, pedhide/eyefwd/scale/stereoscale unchanged.
+Protect playable: **`stereo=30`** fallback, Mode **36/35** protect, **`ipd≥1`**, pedhide/eyefwd/stereoscale.
 
 ---
 
@@ -146,13 +154,13 @@ Protect playable: **`stereo=30`** fallback, Mode **35** baseline, **`ipd≥1`**,
 
 | File / key | Role now |
 |------------|----------|
-| `gtaiv_dxvk_vr.stereo` = **`36`** (protect **`35`**, fallback **`30`**) | True-canvas FOV / Mode35 / pair-hold |
-| `gtaiv_dxvk_vr.fovadd` = **`22`** | Degrees ADD at CCam+0x60 (Mode 35/36). Kill = delete/`0` |
-| `gtaiv_dxvk_vr.ipd` = **`1`** | Closest F8 preset (cycles 1,2,3,4,6,7,10) |
-| `gtaiv_dxvk_vr.scale` = `50` | 6DoF head move only |
+| `gtaiv_dxvk_vr.stereo` = **`37`** (protect **`36`/`35`**, fallback **`30`**) | Comfort true-canvas / Mode36 / Mode35 / pair-hold |
+| `gtaiv_dxvk_vr.fovadd` = **`18`** | Degrees ADD at CCam+0x60. Kill = delete/`0` |
+| `gtaiv_dxvk_vr.ipd` = **`1`+** | F8 cycles 1,2,3,4,6,7,10 |
+| `gtaiv_dxvk_vr.scale` = **`100`** | 6DoF; HIGHER = smaller world |
 | `gtaiv_dxvk_vr.stereoscale` = `125` | Soft disparity |
 | `gtaiv_dxvk_vr.eyefwd` = `20` | With PedHide |
 | `gtaiv_dxvk_vr.pedhide` = `1` | Kill → `0` |
-| `gtaiv_dxvk_vr.zoom` | **DISABLED** in code (write `100` or delete) |
+| `gtaiv_dxvk_vr.zoom` | **DISABLED** in code |
 
-Baseline to protect: **Mode 30 pair-hold** + Mode 14 geometry canvas (true FOV).
+Baseline to protect: **Mode 30 pair-hold** + Mode 36 no-bars true FOV.

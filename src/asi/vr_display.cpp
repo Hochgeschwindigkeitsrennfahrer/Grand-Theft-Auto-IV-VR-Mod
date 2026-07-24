@@ -42,6 +42,10 @@ std::atomic<bool> g_loggedInset{false};
 std::atomic<bool> g_fovFromCCam{false};
 std::atomic<float> g_bbAspect{16.f / 9.f};
 std::atomic<uint32_t> g_fovPublishGen{0};
+// Mode 37: latch tangents for one L→R pair (same canvas geometry both eyes).
+std::atomic<bool> g_pairLatchOn{false};
+std::atomic<float> g_pairLatchH{0.f};
+std::atomic<float> g_pairLatchV{0.f};
 
 float FovFromProjectionRaw(float left, float right) {
   const float fovRad = std::atan(right) - std::atan(left);
@@ -245,7 +249,11 @@ void PublishGameFovFromCCamDegrees(float ccamDeg, float aspectWH) {
     return;
 
   const float curH = g_gameTanH.load();
-  const bool changed = !(curH > 0.05f) || std::fabs(tanH - curH) > 0.008f * curH;
+  // Coarser gate: Mode 36/37 published every ~0.8% wobble → canvas flap → RT recreate
+  // → jump. Require ~2.5% (≈1.5° at mid FOV) before committing a new gameTan.
+  const bool changed = !(curH > 0.05f) || std::fabs(tanH - curH) > 0.025f * curH;
+  if (!changed && g_fovFromCCam.load())
+    return;
   g_gameTanH.store(tanH);
   g_gameTanV.store(tanV);
   g_fovFromCCam.store(true);
@@ -342,6 +350,16 @@ bool GetEyeRawProjection(vr::EVREye eye, float* left, float* right, float* top, 
   return true;
 }
 
+void LatchGameFovForPair() {
+  g_pairLatchH.store(g_gameTanH.load());
+  g_pairLatchV.store(g_gameTanV.load());
+  g_pairLatchOn.store(true);
+}
+
+void ClearGameFovPairLatch() {
+  g_pairLatchOn.store(false);
+}
+
 void GetGameFovTangents(float* tanHalfH, float* tanHalfV) {
   float tanH = g_gameTanH.load();
   float tanV = g_gameTanV.load();
@@ -358,6 +376,21 @@ void GetGameFovTangents(float* tanHalfH, float* tanHalfV) {
     *tanHalfH = tanH;
   if (tanHalfV)
     *tanHalfV = tanV;
+}
+
+// Mode 37 pair-hold: same tangents for L+R StretchRect of one promote pair.
+bool GetLatchedGameFovTangents(float* tanHalfH, float* tanHalfV) {
+  if (!g_pairLatchOn.load())
+    return false;
+  const float tanH = g_pairLatchH.load();
+  const float tanV = g_pairLatchV.load();
+  if (!(tanH > 0.05f) || !(tanV > 0.05f))
+    return false;
+  if (tanHalfH)
+    *tanHalfH = tanH;
+  if (tanHalfV)
+    *tanHalfV = tanV;
+  return true;
 }
 
 bool GetNativeFovInsetBounds(vr::EVREye eye, vr::VRTextureBounds_t* out) {
