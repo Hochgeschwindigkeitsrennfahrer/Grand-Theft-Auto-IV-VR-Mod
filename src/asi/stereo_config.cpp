@@ -16,8 +16,9 @@ std::atomic<int> g_mode{static_cast<int>(StereoMode::Off)};
 std::atomic<bool> g_loggedMode{false};
 std::atomic<float> g_sepM{0.06f};
 std::atomic<bool> g_loggedIpd{false};
-// L4D2VR default VRScale ≈ 1.0 (user tunes). 100% = standard. 6DoF only.
-std::atomic<float> g_worldScale{1.0f};
+// 6DoF lean gain: game-meters moved per meter of HMD lean. Higher = smaller world.
+// Applied as eyeDelta / leanGain (NOT multiply — that made F7 feel bigger).
+std::atomic<float> g_leanGain{1.0f};
 std::atomic<bool> g_loggedScale{false};
 // Soft stereo disparity (not WorldScale). 115% ≈ reclaim size without 150%×IPD break.
 std::atomic<float> g_stereoScale{1.15f};
@@ -60,15 +61,15 @@ void SaveIpdFile(int cm) {
   std::fclose(f);
 }
 
-void SetWorldScalePercent(int pct) {
-  if (pct < 25)
-    pct = 25;
-  if (pct > 1000)
-    pct = 1000;
-  g_worldScale.store(static_cast<float>(pct) / 100.f);
+void SetLeanGain(float gain) {
+  if (gain < 1.0f)
+    gain = 1.0f;
+  if (gain > 30.0f)
+    gain = 30.0f;
+  g_leanGain.store(gain);
 }
 
-void SaveScaleFile(int pct) {
+void SaveScaleFile(float gain) {
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
     return;
@@ -76,7 +77,8 @@ void SaveScaleFile(int pct) {
   FILE* f = nullptr;
   if (fopen_s(&f, path, "wb") != 0 || !f)
     return;
-  std::fprintf(f, "%d\n", pct);
+  const int fileVal = static_cast<int>(gain * 100.f + 0.5f);
+  std::fprintf(f, "%d\n", fileVal);
   std::fclose(f);
 }
 
@@ -93,8 +95,8 @@ float ReadHmdIpdMeters() {
 
 // Mode 13: L4D2VR-style defaults — VRScale=1.0, IPD from HMD EyeToHead.
 void ApplyStereoFusionDefaults() {
-  SetWorldScalePercent(100);
-  SaveScaleFile(100);
+  SetLeanGain(1.0f);
+  SaveScaleFile(1.0f);
   const int cm = static_cast<int>(ReadHmdIpdMeters() * 100.f + 0.5f);
   SetSepCm(cm);
   SaveIpdFile(cm);
@@ -162,8 +164,8 @@ void ApplyGeometryCanvasDefaults() {
     haveStereo = GetFileAttributesA(ssPath) != INVALID_FILE_ATTRIBUTES;
   }
   if (!haveScale) {
-    SetWorldScalePercent(150);
-    SaveScaleFile(150);
+    SetLeanGain(1.0f);
+    SaveScaleFile(1.0f);
   }
   if (!haveStereo) {
     SetStereoScalePercent(115);
@@ -195,14 +197,16 @@ void ReloadWorldScale() {
   fclose(f);
   if (n == 0)
     return;
-  int pct = 0;
-  if (sscanf_s(buf, "%d", &pct) != 1)
+  int fileVal = 0;
+  if (sscanf_s(buf, "%d", &fileVal) != 1)
     return;
-  if (pct < 25 || pct > 1000)
+  if (fileVal < 100 || fileVal > 3000)
     return;
-  SetWorldScalePercent(pct);
+  const float gain = static_cast<float>(fileVal) / 100.f;
+  SetLeanGain(gain);
   if (!g_loggedScale.exchange(true))
-    Log("WorldScale: %.2f (file) — F7: HIGHER = smaller world (L4D2 VRScale)", pct / 100.f);
+    Log("LeanGain: %.2f (file gtaiv_dxvk_vr.scale=%d) — F7 cycles up = smaller world",
+        gain, fileVal);
 }
 
 void ReloadIpdScale() {
@@ -255,13 +259,21 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
   return edge;
 }
 
+int RemapLoadedStereoMode(int v) {
+  // Removed / dangerous camera experiments — never arm from stale stereo files.
+  if (v >= 46 && v <= 61) {
+    Log("StereoMode: requested %d is DISABLED — using 45 (see docs/RE_OFFSETS.md)", v);
+    return 45;
+  }
+  return v;
+}
+
 int ParseModeFile(const char* buf, size_t n) {
-  // Two-digit modes 10..53. Mode 46 is remapped to protected Mode 45 below:
-  // its direct full-basis camera write froze after loading in a headset test.
-  if (n >= 2 && buf[0] >= '1' && buf[0] <= '5' && buf[1] >= '0' && buf[1] <= '9') {
+  // Two-digit modes 10..63 (45 = LKG; 62/63 = RE scaffold on same renderer).
+  if (n >= 2 && buf[0] >= '1' && buf[0] <= '6' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 53)
-      return v;
+    if (v <= 63)
+      return RemapLoadedStereoMode(v);
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
     return buf[0] - '0';
@@ -288,12 +300,8 @@ void ReloadStereoMode() {
   int v = -1;
   if (n > 0)
     v = ParseModeFile(buf, n);
-  if (v == static_cast<int>(StereoMode::HeadOwnedCamFullPose)) {
-    v = static_cast<int>(StereoMode::HeadOwnedCamSpike);
-    Log("StereoMode: requested 46 is DISABLED (post-load freeze); using protected mode 45");
-  }
   int prev = g_mode.load();
-  if (v >= 0 && v <= 53) {
+  if (v >= 0 && v <= 63) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -323,14 +331,8 @@ void ReloadStereoMode() {
                            v == static_cast<int>(StereoMode::FovCanvasMotionGuardFast) ||
                            v == static_cast<int>(StereoMode::FovCanvasMotionGuardRtLock) ||
                            v == static_cast<int>(StereoMode::HeadOwnedCamSpike) ||
-                           v == static_cast<int>(StereoMode::HeadOwnedCamFullPose) ||
-                           v == static_cast<int>(StereoMode::HeadOwnedCamLeveledPitchFlip) ||
-                           v == static_cast<int>(StereoMode::HeadOwnedCamPitchStable) ||
-                           v == static_cast<int>(StereoMode::HeadOwnedCamPedCoupled) ||
-                           v == static_cast<int>(StereoMode::HeadOwnedCamStereoAlways) ||
-                           v == static_cast<int>(StereoMode::HeadOwnedCamStereoAer) ||
-                           v == static_cast<int>(StereoMode::HeadOwnedCamStereoSwap) ||
-                           v == static_cast<int>(StereoMode::HeadOwnedCamStereoSoftGuard))) {
+                           v == static_cast<int>(StereoMode::RePatternValidate) ||
+                           v == static_cast<int>(StereoMode::SameFrameSeamGate))) {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadWorldScale();
@@ -343,7 +345,7 @@ void ReloadStereoMode() {
 }
 
 void WriteStereoModeFile(int mode) {
-  if (mode < 0 || mode > 53)
+  if (mode < 0 || mode > 63)
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -387,59 +389,13 @@ bool UsesAngleCorrectCanvas(StereoMode mode) {
          mode == StereoMode::ReplayOwnerCountProbe ||
          mode == StereoMode::FovCanvasMotionGuardFast ||
          mode == StereoMode::FovCanvasMotionGuardRtLock ||
-         mode == StereoMode::HeadOwnedCamSpike ||
-         mode == StereoMode::HeadOwnedCamFullPose ||
-         mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-         mode == StereoMode::HeadOwnedCamPitchStable ||
-         mode == StereoMode::HeadOwnedCamPedCoupled ||
-         mode == StereoMode::HeadOwnedCamStereoAlways ||
-         mode == StereoMode::HeadOwnedCamStereoAer ||
-         mode == StereoMode::HeadOwnedCamStereoSwap ||
-         mode == StereoMode::HeadOwnedCamStereoSoftGuard;
+         mode == StereoMode::HeadOwnedCamSpike || mode == StereoMode::RePatternValidate ||
+         mode == StereoMode::SameFrameSeamGate;
 }
 
-bool UsesMotionGuardStereo(StereoMode mode) {
-  return mode == StereoMode::FovCanvasMotionGuard ||
-         mode == StereoMode::ReplayCallChainProbe ||
-         mode == StereoMode::ReplayOwnerCountProbe ||
-         mode == StereoMode::FovCanvasMotionGuardFast ||
-         mode == StereoMode::FovCanvasMotionGuardRtLock ||
-         mode == StereoMode::HeadOwnedCamSpike ||
-         mode == StereoMode::HeadOwnedCamFullPose ||
-         mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-         mode == StereoMode::HeadOwnedCamPitchStable ||
-         mode == StereoMode::HeadOwnedCamPedCoupled;
-}
-
-bool UsesStereoAlwaysDistinct(StereoMode mode) {
-  return mode == StereoMode::HeadOwnedCamStereoAlways ||
-         mode == StereoMode::HeadOwnedCamStereoAer ||
-         mode == StereoMode::HeadOwnedCamStereoSwap ||
-         mode == StereoMode::HeadOwnedCamStereoSoftGuard;
-}
-
-bool UsesAerPoseSubmit(StereoMode mode) {
-  return mode == StereoMode::AerPoseSubmit ||
-         mode == StereoMode::HeadOwnedCamStereoAer ||
-         mode == StereoMode::HeadOwnedCamStereoSoftGuard;
-}
-
-bool UsesPedCoupledYaw(StereoMode mode) {
-  return mode == StereoMode::HeadOwnedCamPedCoupled || UsesStereoAlwaysDistinct(mode);
-}
-
-bool UsesPreCaptureCamRefresh(StereoMode mode) {
-  return mode == StereoMode::HeadOwnedCamPitchStable ||
-         mode == StereoMode::HeadOwnedCamPedCoupled || UsesStereoAlwaysDistinct(mode);
-}
-
-bool UsesRtLockFovGate(StereoMode mode) {
-  return mode == StereoMode::FovCanvasMotionGuardRtLock ||
-         mode == StereoMode::HeadOwnedCamSpike ||
-         mode == StereoMode::HeadOwnedCamFullPose ||
-         mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-         mode == StereoMode::HeadOwnedCamPitchStable ||
-         mode == StereoMode::HeadOwnedCamPedCoupled || UsesStereoAlwaysDistinct(mode);
+bool IsHeadOwnedCamFamily(StereoMode mode) {
+  return mode == StereoMode::HeadOwnedCamSpike || mode == StereoMode::RePatternValidate ||
+         mode == StereoMode::SameFrameSeamGate;
 }
 
 float GetStereoSepMeters() {
@@ -451,8 +407,12 @@ float GetStereoIpdScale() {
   return g_sepM.load() / 0.06f;
 }
 
+float GetLeanGain() {
+  return g_leanGain.load();
+}
+
 float GetWorldScale() {
-  return g_worldScale.load();
+  return g_leanGain.load();
 }
 
 float GetStereoScale() {
@@ -641,24 +601,24 @@ void PollWorldScaleHotkey() {
   if (!KeyPressedEdge(VK_F7, &wasF7))
     return;
 
-  // 6DoF only — does not multiply stereo IPD.
-  static const int kPresets[] = {50, 75, 100, 125, 150, 200, 300};
-  constexpr int kN = 7;
-  const int curPct = static_cast<int>(g_worldScale.load() * 100.f + 0.5f);
+  // 6DoF only — does not affect stereo IPD. Higher leanGain = less lean = smaller world.
+  static const float kLeanGains[] = {1.0f, 1.25f, 1.5f, 2.0f, 2.5f, 3.0f, 4.0f, 5.0f};
+  constexpr int kN = 8;
+  const float cur = g_leanGain.load();
   int idx = 0;
-  int best = 999;
+  float best = 999.f;
   for (int i = 0; i < kN; ++i) {
-    const int d = kPresets[i] > curPct ? kPresets[i] - curPct : curPct - kPresets[i];
+    const float d = std::fabs(kLeanGains[i] - cur);
     if (d < best) {
       best = d;
       idx = i;
     }
   }
   idx = (idx + 1) % kN;
-  const int pct = kPresets[idx];
-  SetWorldScalePercent(pct);
-  SaveScaleFile(pct);
-  Log("WorldScale: %.2f (F7) — 6DoF only; HIGHER = smaller feel from head move", pct / 100.f);
+  const float gain = kLeanGains[idx];
+  SetLeanGain(gain);
+  SaveScaleFile(gain);
+  Log("F7: world smaller — leanGain=%.2f (step %d/%d)", gain, idx + 1, kN);
 }
 
 void PollStereoScaleHotkey() {

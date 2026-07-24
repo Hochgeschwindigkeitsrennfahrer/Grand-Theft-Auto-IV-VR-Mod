@@ -3,6 +3,7 @@
 #include "cam_matrix.h"
 #include "hmd_pose.h"
 #include "log.h"
+#include "re_validate.h"
 #include "stereo_config.h"
 #include "stereo_eye.h"
 #include "stereo_proj.h"
@@ -88,9 +89,6 @@ IDirect3DTexture9* g_holdR = nullptr;
 bool g_pairAwaitingR = false;
 std::atomic<uint32_t> g_pairPromoteCount{0};
 std::atomic<uint32_t> g_mode40MonoPairs{0};
-std::atomic<uint32_t> g_stereoAuditPairs{0};
-std::atomic<uint32_t> g_stereoAuditZero{0};
-std::atomic<long long> g_stereoAuditDiffSum{0};
 
 // Mode 38 AER: HMD pose at capture time (WaitGetPoses already ran this EndScene).
 vr::HmdMatrix34_t g_holdPoseL{};
@@ -108,15 +106,7 @@ bool UsesFovComfortPath(StereoMode mode) {
          mode == StereoMode::ReplayCallChainProbe || mode == StereoMode::ReplayOwnerCountProbe ||
          mode == StereoMode::FovCanvasMotionGuardFast ||
          mode == StereoMode::FovCanvasMotionGuardRtLock ||
-         mode == StereoMode::HeadOwnedCamSpike ||
-         mode == StereoMode::HeadOwnedCamFullPose ||
-         mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-         mode == StereoMode::HeadOwnedCamPitchStable ||
-         mode == StereoMode::HeadOwnedCamPedCoupled ||
-         mode == StereoMode::HeadOwnedCamStereoAlways ||
-         mode == StereoMode::HeadOwnedCamStereoAer ||
-         mode == StereoMode::HeadOwnedCamStereoSwap ||
-         mode == StereoMode::HeadOwnedCamStereoSoftGuard;
+         IsHeadOwnedCamFamily(mode);
 }
 
 bool UsesTrueFovCanvasPublish(StereoMode mode) {
@@ -145,8 +135,15 @@ void SnapshotHoldPose(bool rightEye) {
 // rendered L and R on separate frames, but a rapid HMD move makes that stale-eye
 // disparity much more objectionable than losing stereo for that one submitted
 // pair. Re-canvas the CURRENT R frame into both eye textures instead.
-bool ComputeHoldPoseDelta(float* outRotDeg, float* outMoveCm) {
-  if (!g_holdPoseLValid || !g_holdPoseRValid)
+bool UsesMotionGuard(StereoMode mode) {
+  return mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe ||
+         mode == StereoMode::ReplayOwnerCountProbe || mode == StereoMode::FovCanvasMotionGuardFast ||
+         mode == StereoMode::FovCanvasMotionGuardRtLock || IsHeadOwnedCamFamily(mode);
+}
+
+bool Mode40NeedsMonoGuard(float* outRotDeg, float* outMoveCm) {
+  const StereoMode mode = GetStereoMode();
+  if (!UsesMotionGuard(mode) || !g_holdPoseLValid || !g_holdPoseRValid)
     return false;
   const vr::HmdMatrix34_t& l = g_holdPoseL;
   const vr::HmdMatrix34_t& r = g_holdPoseR;
@@ -165,38 +162,14 @@ bool ComputeHoldPoseDelta(float* outRotDeg, float* outMoveCm) {
     *outRotDeg = rotDeg;
   if (outMoveCm)
     *outMoveCm = moveCm;
-  return true;
-}
-
-bool Mode40NeedsMonoGuard(float* outRotDeg, float* outMoveCm) {
-  const StereoMode mode = GetStereoMode();
-  if (!UsesMotionGuardStereo(mode))
-    return false;
-  float rotDeg = 0.f, moveCm = 0.f;
-  if (!ComputeHoldPoseDelta(&rotDeg, &moveCm))
-    return false;
-  if (outRotDeg)
-    *outRotDeg = rotDeg;
-  if (outMoveCm)
-    *outMoveCm = moveCm;
   // One temporal pair normally spans two EndScene epochs. These thresholds
   // preserve stereo while still, but guard the visibly bad turn/lean case.
-  return rotDeg >= 1.5f || moveCm >= 2.f;
+  // Mode 45: tighter comfort — fire mono sooner on head turn/lean.
+  const bool mode45Family = IsHeadOwnedCamFamily(mode);
+  const float rotTh = mode45Family ? 0.8f : 1.5f;
+  const float moveTh = mode45Family ? 1.2f : 2.f;
+  return rotDeg >= rotTh || moveCm >= moveTh;
 }
-
-// Mode 53: much higher thresholds than Mode 40; prefer distinct L/R + AER over flatten.
-enum class SoftGuardAction : int { None = 0, AerDistinct = 1, FullMono = 2 };
-
-SoftGuardAction Mode53SoftGuardAction(float rotDeg, float moveCm) {
-  if (rotDeg >= 15.f || moveCm >= 12.f)
-    return SoftGuardAction::FullMono;
-  if (rotDeg >= 8.f || moveCm >= 6.f)
-    return SoftGuardAction::AerDistinct;
-  return SoftGuardAction::None;
-}
-
-std::atomic<uint32_t> g_mode53SoftGuard{0};
-std::atomic<uint32_t> g_mode53FullMono{0};
 
 // ---- Mode 31: discover ~1×/frame VsRet walker → same-frame dual + VS patch ----
 enum class Mode31Phase : int {
@@ -433,7 +406,8 @@ void ReleaseEyeRts() {
 bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
   if (!dev || w < 16 || h < 16)
     return false;
-  const bool mode44 = UsesRtLockFovGate(GetStereoMode());
+  const bool mode44 = GetStereoMode() == StereoMode::FovCanvasMotionGuardRtLock ||
+                      IsHeadOwnedCamFamily(GetStereoMode());
   const bool haveRts =
       g_texL && g_texR && g_holdL && g_holdR && g_device == dev && g_rtW > 0 && g_rtH > 0;
   if (mode44 && haveRts) {
@@ -1145,7 +1119,7 @@ bool RunRootDualGuarded(void* self, void* edx) {
 // arm the VS-constant translate, walk 2 = right. No double shift possible: the
 // VS detection keys on the LEFT cam pos, which no longer matches if the manager
 // shift already reached the constants.
-long long CompareEyeCanvases(IDirect3DDevice9* dev, bool logResult = true);
+long long CompareEyeCanvases(IDirect3DDevice9* dev);
 
 bool RunBuildDualViewShiftGuarded(void* self, void* edx) {
   __try {
@@ -2997,7 +2971,7 @@ bool RunExecViewPhaseDualGuarded(void* edx) {
 // Definitive answer to "are both eyes the same image?": downsample both canvases
 // to 16x16, read back, sum absolute byte differences. 0 = identical (no parallax
 // reached the render). Called rarely (GetRenderTargetData syncs the GPU).
-long long CompareEyeCanvases(IDirect3DDevice9* dev, bool logResult) {
+long long CompareEyeCanvases(IDirect3DDevice9* dev) {
   if (!dev || !g_texL || !g_texR)
     return -1;
   for (int i = 0; i < 2; ++i) {
@@ -3038,8 +3012,7 @@ long long CompareEyeCanvases(IDirect3DDevice9* dev, bool logResult) {
   }
   g_diffSys[1]->UnlockRect();
   g_diffSys[0]->UnlockRect();
-  if (logResult)
-    Log("StereoDiff: L-vs-R 16x16 absdiff=%lld (0 = identical images, no parallax)", sum);
+  Log("StereoDiff: L-vs-R 16x16 absdiff=%lld (0 = identical images, no parallax)", sum);
   return sum;
 }
 
@@ -4280,16 +4253,7 @@ void __fastcall HookExecA(void* self, void* edx) {
       mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe ||
       mode == StereoMode::ReplayOwnerCountProbe ||
       mode == StereoMode::FovCanvasMotionGuardFast ||
-      mode == StereoMode::FovCanvasMotionGuardRtLock ||
-      mode == StereoMode::HeadOwnedCamSpike ||
-      mode == StereoMode::HeadOwnedCamFullPose ||
-      mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-      mode == StereoMode::HeadOwnedCamPitchStable ||
-      mode == StereoMode::HeadOwnedCamPedCoupled ||
-      mode == StereoMode::HeadOwnedCamStereoAlways ||
-      mode == StereoMode::HeadOwnedCamStereoAer ||
-      mode == StereoMode::HeadOwnedCamStereoSwap ||
-      mode == StereoMode::HeadOwnedCamStereoSoftGuard) {
+      mode == StereoMode::FovCanvasMotionGuardRtLock || IsHeadOwnedCamFamily(mode)) {
     const int ph = g_mode30Phase.load();
     if (ph != static_cast<int>(Mode30Phase::Dual) || g_execDualDead.load()) {
       g_origExecA(self, edx);
@@ -4405,7 +4369,7 @@ bool SubmitEyeTexture(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye 
   // Mode 38: Luke Ross AER lesson — stamp capture-time HMD pose so SteamVR can
   // reproject the stale eye (OpenVR #1253). Fall back to Submit_Default if pose missing.
   vr::EVRCompositorError err = vr::VRCompositorError_None;
-  const bool wantPose = UsesAerPoseSubmit(GetStereoMode());
+  const bool wantPose = (GetStereoMode() == StereoMode::AerPoseSubmit);
   const bool poseOk =
       wantPose && ((eye == vr::Eye_Left) ? g_submitPoseLValid : g_submitPoseRValid);
   if (poseOk) {
@@ -4829,10 +4793,6 @@ void TemporalCapturePairHold(IDirect3DDevice9* device) {
   if (!device || !g_holdL || !g_holdR || !g_texL || !g_texR)
     return;
   LogCachedIpdOnce();
-  // Mode 48–52: refresh tracked CopyMat matrices immediately before each eye capture
-  // so a late follow-cam overwrite cannot stale the backbuffer view.
-  if (UsesPreCaptureCamRefresh(GetStereoMode()))
-    RefreshLiveCamForStereoEye();
   const StereoEye eye = GetStereoEye();
   const bool latchPair = UsesFovComfortPath(GetStereoMode());
   if (eye == StereoEye::Left) {
@@ -4848,46 +4808,13 @@ void TemporalCapturePairHold(IDirect3DDevice9* device) {
       SnapshotHoldPose(true);
       float rotDeg = 0.f, moveCm = 0.f;
       bool directSubmitGuard = false;
-      const StereoMode sm = GetStereoMode();
-      if (sm == StereoMode::HeadOwnedCamStereoSoftGuard) {
-        if (ComputeHoldPoseDelta(&rotDeg, &moveCm)) {
-          const SoftGuardAction action = Mode53SoftGuardAction(rotDeg, moveCm);
-          if (action == SoftGuardAction::FullMono) {
-            const bool sameFrameL = CopyBbToEyeCanvas(device, g_texL, vr::Eye_Left);
-            const bool sameFrameR = CopyBbToEyeCanvas(device, g_texR, vr::Eye_Right);
-            if (sameFrameL && sameFrameR) {
-              g_haveL = g_haveR = true;
-              g_submitPoseL = g_holdPoseR;
-              g_submitPoseR = g_holdPoseR;
-              g_submitPoseLValid = g_submitPoseRValid = g_holdPoseRValid;
-              directSubmitGuard = true;
-              const uint32_t hardN = ++g_mode53FullMono;
-              if (hardN <= 6 || (hardN % 120) == 0)
-                Log("Mode53: HARD-GUARD full mono #%u rot=%.2fdeg move=%.2fcm "
-                    "(>=15deg or >=12cm — extreme turn only)",
-                    hardN, rotDeg, moveCm);
-            } else {
-              Log("Mode53: hard-guard copy failed; promoting normal temporal pair");
-            }
-          } else if (action == SoftGuardAction::AerDistinct) {
-            const uint32_t softN = ++g_mode53SoftGuard;
-            if (softN <= 6 || (softN % 120) == 0)
-              Log("Mode53: SOFT-GUARD AER distinct #%u rot=%.2fdeg move=%.2fcm "
-                  "(distinct L/R preserved + Submit_TextureWithPose; no flatten)",
-                  softN, rotDeg, moveCm);
-          }
-        }
-      } else if (Mode40NeedsMonoGuard(&rotDeg, &moveCm)) {
+      if (Mode40NeedsMonoGuard(&rotDeg, &moveCm)) {
         // Both eye canvases now originate from this exact backbuffer epoch.
         // They retain their correct per-eye canvas geometry, but intentionally
         // contain one camera view until the next calm L/R temporal pair.
         const bool fast = GetStereoMode() == StereoMode::FovCanvasMotionGuardFast ||
                           GetStereoMode() == StereoMode::FovCanvasMotionGuardRtLock ||
-                          GetStereoMode() == StereoMode::HeadOwnedCamSpike ||
-                          GetStereoMode() == StereoMode::HeadOwnedCamFullPose ||
-                          GetStereoMode() == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-                          GetStereoMode() == StereoMode::HeadOwnedCamPitchStable ||
-                          GetStereoMode() == StereoMode::HeadOwnedCamPedCoupled;
+                          IsHeadOwnedCamFamily(GetStereoMode());
         IDirect3DTexture9* dstL = fast ? g_texL : g_holdL;
         IDirect3DTexture9* dstR = fast ? g_texR : g_holdR;
         const bool sameFrameL = CopyBbToEyeCanvas(device, dstL, vr::Eye_Left);
@@ -4916,32 +4843,6 @@ void TemporalCapturePairHold(IDirect3DDevice9* device) {
       }
       if (!directSubmitGuard)
         PromoteHoldPair(device);
-      if (UsesStereoAlwaysDistinct(GetStereoMode())) {
-        const long long diff = CompareEyeCanvases(device, false);
-        if (diff >= 0) {
-          const uint32_t pairs = ++g_stereoAuditPairs;
-          g_stereoAuditDiffSum.fetch_add(diff);
-          if (diff < 200)
-            ++g_stereoAuditZero;
-          if (pairs <= 6 || (pairs % 120) == 0) {
-            const long long sum = g_stereoAuditDiffSum.load();
-            const uint32_t zero = g_stereoAuditZero.load();
-            if (sm == StereoMode::HeadOwnedCamStereoSoftGuard) {
-              Log("Mode53: StereoAudit pairs=%u avgDiff=%lld zeroRate=%.1f%% sep=%.0fcm "
-                  "scale=%.2f softGuard=%u hardMono=%u",
-                  pairs, sum / static_cast<long long>(pairs),
-                  pairs ? (100.f * zero / pairs) : 0.f, GetStereoSepMeters() * 100.f,
-                  GetStereoScale(), g_mode53SoftGuard.load(), g_mode53FullMono.load());
-            } else {
-              Log("Mode50: StereoAudit pairs=%u avgDiff=%lld zeroRate=%.1f%% sep=%.0fcm "
-                  "scale=%.2f motionGuard=0",
-                  pairs, sum / static_cast<long long>(pairs),
-                  pairs ? (100.f * zero / pairs) : 0.f, GetStereoSepMeters() * 100.f,
-                  GetStereoScale());
-            }
-          }
-        }
-      }
       g_pairAwaitingR = false;
     }
     if (latchPair)
@@ -5121,16 +5022,7 @@ bool InstallStereoRenderHooks() {
       mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe ||
       mode == StereoMode::ReplayOwnerCountProbe ||
       mode == StereoMode::FovCanvasMotionGuardFast ||
-      mode == StereoMode::FovCanvasMotionGuardRtLock ||
-      mode == StereoMode::HeadOwnedCamSpike ||
-      mode == StereoMode::HeadOwnedCamFullPose ||
-      mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-      mode == StereoMode::HeadOwnedCamPitchStable ||
-      mode == StereoMode::HeadOwnedCamPedCoupled ||
-      mode == StereoMode::HeadOwnedCamStereoAlways ||
-      mode == StereoMode::HeadOwnedCamStereoAer ||
-      mode == StereoMode::HeadOwnedCamStereoSwap ||
-      mode == StereoMode::HeadOwnedCamStereoSoftGuard) {
+      mode == StereoMode::FovCanvasMotionGuardRtLock || IsHeadOwnedCamFamily(mode)) {
     // Pair-hold only: same install surface as Mode 26 (no exec dual hooks).
     // Device-VS dual was probed this session (mode30dev=0) — do not re-arm.
     SetStereoEye(StereoEye::Left);
@@ -5186,77 +5078,35 @@ bool InstallStereoRenderHooks() {
           g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
       Log("StereoRender: kill-switch - stereo=40 (conservative guard), 37, or 30 + delete "
           "gtaiv_dxvk_vr.fovadd");
-    } else if (mode == StereoMode::FovCanvasMotionGuardRtLock ||
-               mode == StereoMode::HeadOwnedCamSpike ||
-               mode == StereoMode::HeadOwnedCamFullPose ||
-               mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-               mode == StereoMode::HeadOwnedCamPitchStable ||
-               mode == StereoMode::HeadOwnedCamPedCoupled ||
-               mode == StereoMode::HeadOwnedCamStereoAlways ||
-               mode == StereoMode::HeadOwnedCamStereoAer ||
-               mode == StereoMode::HeadOwnedCamStereoSwap ||
-      mode == StereoMode::HeadOwnedCamStereoSoftGuard) {
+    } else if (mode == StereoMode::FovCanvasMotionGuardRtLock || IsHeadOwnedCamFamily(mode)) {
       const bool fovOk = InstallFovRecomputeSiteHook();
       g_mode40MonoPairs.store(0);
       g_mode44RtChecks.store(0);
       g_mode44RtRecreates.store(0);
       g_mode44RtSuppressed.store(0);
-      if (UsesStereoAlwaysDistinct(mode)) {
-        g_stereoAuditPairs.store(0);
-        g_stereoAuditZero.store(0);
-        g_stereoAuditDiffSum.store(0);
-        if (mode == StereoMode::HeadOwnedCamStereoAer) {
-          Log("StereoRender: mode 51 STEREO-AER (Mode50 always-distinct L/R + "
-              "Submit_TextureWithPose; motion-guard OFF; not same-frame) ok=%d fovSite=%d",
-              g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
-          Log("StereoRender: kill-switch - stereo=50, 49, or 45 + delete fovadd");
-        } else if (mode == StereoMode::HeadOwnedCamStereoSoftGuard) {
-          g_mode53SoftGuard.store(0);
-          g_mode53FullMono.store(0);
-          Log("StereoRender: mode 53 STEREO-SOFT-GUARD (Mode51 AER + distinct L/R; "
-              "8deg/6cm soft=AER no flatten; 15deg/12cm hard=full mono only) ok=%d fovSite=%d",
-              g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
-          Log("StereoRender: kill-switch - stereo=51, 50, 49, or 45 + delete fovadd");
-        } else if (mode == StereoMode::HeadOwnedCamStereoSwap) {
-          Log("StereoRender: mode 52 STEREO-SWAP (Mode50 + swapped L/R submit — depth "
-              "inversion test; motion-guard OFF) ok=%d fovSite=%d",
-              g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
-          Log("StereoRender: kill-switch - stereo=50, 49, or 45 + delete fovadd");
-        } else {
-          Log("StereoRender: mode 50 STEREO-ALWAYS (Mode49 ped-coupled head-owned but "
-              "motion-guard OFF — always distinct temporal L/R when ipd>0; StereoAudit "
-              "logs L≠R proof; not same-frame) ok=%d fovSite=%d",
-              g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
-          Log("StereoRender: kill-switch - stereo=49 (motion-guard baseline), 45, or 30 "
-              "+ delete gtaiv_dxvk_vr.fovadd");
-        }
-      } else if (mode == StereoMode::HeadOwnedCamSpike ||
-          mode == StereoMode::HeadOwnedCamFullPose ||
-          mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-          mode == StereoMode::HeadOwnedCamPitchStable ||
-          mode == StereoMode::HeadOwnedCamPedCoupled) {
-        if (mode == StereoMode::HeadOwnedCamPedCoupled) {
-          Log("StereoRender: mode 49 PED-COUPLED HEAD-OWNED (Mode48 pitch-stable + pre-capture "
-              "refresh; leveledPitchFlip=OFF; yaw follows ped + HMD delta; no Mode-46 roll; "
-              "not true stereo) ok=%d fovSite=%d",
-              g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
-          Log("StereoRender: kill-switch - stereo=48, 45, 47, 44, 37, or 30 + delete "
-              "gtaiv_dxvk_vr.fovadd");
-        } else if (mode == StereoMode::HeadOwnedCamPitchStable) {
-          Log("StereoRender: mode 48 HEAD-OWNED PITCH-STABLE (Mode47 + stable up/down basis "
-              "+ pre-capture CopyMat refresh; no Mode-46 roll; not true stereo) ok=%d fovSite=%d",
-              g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
-          Log("StereoRender: kill-switch - stereo=47, 45, 44, 37, or 30 + delete "
-              "gtaiv_dxvk_vr.fovadd");
-        } else {
-          Log("StereoRender: mode %d HEAD-OWNED LEVELED-PITCH (Mode44 RT lock + post-CCam "
-              "CopyMat HMD reapply; Mode46 keeps unsafe roll; Mode47 pitch flip ON; no "
-              "collision/VS/replay change; not true stereo) ok=%d fovSite=%d",
-              static_cast<int>(mode),
-              g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
-          Log("StereoRender: kill-switch - stereo=45, 44, 37, or 30 + delete "
-              "gtaiv_dxvk_vr.fovadd");
-        }
+      if (mode == StereoMode::RePatternValidate) {
+        LogRePatternValidationOnce();
+        Log("StereoRender: mode 62 RE-PATTERN VALIDATE (Mode45 renderer + offline AOB "
+            "check; docs/RE_OFFSETS.md; SameFrame=0) ok=%d fovSite=%d",
+            g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+        Log("StereoRender: kill-switch - stereo=45 or 30 + delete gtaiv_dxvk_vr.fovadd");
+      } else if (mode == StereoMode::SameFrameSeamGate) {
+        LogRePatternValidationOnce();
+        Log("StereoRender: mode 63 SAME-FRAME SEAM GATE (Mode45 renderer; "
+            "SameFrameSeamGateOpen=%d — dual stays OFF until RE proves replay owner) "
+            "ok=%d fovSite=%d",
+            IsSameFrameSeamGateOpen() ? 1 : 0, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+        Log("StereoRender: kill-switch - stereo=45; see docs/RE_OFFSETS.md forbidden list");
+      } else if (mode == StereoMode::HeadOwnedCamSpike) {
+        Log("StereoRender: mode 45 HEAD-OWNED CAM SPIKE (Mode44 RT lock + post-CCam "
+            "CopyMat HMD reapply; no collision/VS/replay change; not true stereo) ok=%d "
+            "fovSite=%d",
+            g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+        Log("StereoRender: mode 45 MOTION-GUARD ON (fast direct-submit; thresholds "
+            "rot>=0.8deg OR move>=1.2cm between L/R capture poses; Mode40/44 use "
+            "1.5deg/2.0cm)");
+        Log("StereoRender: kill-switch - stereo=44, 37, or 30 + delete "
+            "gtaiv_dxvk_vr.fovadd");
       } else {
         Log("StereoRender: mode 44 RT-LOCK (Mode43 fast motion guard + locked 1536 eye RTs; "
             "5%% FOV tangent publish gate; no FOV/RT thrash; not true stereo) ok=%d fovSite=%d",
@@ -5617,7 +5467,7 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
       Log("StereoRecDual: es#%u nextEye=%s haveL=%d haveR=%d sep=%.0fcm scale=%.2f "
           "(CCam only, no VS stack)",
           s_es, GetStereoEye() == StereoEye::Right ? "R" : "L", g_haveL ? 1 : 0,
-          g_haveR ? 1 : 0, GetStereoSepMeters() * 100.f, GetWorldScale());
+          g_haveR ? 1 : 0, GetStereoSepMeters() * 100.f, GetLeanGain());
     return;
   }
 
@@ -5628,16 +5478,7 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
         mode == StereoMode::FovCanvasMotionGuard || mode == StereoMode::ReplayCallChainProbe ||
         mode == StereoMode::ReplayOwnerCountProbe ||
         mode == StereoMode::FovCanvasMotionGuardFast ||
-        mode == StereoMode::FovCanvasMotionGuardRtLock ||
-        mode == StereoMode::HeadOwnedCamSpike ||
-        mode == StereoMode::HeadOwnedCamFullPose ||
-        mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
-        mode == StereoMode::HeadOwnedCamPitchStable ||
-        mode == StereoMode::HeadOwnedCamPedCoupled ||
-      mode == StereoMode::HeadOwnedCamStereoAlways ||
-      mode == StereoMode::HeadOwnedCamStereoAer ||
-      mode == StereoMode::HeadOwnedCamStereoSwap ||
-      mode == StereoMode::HeadOwnedCamStereoSoftGuard) {
+        mode == StereoMode::FovCanvasMotionGuardRtLock || IsHeadOwnedCamFamily(mode)) {
       g_dualDoneThisFrame = false;
       g_skipExecA = g_skipExecC = g_skipExecD = 0;
       IDirect3DSurface9* bb = nullptr;
@@ -5777,15 +5618,7 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
       mode != StereoMode::ReplayCallChainProbe && mode != StereoMode::ReplayOwnerCountProbe &&
       mode != StereoMode::FovCanvasMotionGuardFast &&
       mode != StereoMode::FovCanvasMotionGuardRtLock &&
-      mode != StereoMode::HeadOwnedCamSpike &&
-      mode != StereoMode::HeadOwnedCamFullPose &&
-      mode != StereoMode::HeadOwnedCamLeveledPitchFlip &&
-      mode != StereoMode::HeadOwnedCamPitchStable &&
-      mode != StereoMode::HeadOwnedCamPedCoupled &&
-      mode != StereoMode::HeadOwnedCamStereoAlways &&
-      mode != StereoMode::HeadOwnedCamStereoAer &&
-      mode != StereoMode::HeadOwnedCamStereoSwap &&
-      mode != StereoMode::HeadOwnedCamStereoSoftGuard)
+      !IsHeadOwnedCamFamily(mode))
     return false;
   if (!device || !interop || !g_texL || !g_texR)
     return false;
@@ -5797,7 +5630,7 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
   interop->FlushRenderingCommands();
   interop->LockSubmissionQueue();
   bool okL = false, okR = false;
-  if (mode == StereoMode::FusionSwap || mode == StereoMode::HeadOwnedCamStereoSwap) {
+  if (mode == StereoMode::FusionSwap) {
     // Diagnostic: feed captured-Left texture to Right eye and vice versa.
     okL = SubmitEyeTexture(device, g_texR, vr::Eye_Left, interop);
     okR = SubmitEyeTexture(device, g_texL, vr::Eye_Right, interop);
@@ -5810,8 +5643,7 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
   static uint32_t s_n = 0;
   if ((++s_n) <= 8 || (s_n % 120) == 0)
     Log("StereoSubmit: L=%d R=%d mode=%d swap=%d", okL ? 1 : 0, okR ? 1 : 0,
-        static_cast<int>(mode),
-        (mode == StereoMode::FusionSwap || mode == StereoMode::HeadOwnedCamStereoSwap) ? 1 : 0);
+        static_cast<int>(mode), mode == StereoMode::FusionSwap ? 1 : 0);
   return okL && okR;
 }
 

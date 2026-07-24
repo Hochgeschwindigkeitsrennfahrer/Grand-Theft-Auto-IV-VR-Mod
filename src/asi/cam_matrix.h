@@ -18,11 +18,8 @@ bool IsCamMatrixOverrideEnabled();
 
 void PollCamHotkeys();
 
-// F9 view recenter — ped/veh heading baselines (not 6DoF translation).
+// F9 SteamVR recenter — resets seated 6DoF baseline only.
 void CamMatrixOnRecenter();
-
-// F10 — zero seated 6DoF translation origin only (WorldScale lean anchor).
-void CamMatrixOnSixDofReset();
 
 // Re-apply HMD+IPD to all tracked CopyMat matrices (stereo pass switch).
 void RefreshLiveCamForStereoEye();

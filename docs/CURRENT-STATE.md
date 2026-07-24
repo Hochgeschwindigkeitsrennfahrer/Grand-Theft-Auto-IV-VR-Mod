@@ -1,26 +1,273 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~22:18
-**Deployed now:** stereo **`51`** (Mode-50 always-distinct L/R + **`Submit_TextureWithPose`**
-AER) + **`fovadd=18`**, **`ipd=3`**, scale **`100`**, stereoscale **`125`**. Mode **50**
-(motion-guard OFF baseline), **53** (soft guard: 8°/6cm AER-only, 15°/12cm hard mono), and
-**52** (swap-eyes depth test) are built and freeze-tested. Mode **49** remains the full
-motion-guard stability baseline. Mode 46 stays disabled (post-load freeze). Mode 45/48 remain
-kill baselines.
-**Hotkeys split:** **F9** = view recenter only; **F10** = 6DoF translation origin reset.
-F6=stereo scale, F7=WorldScale, F8=IPD.
-**Root cause found (Mode 49 “no 3D”):** Mode-40 motion guard (≥1.5° / ≥2 cm between L/R capture
-poses) fired constantly on temporal pairs and copied the **same R frame to both eyes** → flat image
-even with correct IPD. Mode 50+ disables that guard; Mode 53 adds optional soft guard at much
-higher thresholds only.
-**Kill:** stereo **`49`** (motion-guard stability), **`50`** (no AER), **`45`**, **`48`**, **`44`**, **`37`**, or **`30`**
-+ delete **`fovadd`**. Protected: **`36`/`35`**. Keep **`ipd`≥1**, canvas **zoom DISABLED**.
-**Expectation:** Real temporal parallax with AER reprojection comfort on rapid turns. Log proof:
-`motionGuard=0`, `StereoAudit avgDiff≈11000+` at ipd=3, `zeroRate≈1%`, distinct `CamMatrix ipd`
-L vs R (±0.016 at 3 cm), `AERPose submitWithPose=1 err=0`, **no** `MOTION-GUARD mono pair`
-lines. Headset must confirm depth vs Mode 49/50. Kill to **`50`** or **`49`** if jump worse.
+**As of:** 2026-07-25 ~04:30 (RE offset map + Mode 62/63 scaffold; no game launch)
+**Deployed now:** stereo **`45`**, **`ipd=3`**, scale **`100`** (leanGain **1.0**, F7 **8 steps**),
+**`fovadd=18`**. New offline docs: **`docs/RE_OFFSETS.md`**. Optional RE test modes **`62`** /
+**`63`** (same renderer as 45; disabled by default).
 
-### Session 2026-07-24 ~22:18 (Mode 51 AER + ipd=3 + Mode 53 soft guard — shipped)
+**Hotkeys:** F9=SteamVR recenter · F6/F7/F8 stereo scale / world lean / IPD.
+
+**F7 leanGain (8 steps):** `eyeDelta = hmdDelta / leanGain`. **Higher leanGain = smaller world**.
+F7 cycles: **1.0 → 1.25 → 1.5 → 2.0 → 2.5 → 3.0 → 4.0 → 5.0**. File stores **leanGain×100**.
+
+**RE session (offline):** Full PE scan of CE `GTAIV.exe` — see **`docs/RE_OFFSETS.md`**. Key
+findings: **`VsRet=0x2C73E`** and **`0x2C6AC`** share wrapper **`0x2C180`**; **zero** static
+`E8→VsRet` (indirect-only); CopyMat **`0x83DB90`**, FovSite **`0x70637C→0x706A00`**, BuildRootA
+**`0x8F7F00`**. **SameFrameSeamGate=CLOSED** — no safe replay owner yet. Stereo file **`46–61`**
+remap to **`45`** on load.
+
+**Mode 62/63 (optional, not deployed):** **`62`** = Mode 45 + `ReValidate:` AOB log at startup.
+**`63`** = Mode 45 + seam gate log (`SameFrameSeamGateOpen=0`). Run `py scripts/offline-re-scan.py`
+anytime without launching the game.
+
+**Kill:** stereo **`45`** · delete `fovadd` for Mode 35 read-only · **`30`** + no fovadd for legacy.
+
+### Session 2026-07-25 ~04:30 (RE map + scaffold — no headset)
+
+**Shipped (build OK, not game-tested this session):**
+- **`docs/RE_OFFSETS.md`** — RVA/AOB table, forbidden list, VsRet chain, cross-mod targets
+- **`scripts/offline-re-scan.py`** — read-only PE scanner for local `GTAIV.exe`
+- **`re_validate.cpp`** — ASI startup AOB validation (`ReValidate:` log lines)
+- **Mode 62/63** enum + renderer path (Mode 45 family); default remains **45**
+- **F7** restored to **8-step** leanGain preset (1.0…5.0)
+- **ParseModeFile** remaps **46–61 → 45** with warning
+
+**Headset check when back:** Confirm Mode **45** still smooth (no jump regression). Optional: write
+**`62`** to stereo file → restart → log should show `ReValidate: OK …` for CopyMat/FovSite/phase
+AOBs. Optional **`41`** for 1 min → paste `Mode41: CHAIN` rows if continuing same-frame RE.
+
+**Still blocking perfect VR:** temporal L/R (one game tick between eyes); replay-thread draw owner
+not hookable yet; independent VR cam deferred.
+
+---
+
+**As of (prior):** 2026-07-25 ~03:00 (Mode 45 LKG restored + F7 leanGain fix)
+**Deployed now:** stereo **`45`**, **`ipd=3`**, scale **`100`** (leanGain **1.0**), **`fovadd=18`**. No
+`worldsize` file. Source restored from git **`872ab11`** (Mode 45 head-owned camera — last known good).
+
+**Hotkeys:** F9=SteamVR recenter (resets seated 6DoF baseline) · F6/F7/F8 stereo scale / world lean / IPD.
+
+**F7 leanGain (fixed):** `eyeDelta = hmdDelta / leanGain`. **Higher leanGain = smaller world** when you
+lean. F7 cycles **up**: **1.0 → 1.25 → 1.5 → 2.0 → 2.5 → 3.0 → 4.0 → 5.0** (8 steps). File
+`gtaiv_dxvk_vr.scale` stores **leanGain×100** (100 = normal). Log:
+`F7: world smaller — leanGain=X.XX (step N/8)`.
+
+**Bug found:** Old code used **`eye += delta * worldScale`** (multiply). Higher scale = **more** movement =
+**bigger** world — opposite of comments and user intent.
+
+**Kill:** stereo **`45`** · delete `fovadd` for Mode 35 read-only · **`30`** + no fovadd for legacy pair-hold.
+
+### Session 2026-07-25 ~03:00 (872ab11 restore + F7 divide fix)
+
+**Restored from `872ab11`:** `cam_matrix`, `stereo_config`, `stereo_render`, `vr_display`, `hmd_look`,
+`openvr_mono` — pure Mode 45 path (no Mode 46–61 experiments). F9-only recenter from 872ab11 (no F10 split).
+
+**F7 fix:** Replaced multiply-with-pct with **divide-by-leanGain**. Eight preset steps; each F7 press
+makes head-lean move the camera **less** in game space.
+
+**Headset check:** Restart game. Confirm smooth Mode 45 (no bars, no jump). Press **F7** repeatedly —
+log should show leanGain rising 1.0→1.25→… and world should feel **smaller** when you lean. Too big at
+spawn → F7 toward 2.0–3.0. Reset lean origin → **F9**.
+
+---
+
+**As of (prior):** 2026-07-25 ~02:45 (HARD ROLLBACK — Mode 45 good baseline restored)
+
+**User report:** Recent uncommitted patches destroyed performance and reintroduced jitter/jump.
+F7 still made world **bigger** instead of smaller.
+
+**Reverted (discarded uncommitted work, restored `src/asi/*` from git HEAD):**
+- **`100/pct` WorldScale invert** — back to linear **`pct/100`**
+- **F7 cycle down** (100→10) — back to **cycle up** (50→300, higher = smaller feel)
+- **Spawn auto 6DoF baseline** at first cam apply — removed
+- **Mode 45 soft Y floor** clamp — removed
+- **F9 resetting 6DoF** (coupled with F10) — back to **F9 heading only**, **F10 = 6DoF only**
+- **`worldsize` preset** file + Mode 61 renderer-only path — removed from build
+- Default scale file reset to **`100`** (was 50 in bad patch)
+
+**Still active (unchanged in HEAD):** Mode 44 RT lock, motion guard ON for Mode 45,
+true-FOV `fovadd=18`, pair-hold temporal stereo, ped-eye CopyMat + HMD orient + late
+head-owned CopyMat refresh.
+
+**Headset check:** Restart game. Smooth again? Press **F7** — scale number should **rise**
+(100→125→150…) and world should feel **smaller** when you lean. Underground spawn → **F10**
+once. Still too big → keep pressing F7 toward 150/200/300.
+
+---
+
+**As of (prior):** 2026-07-25 ~01:30 (Mode 61 renderer + worldsize knob — camera frozen at 45)
+**Deployed now:** stereo **`45`** (default kill) + **`worldsize=110`** (→ fovadd **20**, stereoscale **130**),
+**`ipd=3`**, scale **`100`**, stereoscale file ignored when worldsize present. Mode **61** shipped in
+ASI (renderer-only test — write **`61`** to stereo file). Modes **46** and **59** remap to **45**.
+**Hotkeys:** F9=view recenter · F10=6DoF reset · F6/F7/F8 stereo scale/world/IPD (worldsize overrides
+fovadd+stereoscale at load; F6 still live-tunes stereoscale).
+**Kill:** stereo **`45`** primary · **`30`** + delete `fovadd` + delete `worldsize` · protected **`36`/`35`**.
+
+### Session 2026-07-25 ~01:30 (Mode 61 renderer-soft + worldsize preset — shipped)
+
+**Track A — same-frame (honest):** No new safe replay-thread hook. VsRet `0x2C73E` chain remains
+observation-only (forbidden `0x2C6AC`, `0x37BD0`, `0x1BF010`, `0x4DDAD0`, `0x309D0`). **Mode 61**
+is **not** same-frame stereo — it keeps **Mode 45 camera math** unchanged and improves the **renderer**:
+RT lock + pair-hold + **AER `Submit_TextureWithPose`** + **soft motion guard** (8°/6 cm → keep distinct
+L/R + AER; 15°/12 cm → mono) instead of Mode 45's aggressive **1.5°/2 cm** flatten.
+
+**Track B — world size (visual):** New file **`gtaiv_dxvk_vr.worldsize`** (75–125, **100** = baseline
+fovadd **18** + stereoscale **125**). Deployed **`110`** → fovadd **20**, stereoscale **130**. Does **not**
+change F7 WorldScale (6DoF lean). FusionFix menu FOV stays **0**.
+
+**Automated post-load freeze-test PASS (Mode 45, build `20260724-232550`):** `StereoMode: 45`,
+`Mode44: RT lock … recreates=0`, continuous `StereoSubmit: L=1 R=1 mode=45` through `MonoSubmit #3600+`,
+`CamMatrix … sep=3cm` (simple Mode-45 log), `Mode45: late head-owned … pedCoupled=0 forcedWalk=0`. No
+ASI exception during unattended run.
+
+**Headset check (Mode 61 optional):** write **`61`** to `gtaiv_dxvk_vr.stereo`, restart. Expect:
+`StereoRender: mode 61 RENDERER-SOFT … SameFrame=0`, `AERPose: … submitWithPose=1`, fewer
+`MOTION-GUARD mono pair` lines than Mode 45 on calm turns. Kill: **`45`**.
+
+**Headset check (worldsize on Mode 45):** restart with `worldsize=110` — log
+`Config: worldsize=110 -> fovadd=20 stereoscale=130`. World should feel slightly less “monitor gigantic”
+without look-up warp. Too big → try **`115`**; too small/warpy → **`100`** or delete file.
+
+---
+
+**User report:** Extreme jumping and performance dips returned after Mode 46–60 camera experiments
+(forced walk, split-view, VS translate fights, pedCoupled, quadratic scale, under-map clamps).
+
+**Reverted for Mode 45 default path:**
+- Removed Mode 59/60 **2.5 m lean cap** and **ped-eye anchor clamps** from `ApplyHmdToCam` (Mode 45
+  never used them; they changed feel for all modes).
+- Restored **F9/F10 split:** F9 = SteamVR zero + ped/veh heading only; F10 = 6DoF translation
+  reset (emergency fix had coupled both on F9).
+- Mode 45 logging back to simple `CamMatrix … sep=… eyeFwd=…` (no experimental flags in log).
+- Config on disk: **`stereo=45`**, **`scale=100`**, **`fovadd=18`**, **`ipd=3`**.
+
+**Still active on Mode 45 (unchanged — the user-loved stack):** Mode 44 RT lock + motion guard,
+true-FOV `fovadd=18`, pair-hold temporal stereo, ped-eye CopyMat + HMD orient + linear WorldScale,
+late head-owned CopyMat refresh at FOV site.
+
+**Next work (NOT camera):** VR renderer (same-frame distinct eyes) + honest world-size levers
+(engine FOV / stereoscale — F7 lean ≠ building size). No new cam ownership modes this session.
+
+**DO NOT USE without explicit test:** stereo **46** (freeze), **59** (under-map), **54–58**
+(forced walk / VS translate / split-view cam fights). Kill stays **`45`**.
+
+---
+
+**As of (prior):** 2026-07-25 ~00:15 (EMERGENCY ROLLBACK)
+
+**User report:** Mode 59 + scale=1000 → camera moved way too fast, not attached to character;
+F9 recenter placed view **under the map** (underside of Liberty City); game **froze**.
+
+**Root cause:** Mode 59 shipped **quadratic** WorldScale: effective = (pct/100)². With
+scale=**1000** → **100×** 6DoF lean. Combined with F9 recenter (yaw only, 6DoF baseline kept)
++ forced head-walk (not ped-coupled) → runaway camera origin detached from ped eye → under terrain.
+
+**Fix shipped:**
+- Config on disk: **`stereo=45`**, **`scale=100`** (restart game to load).
+- Mode **59** parser remaps → **45** with log warning (same pattern as disabled Mode 46).
+- WorldScale reverted to **linear** pct/100, **cap 20×**, F7/file max **500**.
+- **Ped eye anchor** every frame: 6DoF lean capped 2.5 m; camera Y floor pedEye−1 m.
+- **F9** now resets ped/veh heading **and** 6DoF translation baseline together.
+- Mode **60 SAFE-VR** added (optional): Mode 45 motion-guard + Mode 58 polish, ped-coupled,
+  NOT forced-walk. Primary kill remains **45**.
+
+**DO NOT USE:** stereo **59** · scale **1000** · quadratic WorldScale builds.
+
+---
+
+**As of (prior):** 2026-07-24 ~23:55
+**Previously deployed:** stereo **`59`** (Mode-59 SMOOTH-VR — **FAILED**, see above) + scale **`1000`**.
+
+**One behavior change:** Mode **59** = restore **Mode 45/49 motion-guard** (fast mono on rapid
+head turn) while keeping Mode **58** VR polish (pitch-stable, pre-capture, no mouse fight,
+forced head-walk). Drops Mode **57/58** BotW **center-eye + VS translate split** — uses **full
+HMD CopyMat + IPD** like the smooth modes. **WorldScale formula fixed:** effective =
+**(pct/100)²** — F7 now cycles to **2000** (1000→100×, 2000→400× lean). Logs
+`WorldScale6DoF: pct=… applied=…m` each ~300 frames.
+
+**Deployed:** stereo=`59`, fovadd=`18`, ipd=`3`, scale=`1000`, stereoscale=`125`.
+
+**Headset check:** head turn — smooth like 45/49 (guard may flatten briefly, no stutter fight)?
+Lean forward 20 cm — log `applied=…m` should be large at scale=1000; world feel smaller?
+Walk forward — goes where you look? Kill: **`58`**, **`57`**, **`45`**.
+
+---
+
+**As of (prior):** 2026-07-24 ~23:30
+**Previously deployed:** stereo **`58`** (Mode-58 NATIVE-VR: Mode 57 unified full HMD CopyMat + VS translate
+1.10× parallax + pitch-stable look-up + pre-capture refresh + no mouse-look fight; forced
+`vr_move` head-walk) + **`fovadd=18`**, **`ipd=3`**, scale **`500`**, stereoscale **`125`**.
+Mode **57**/**56**/**55**/**45** are kill baselines. Mode 46 stays disabled (post-load freeze).
+**Hotkeys:** F9=view recenter · F10=6DoF reset · F6/F7/F8 stereo scale/world/IPD.
+**Kill:** stereo **`57`**, **`56`**, **`55`**, **`45`**, **`54`**, **`51`**. Protected: **`36`/`35`**.
+
+### Session 2026-07-24 ~23:30 (Mode 58 NATIVE-VR + tiny world scale — shipped)
+
+**One behavior change:** Mode **58** = Mode 57 HMD-walk path, plus native VR polish:
+- **Pitch-stable** look-up (Mode 48 fix — no snap/warp near vertical)
+- **Pre-capture** CopyMat refresh (blocks late follow-cam overwrite before each eye)
+- **No mouse-look** injection before cam arm (Mode 58 only — stops HMD/mouse fight)
+- **VS translate 1.10×** (render parallax only — not IPD×WorldScale)
+- Walk-where-you-look **retained** (forced `vr_move`)
+
+**WorldScale (F7):** cycle extended to **50…1000** (adds 400, 500, 750, 1000). File accepts
+**25–1000**. Rule unchanged: **HIGHER WorldScale = SMALLER world** (6DoF translation only; F8
+IPD separate). Log on F7: `HIGHER = SMALLER world`.
+
+**Deployed:** stereo=`58`, fovadd=`18`, ipd=`3`, scale=`500`, stereoscale=`125`.
+
+**Headset check:** world feel smaller at scale=500? Press **F7** to cycle 750/1000 if still huge.
+Look up — horizon stable (pitchStable)? Walk forward — goes where you look?
+Log: `VrMove: Mode58 FORCED head-walk ON`, `Mode58: nativeVr=1 pitchStable=1 preCapture=1`,
+`WorldScale: 5.00 (file) — F7: HIGHER = smaller world`. Kill: **`57`**, **`55`**, **`45`**.
+
+---
+
+**As of (prior):** 2026-07-24 ~23:00
+**Previously deployed:** stereo **`57`** (Mode-57 HMD-WALK: unified full HMD CopyMat + VS translate parallax;
+forced `vr_move` ped heading from HMD yaw; no split-view level-lock; no pedCoupled orbit) +
+**`fovadd=18`**, **`ipd=3`**, scale **`175`**, stereoscale **`125`**. Mode **56**/**55**/**45** are kill
+baselines. Mode 46 stays disabled (post-load freeze).
+**Hotkeys:** F9=view recenter · F10=6DoF reset · F6/F7/F8 stereo scale/world/IPD.
+**Kill:** stereo **`56`**, **`55`**, **`45`**, **`54`**, **`51`**. Protected: **`36`/`35`**.
+
+### Session 2026-07-24 ~23:00 (Mode 57 HMD-WALK — shipped)
+
+**One behavior change:** Mode **57** = Mode 55 BotW VS-translate parallax, but **drops Mode 56
+split-view** (gameplay level-lock broke pitch). Unified full HMD orientation on CopyMat (ped eye
++ 6DoF). **Forces** `vr_move` ped heading from HMD yaw every frame (ignores `movemode=1`). No
+pedCoupled orbit (Mode 49/55). Motion-guard OFF.
+
+**Deployed:** build `20260724-225128`, stereo=`57`, fovadd=`18`, ipd=`3`, scale=`175`.
+
+**Headset check:** look up — horizon tilts naturally? Walk forward — goes where you look?
+Log: `VrMove: Mode57 FORCED head-walk ON`, `forcedWalk=1`, `Mode57: StereoAudit … forcedWalk=1`.
+Kill: **`56`**, **`55`**, **`45`**.
+
+---
+
+**As of (prior):** 2026-07-24 ~22:33
+**Previously deployed:** stereo **`55`** (Mode-55 BotW-parallax: center-eye CopyMat + VS translate-only
+render path; no D3DTS_VIEW hijack) + **`fovadd=18`**, **`ipd=3`**, scale **`100`**, stereoscale
+**`125`**. Mode **54** (full view replace + BeginScene push) superseded — broke controls.
+Mode **50**/**49** remain kill baselines. Mode 46 stays disabled (post-load freeze).
+**Hotkeys:** F9=view recenter · F10=6DoF reset · F6/F7/F8 stereo scale/world/IPD.
+**Kill:** stereo **`50`**, **`49`**, **`45`**, **`54`**, **`51`**. Protected: **`36`/`35`**.
+
+### Session 2026-07-24 ~22:33 (Mode 55 BotW-parallax + control fix — shipped)
+
+**One behavior change:** Mode **55** = Mode 50 ped-coupled head-owned temporal stereo, but
+CopyMat stays **center eye** (no IPD in gameplay cam — restores aim/look like 49/50). Real
+parallax via replay-thread **SetVSConstF view translate only** (Mode 54 insight: CopyMat IPD
+is fake for draws). Removed Mode-54 paths that broke controls: **no** BeginScene D3DTS_VIEW
+push, **no** manager-cam IPD sync, **no** full view matrix replace.
+
+**Deployed:** build `20260724-223346`, stereo=`55`, fovadd=`18`, ipd=`3`, scale=`100`.
+
+**Headset check:** controls feel like 49/50 again? More 3D than 50 (VS translate)? F9/F10 OK?
+Kill: **`50`** (CopyMat-only parallax) or **`45`** if regress.
+
+---
 
 **One behavior change (deployed):** Mode **51** = Mode 50 always-distinct temporal L/R +
 capture-time `Submit_TextureWithPose` (Luke AER lesson). IPD bumped **`2` → `3` cm** for stronger

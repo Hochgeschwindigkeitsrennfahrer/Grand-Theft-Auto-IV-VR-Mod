@@ -1,6 +1,73 @@
-# Plan — where we are and what to do next (2026-07-24)
+# Plan — where we are and what to do next (2026-07-25)
 
-Read with `docs/CURRENT-STATE.md` and `docs/HANDOFF_GROK.md`.
+Read with `docs/CURRENT-STATE.md`, **`docs/RE_OFFSETS.md`**, and `docs/HANDOFF_GROK.md`.
+
+---
+
+## Session note 2026-07-25 ~04:30 — RE offset map (offline; no game launch)
+
+**Shipped:**
+- **`docs/RE_OFFSETS.md`** — durable CE 1.2.0.59 RVA/AOB map, forbidden sites, VsRet chain,
+  re-find procedure
+- **`scripts/offline-re-scan.py`** — PE scan without Steam/GTA
+- **`re_validate.cpp`** — runtime AOB drift check (`ReValidate:` in log)
+- **Mode 62** (`RePatternValidate`) / **Mode 63** (`SameFrameSeamGate`) — Mode 45 renderer +
+  RE logging; **default stays 45**
+- **F7** 8-step leanGain (1.0…5.0); stereo file **46–61 → 45** remap
+
+**RE conclusion:** Same-frame distinct eyes still need a **replay-thread draw owner** (~1×/frame,
+hookable thiscall). VsRet **`0x2C73E`** is observation-only. **`0x309D0`** indirect edge needs
+live **`eax`/vtable** capture (Mode 42 follow-up) — do not hook yet.
+
+**When user returns — pick ONE headset test:**
+1. **Baseline:** Mode **45** — smooth? F7 steps 1.0→5.0 make world smaller when leaning?
+2. **RE validate:** stereo **`62`** — log shows `ReValidate: OK` for all required AOBs?
+3. **Chain probe:** stereo **`41`** — 1 calm minute; save `Mode41: CHAIN` lines for next RE pass
+4. **World size (visual, not F7):** F6 stereoscale 125→130; or try `fovadd` **20** (not both at once)
+
+**Kill:** **`45`** · fallback **`30`** + delete `fovadd`.
+
+---
+
+## Session note 2026-07-25 ~01:30 — Mode 61 renderer-soft + worldsize preset
+
+**Shipped:**
+- **Mode 61** (`HeadOwnedCamRendererSoft`) — Mode **45** camera unchanged; renderer = RT lock +
+  pair-hold + AER pose submit + soft guard (no Mode-40 1.5° flatten). **SameFrame=0** (replay seam
+  still blocked).
+- **`gtaiv_dxvk_vr.worldsize`** — single visual-scale knob (75–125). **100** = fovadd 18 +
+  stereoscale 125. Deployed **110** with default stereo **45**.
+
+**Default deploy:** `stereo=45`, `worldsize=110`, `ipd=3`, `scale=100`.
+
+**Test Mode 61:** write `61` to stereo file, restart, headset-check jump vs 45. Kill **`45`**.
+
+**Test worldsize:** restart after editing worldsize file; verify log line. Kill: delete worldsize +
+  restore `fovadd=18` / `stereoscale=125` individually if needed.
+
+**Still deferred:** safe same-tick distinct-eye replay seam — no new hooks this session.
+
+---
+
+## Session note 2026-07-25 ~00:45 — Camera frozen at Mode 45; next = renderer + world size
+
+**Decision:** Stop camera ownership experiments for this phase. Mode **45** is the only default
+deploy. Modes 46/59 remap to 45; 47–60 stay in code for manual tests only.
+
+**What “VR renderer + world size” means next (honest scope):**
+
+| Track | Goal | Not a substitute for |
+|-------|------|----------------------|
+| **Same-frame stereo** | Find a safe replay-thread seam (`VsRet=0x2C73E` chain) so L/R eyes render from **one game tick** with distinct view constants | Another CopyMat / VS-translate / forced-walk cam mode |
+| **Renderer comfort (Mode 61)** | AER + soft guard on Mode 45 cam — less flatten, not true stereo | Same-frame or cam rewrite |
+| **World size (visual)** | **`gtaiv_dxvk_vr.worldsize`** (75–125) sets **fovadd + stereoscale** together; deployed **110** | F7 WorldScale alone — that only scales **6DoF lean**, not building scale |
+| **World size (6DoF)** | F7 linear scale 100–500 at user discretion | Quadratic scale, scale=1000, or cam-anchor clamps |
+
+**One change per session.** Headset proof: `StereoMode: 45`, paired `StereoSubmit: L=1 R=1 mode=45`,
+`Mode44: RT lock … recreates=0`, **no** `Mode5x` / `forcedWalk=1` / `VrMove: Mode57` lines unless
+you explicitly set an experimental stereo file.
+
+**Kill:** `45` · fallback `30` + delete `fovadd`.
 
 ---
 

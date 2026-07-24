@@ -32,6 +32,7 @@ $src = @(
   "src\asi\vr_move.cpp",
   "src\asi\vr_display.cpp",
   "src\asi\stereo_eye.cpp",
+  "src\asi\re_validate.cpp",
   "src\asi\stereo_config.cpp",
   "src\asi\stereo_render.cpp",
   "src\asi\stereo_proj.cpp",

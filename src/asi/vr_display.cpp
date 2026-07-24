@@ -253,7 +253,10 @@ void PublishGameFovFromCCamDegrees(float ccamDeg, float aspectWH) {
   // Mode 44 owns fixed-size eye RTs, so retain the first stable true-FOV tangent
   // through ordinary CCam noise. A real zoom/camera change still exceeds 5%.
   const StereoMode mode = GetStereoMode();
-  const float gate = UsesRtLockFovGate(mode) ? 0.05f : 0.025f;
+  const float gate = (mode == StereoMode::FovCanvasMotionGuardRtLock ||
+                      IsHeadOwnedCamFamily(mode))
+                         ? 0.05f
+                         : 0.025f;
   const bool changed = !(curH > 0.05f) || std::fabs(tanH - curH) > gate * curH;
   if (!changed && g_fovFromCCam.load())
     return;

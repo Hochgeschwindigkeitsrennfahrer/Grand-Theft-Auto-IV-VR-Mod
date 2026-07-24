@@ -221,52 +221,14 @@ enum class StereoMode : int {
   // performs a late camera update, without changing gameplay collision/culling,
   // touching VS constants, or replaying a draw. Kill: 44/37/30.
   HeadOwnedCamSpike = 45,
-  // Mode 45's late head-owned refresh, but preserves the HMD's complete rigid
-  // right/forward/up basis instead of rebuilding it from forward + world-up.
-  // This makes physical roll tilt the horizon correctly and keeps the render
-  // view head-owned; gameplay camera/collision, FOV canvas, RT lock, and
-  // temporal motion guard are unchanged. Kill: 45/44/37/30.
-  HeadOwnedCamFullPose = 46,
-  // Mode 45's exact world-up-leveled reconstruction, retained as the safe
-  // recovery from the failed inverted-pitch experiment. It never writes the
-  // unsafe non-level HMD right/up axes from Mode 46.
-  HeadOwnedCamLeveledPitchFlip = 47,
-  // Mode 47 plus pitch-stable leveled basis: when HMD forward is near vertical
-  // the world-up cross product degenerates and snaps to rx=(1,0,0), causing
-  // look-up warp. Mode 48 keeps the last stable right/up and re-orthogonalizes
-  // with the current forward. Also refreshes CopyMat immediately before each
-  // temporal eye capture so a late follow-cam overwrite cannot stale the BB.
-  // Still no Mode-46 full HMD-basis write. Kill: 47/45/44/37/30.
-  HeadOwnedCamPitchStable = 48,
-  // Mode 48 pitch-stable basis + pre-capture refresh, but Mode-45 pitch sign
-  // (leveledPitchFlip OFF — flip=1 in 47/48 was reversed). Yaw couples to live
-  // ped heading: body turns carry the view; HMD yaw is delta on top. Ped eye +
-  // F9-relative 6DoF unchanged. Kill: 48/45/47/44/37/30.
-  HeadOwnedCamPedCoupled = 49,
-  // Mode 49 visuals/stability but motion-guard OFF — always promote distinct
-  // temporal L/R when ipd>0. Logs StereoAudit (L≠R diff) each pair. Kill: 49/45.
-  HeadOwnedCamStereoAlways = 50,
-  // Mode 50 + capture-time Submit_TextureWithPose (Luke AER). Kill: 50/49/45.
-  HeadOwnedCamStereoAer = 51,
-  // Mode 50 + swapped L/R submit (depth inversion test). Kill: 50/49/45.
-  HeadOwnedCamStereoSwap = 52,
-  // Mode 51 + soft motion guard: 8°/6cm → keep distinct L/R + AER (no flatten);
-  // 15°/12cm → full mono fallback. Kill: 51/50/49/45.
-  HeadOwnedCamStereoSoftGuard = 53,
+  // Mode 45 renderer + startup PE/AOB validation (docs/RE_OFFSETS.md). READ-ONLY RE.
+  RePatternValidate = 62,
+  // Mode 45 renderer + logs SameFrameSeamGate=CLOSED until replay owner proven.
+  SameFrameSeamGate = 63,
 };
 
-// Mode 40–49: rapid HMD delta → temporary mono pair. Mode 50+ never flattens.
-bool UsesMotionGuardStereo(StereoMode mode);
-// Mode 50–53: stereo-first temporal path with pair audit logging.
-bool UsesStereoAlwaysDistinct(StereoMode mode);
-// Mode 38/51/53: Submit_TextureWithPose per eye.
-bool UsesAerPoseSubmit(StereoMode mode);
-// Mode 49 and 50+: ped yaw coupling (body turn carries view).
-bool UsesPedCoupledYaw(StereoMode mode);
-// Mode 48–53: refresh CopyMat immediately before each eye capture.
-bool UsesPreCaptureCamRefresh(StereoMode mode);
-// Mode 44/45/47–53: locked 1536 RTs + 5% FOV publish gate.
-bool UsesRtLockFovGate(StereoMode mode);
+// Mode 45 family: LKG camera + RT lock + motion guard (includes RE scaffold 62/63).
+bool IsHeadOwnedCamFamily(StereoMode mode);
 
 StereoMode GetStereoMode();
 void ReloadStereoMode();
@@ -279,7 +241,9 @@ float GetStereoIpdScale();
 
 // VRScale (L4D2VR): HIGHER → more 6DoF in game units → world feels SMALLER.
 // File: gtaiv_dxvk_vr.scale (percent, 100 = 1.0). Does NOT multiply stereo IPD.
-float GetWorldScale();
+// 6DoF lean gain (higher = smaller world feel). File gtaiv_dxvk_vr.scale stores gain×100.
+float GetLeanGain();
+float GetWorldScale();  // alias for GetLeanGain (legacy log sites)
 void PollWorldScaleHotkey();
 
 // Soft stereo disparity multiplier (percent). Independent of WorldScale.
