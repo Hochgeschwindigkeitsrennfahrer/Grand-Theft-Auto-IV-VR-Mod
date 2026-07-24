@@ -254,7 +254,8 @@ void PublishGameFovFromCCamDegrees(float ccamDeg, float aspectWH) {
   // through ordinary CCam noise. A real zoom/camera change still exceeds 5%.
   const StereoMode mode = GetStereoMode();
   const float gate = (mode == StereoMode::FovCanvasMotionGuardRtLock ||
-                      mode == StereoMode::HeadOwnedCamSpike)
+                      mode == StereoMode::HeadOwnedCamSpike ||
+                      mode == StereoMode::HeadOwnedCamFullPose)
                          ? 0.05f
                          : 0.025f;
   const bool changed = !(curH > 0.05f) || std::fabs(tanH - curH) > gate * curH;

@@ -221,6 +221,12 @@ enum class StereoMode : int {
   // performs a late camera update, without changing gameplay collision/culling,
   // touching VS constants, or replaying a draw. Kill: 44/37/30.
   HeadOwnedCamSpike = 45,
+  // Mode 45's late head-owned refresh, but preserves the HMD's complete rigid
+  // right/forward/up basis instead of rebuilding it from forward + world-up.
+  // This makes physical roll tilt the horizon correctly and keeps the render
+  // view head-owned; gameplay camera/collision, FOV canvas, RT lock, and
+  // temporal motion guard are unchanged. Kill: 45/44/37/30.
+  HeadOwnedCamFullPose = 46,
 };
 
 StereoMode GetStereoMode();

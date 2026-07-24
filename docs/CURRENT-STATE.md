@@ -1,18 +1,19 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
 **As of:** 2026-07-24 ~20:25
-**Deployed now:** stereo **`45`** (Mode 44 RT lock + late head-owned camera refresh) +
+**Deployed now:** stereo **`46`** (Mode 45 full head-owned refresh + full HMD roll basis) +
 **`fovadd=18`**.
-Mode 45 is deliberately **not** same-frame distinct-eye stereo. It retains Mode 44's temporary
+Mode 46 is deliberately **not** same-frame distinct-eye stereo. It retains Mode 44's temporary
 mono guard/direct-submit route, locked 1536×1536 eye RTs, and 5% FOV-publish gate. Its single new
-behavior is to re-apply the existing ped-eye + relative-HMD CopyMat matrix at the already-safe
-post-CCam-FOV site. That makes the late render view head-owned if Rage revised it after CopyMat;
-it does **not** change gameplay collision/culling, add a VS offset, replay a draw, or touch 0x309D0.
+behavior is to use the complete OpenVR HMD right/forward/up basis for the safe Mode-45 CopyMat
+refresh. The earlier forward-plus-world-up reconstruction discarded physical roll; Mode 46 makes
+head roll tilt the horizon with the head. It does **not** change gameplay collision/culling, add a
+VS offset, replay a draw, or touch 0x309D0.
 Mode 40 is an honest intermediate, not true same-frame stereo: on rapid HMD motion it re-canvases
 the current R game frame to both eye textures for that pair (temporary mono), removing the stale-eye
 disparity during the turn; calm motion returns to normal Mode-37 temporal stereo.
-**Kill:** stereo **`44`** (remove only late refresh), **`37`** (always temporal stereo + full FOV),
-or **`30`** + delete **`fovadd`**.
+**Kill:** stereo **`45`** (the user-tested good Mode-45 baseline), **`44`** (remove late refresh),
+**`37`** (always temporal stereo + full FOV), or **`30`** + delete **`fovadd`**.
 Protected: **`36`/`35`**.
 Keep **`ipd`≥1**, canvas **zoom DISABLED**. F7 = 6DoF only (does **not** create “inside VR” alone).  
 **Expectation:** the bars, RT stability, and motion guard stay unchanged; when Rage performs a late
@@ -20,6 +21,27 @@ camera overwrite, head turns/leans should now remain owned by the HMD rather tha
 follow-camera view. It cannot bypass physical wall collision, and game motion can still expose
 temporal stereo. Risks are camera/collision, sound-origin, AI-aim, weapon/HUD, and culling desync
 because only the render matrix is refreshed. A real stereo fix still needs same-frame distinct eyes.
+
+### Session 2026-07-24 ~20:25 (Mode 46 full HMD-basis / roll test: deployed)
+
+**Shipped Mode 46:** Mode 45 is preserved as a kill baseline. Mode 46 changes only the orientation
+part of the existing late post-CCam CopyMat refresh: instead of reconstructing camera right/up from
+HMD forward plus GTA world-up (which levels out roll), it maps OpenVR's HMD right, up, and forward
+columns through the established Ovr→GTA basis, then applies controller/vehicle yaw to all three
+axes together. This is the correct rigid head pose for roll/pitch and prevents a roll from becoming
+a counter-moving game-camera effect. Its F9-relative translation remains `ΔOpenVRPose × WorldScale`;
+higher F7 WorldScale means a larger in-game head translation and therefore a smaller-feeling world.
+
+**Launch-log verified** (`ASI_BUILD_ID 20260724-202420`): `StereoMode: 46`,
+`mode 46 HEAD-OWNED FULL-POSE`, `fullHmdBasis=1`, `Mode46: late head-owned CopyMat refresh ...
+fullBasis=1`, `Mode44: RT lock ... recreates=0`, and paired `StereoSubmit: L=1 R=1 mode=46`.
+**Headset comfort/correctness proof remains required.**
+
+**Test:** F9 while seated; slowly tilt left/right. The horizon must roll in the same physical
+direction as the headset, while world objects stay fixed in space. Look up/down and lean left/right;
+the render view should follow head orientation/translation without inverted counter-motion. If
+wrong, unstable, or uncomfortable, write **`45`** to `gtaiv_dxvk_vr.stereo` and restart—this is the
+known good user baseline. Other kills: **`44`**, **`37`**, or **`30`** + delete `fovadd`.
 
 ### Session 2026-07-24 ~20:25 (Mode 45 head-owned view spike: shipped)
 

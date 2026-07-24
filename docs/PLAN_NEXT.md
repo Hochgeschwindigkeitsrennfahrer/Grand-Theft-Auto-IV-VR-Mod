@@ -4,6 +4,31 @@ Read with `docs/CURRENT-STATE.md` and `docs/HANDOFF_GROK.md`.
 
 ---
 
+## Session note 2026-07-24 ~20:25 — Mode 46 full HMD-basis / tilt test
+
+Mode 45 is the protected user-tested stability baseline: no bars, no jitter/jumping, stable
+performance. The remaining immediate camera symptom is head tilt appearing to move the world in
+the inverse direction. Inspection found that `ApplyHmdToCam` preserved only the HMD forward vector,
+then rebuilt right/up against GTA's world-up; it necessarily deletes physical roll.
+
+**Shipped Mode 46:** retain Mode 45's exact Mode-44 RT lock, FOV path, motion guard, and safe
+post-CCam late refresh. Only replace that orientation reconstruction with the full OpenVR
+right/forward/up basis, converted through the already-proven Ovr→GTA mapping. Controller/vehicle
+yaw rotates all three axes together. No CCam+VS stack, no canvas zoom, no change to IPD, no replay
+hook/draw, and no forbidden address. F7 remains translation-only: higher WorldScale produces a
+larger game-unit translation for the same real lean, i.e. a smaller-feeling world.
+
+**Headset check:** F9; tilt left/right slowly. Horizon must tilt with the head and the world must
+remain spatially stable. Then look up/down and lean; confirm no inverse counter-motion. Expected
+log: `StereoMode: 46`, `fullHmdBasis=1`, `Mode46 ... fullBasis=1`, `recreates=0`, and paired
+submits. If any regression, write **`45`** and restart; do not modify the Mode-45 baseline.
+
+**Still not true VR:** Mode 46 improves the head-owned mono/temporal render view but does not create
+same-tick distinct eyes or decouple collision/culling. The next root milestone remains a proven safe
+Rage replay-thread seam for two distinct camera views in one game tick.
+
+---
+
 ## Session note 2026-07-24 ~20:05 — Mode 44 RT lock
 
 **Shipped Mode 44:** this is the Mode-43 fast current-frame mono guard with exactly one

@@ -215,7 +215,22 @@ void ApplyHmdToCam(Matrix44* mat) {
   OvrToGta(-h.m[0][2], -h.m[1][2], -h.m[2][2], &fx, &fy, &fz);
   Normalize(&fx, &fy, &fz);
 
-  // Right-stick yaw offset (controller camera L/R) + optional vehicle follow, on top of HMD
+  // Mode 46 keeps the complete HMD basis. The old forward + world-up rebuild
+  // deliberately discarded physical roll, which makes a head tilt look like
+  // the game camera is resisting/inverting it. OpenVR matrix columns are the
+  // HMD local axes in tracking space; apply OvrToGta to each column once.
+  const bool fullHeadPose = GetStereoMode() == StereoMode::HeadOwnedCamFullPose;
+  float hRightX = 0.f, hRightY = 0.f, hRightZ = 0.f;
+  float hUpX = 0.f, hUpY = 0.f, hUpZ = 0.f;
+  if (fullHeadPose) {
+    OvrToGta(h.m[0][0], h.m[1][0], h.m[2][0], &hRightX, &hRightY, &hRightZ);
+    OvrToGta(h.m[0][1], h.m[1][1], h.m[2][1], &hUpX, &hUpY, &hUpZ);
+    Normalize(&hRightX, &hRightY, &hRightZ);
+    Normalize(&hUpX, &hUpY, &hUpZ);
+  }
+
+  // Right-stick yaw offset (controller camera L/R) + optional vehicle follow, on top of HMD.
+  // Rotate every HMD axis together so Mode 46 retains physical pitch and roll.
   {
     const float yawOff = GetControllerYawOffset() + ComputeVehicleYawOffset();
     const float c = std::cos(yawOff);
@@ -224,28 +239,50 @@ void ApplyHmdToCam(Matrix44* mat) {
     const float nfy = fx * s + fy * c;
     fx = nfx;
     fy = nfy;
+    if (fullHeadPose) {
+      const float nrx = hRightX * c - hRightY * s;
+      const float nry = hRightX * s + hRightY * c;
+      const float nux = hUpX * c - hUpY * s;
+      const float nuy = hUpX * s + hUpY * c;
+      hRightX = nrx;
+      hRightY = nry;
+      hUpX = nux;
+      hUpY = nuy;
+    }
     Normalize(&fx, &fy, &fz);
   }
 
-  // right = forward × worldUp(0,0,1)
+  // Modes through 45 level the horizon by rebuilding right/up from world-up.
+  // Mode 46 uses the HMD's rigid basis: right=X, forward=Y, up=Z in RAGE.
   float rx = fy;
   float ry = -fx;
   float rz = 0.f;
-  float rlen = std::sqrt(rx * rx + ry * ry + rz * rz);
-  if (rlen < 1e-4f) {
-    rx = 1.f;
-    ry = 0.f;
-    rz = 0.f;
-  } else {
-    rx /= rlen;
-    ry /= rlen;
-    rz /= rlen;
-  }
-
   float ux = ry * fz - rz * fy;
   float uy = rz * fx - rx * fz;
   float uz = rx * fy - ry * fx;
-  Normalize(&ux, &uy, &uz);
+  if (fullHeadPose) {
+    rx = hRightX;
+    ry = hRightY;
+    rz = hRightZ;
+    ux = hUpX;
+    uy = hUpY;
+    uz = hUpZ;
+  } else {
+    float rlen = std::sqrt(rx * rx + ry * ry + rz * rz);
+    if (rlen < 1e-4f) {
+      rx = 1.f;
+      ry = 0.f;
+      rz = 0.f;
+    } else {
+      rx /= rlen;
+      ry /= rlen;
+      rz /= rlen;
+    }
+    ux = ry * fz - rz * fy;
+    uy = rz * fx - rx * fz;
+    uz = rx * fy - ry * fx;
+    Normalize(&ux, &uy, &uz);
+  }
 
   const float eyeFwd = GetEyeForwardMeters();
   eye.x += fx * eyeFwd;
@@ -324,9 +361,9 @@ void ApplyHmdToCam(Matrix44* mat) {
   const uint32_t n = ++g_applyCount;
   if (n <= 5 || (n % 300) == 0) {
     Log("CamMatrix: FP lock #%u %s pos=(%.3f,%.3f,%.3f) ipd=(%.4f,%.4f,%.4f) sep=%.0fcm "
-        "eyeFwd=%.0fcm",
+        "eyeFwd=%.0fcm fullHmdBasis=%d",
         n, rightEye ? "R" : "L", eye.x, eye.y, eye.z, ipdX, ipdY, ipdZ,
-        GetStereoSepMeters() * 100.f, eyeFwd * 100.f);
+        GetStereoSepMeters() * 100.f, eyeFwd * 100.f, fullHeadPose ? 1 : 0);
   }
 }
 
@@ -710,20 +747,22 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion ||
         sm == StereoMode::FovCanvasMotionGuard || sm == StereoMode::ReplayCallChainProbe ||
         sm == StereoMode::ReplayOwnerCountProbe || sm == StereoMode::FovCanvasMotionGuardFast ||
-        sm == StereoMode::FovCanvasMotionGuardRtLock || sm == StereoMode::HeadOwnedCamSpike)
+        sm == StereoMode::FovCanvasMotionGuardRtLock || sm == StereoMode::HeadOwnedCamSpike ||
+        sm == StereoMode::HeadOwnedCamFullPose)
       PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
 
-    // Mode 45: Rage can revise a camera after CopyMat but before this already-safe
-    // post-process FOV site. Re-apply the exact same ped-eye + relative HMD pose
-    // here, late in the game-thread camera path. This does not move gameplay's
-    // collision camera, add a VS offset, or make another render/replay pass.
-    if (sm == StereoMode::HeadOwnedCamSpike) {
+    // Modes 45/46: Rage can revise a camera after CopyMat but before this already-safe
+    // post-process FOV site. Re-apply the HMD pose here, late in the game-thread
+    // camera path. Mode 46 additionally preserves HMD roll. This does not move
+    // gameplay's collision camera, add a VS offset, or make another render/replay pass.
+    if (sm == StereoMode::HeadOwnedCamSpike || sm == StereoMode::HeadOwnedCamFullPose) {
       RefreshLiveCamForStereoEye();
       static uint32_t s_headOwnedRefreshes = 0;
       const uint32_t refreshes = ++s_headOwnedRefreshes;
       if (refreshes <= 4 || (refreshes % 600) == 0)
-        Log("Mode45: late head-owned CopyMat refresh #%u (CCam site; collision unchanged)",
-            refreshes);
+        Log("Mode%d: late head-owned CopyMat refresh #%u (CCam site; fullBasis=%d; collision "
+            "unchanged)",
+            static_cast<int>(sm), refreshes, sm == StereoMode::HeadOwnedCamFullPose ? 1 : 0);
     }
     const uint32_t n = ++g_fovSiteCalls;
     if (n <= 4 || (n % 600) == 0)
@@ -733,7 +772,8 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
            sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion ||
            sm == StereoMode::FovCanvasMotionGuard || sm == StereoMode::ReplayCallChainProbe ||
            sm == StereoMode::ReplayOwnerCountProbe || sm == StereoMode::FovCanvasMotionGuardFast ||
-           sm == StereoMode::FovCanvasMotionGuardRtLock || sm == StereoMode::HeadOwnedCamSpike)
+           sm == StereoMode::FovCanvasMotionGuardRtLock || sm == StereoMode::HeadOwnedCamSpike ||
+           sm == StereoMode::HeadOwnedCamFullPose)
               ? 1
               : 0);
   } __except (EXCEPTION_EXECUTE_HANDLER) {

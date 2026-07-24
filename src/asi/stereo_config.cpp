@@ -256,10 +256,10 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  // Two-digit modes 10..45 (Mode 45 = Mode 44 with a late head-owned refresh).
+  // Two-digit modes 10..46 (Mode 46 = Mode 45 with full HMD roll basis).
   if (n >= 2 && buf[0] >= '1' && buf[0] <= '4' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 45)
+    if (v <= 46)
       return v;
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
@@ -288,7 +288,7 @@ void ReloadStereoMode() {
   if (n > 0)
     v = ParseModeFile(buf, n);
   int prev = g_mode.load();
-  if (v >= 0 && v <= 45) {
+  if (v >= 0 && v <= 46) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -317,7 +317,8 @@ void ReloadStereoMode() {
                            v == static_cast<int>(StereoMode::ReplayOwnerCountProbe) ||
                            v == static_cast<int>(StereoMode::FovCanvasMotionGuardFast) ||
                            v == static_cast<int>(StereoMode::FovCanvasMotionGuardRtLock) ||
-                           v == static_cast<int>(StereoMode::HeadOwnedCamSpike))) {
+                           v == static_cast<int>(StereoMode::HeadOwnedCamSpike) ||
+                           v == static_cast<int>(StereoMode::HeadOwnedCamFullPose))) {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadWorldScale();
@@ -330,7 +331,7 @@ void ReloadStereoMode() {
 }
 
 void WriteStereoModeFile(int mode) {
-  if (mode < 0 || mode > 45)
+  if (mode < 0 || mode > 46)
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -374,7 +375,8 @@ bool UsesAngleCorrectCanvas(StereoMode mode) {
          mode == StereoMode::ReplayOwnerCountProbe ||
          mode == StereoMode::FovCanvasMotionGuardFast ||
          mode == StereoMode::FovCanvasMotionGuardRtLock ||
-         mode == StereoMode::HeadOwnedCamSpike;
+         mode == StereoMode::HeadOwnedCamSpike ||
+         mode == StereoMode::HeadOwnedCamFullPose;
 }
 
 float GetStereoSepMeters() {
