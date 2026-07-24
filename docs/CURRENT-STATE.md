@@ -1,10 +1,24 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~17:25  
-**Playable / deployed default:** stereo **`30`** (pair-hold) + **`ipd=1`** + **`scale=50`** + **`stereoscale=125`** + **`eyefwd=42`** + **`pedhide=1`**. Kill stereo → **`26`** or **`0`**. Kill PedHide → **`pedhide=0`**.  
-F8 presets **`1,2,3,4,6,7,10`**. `scale` preserved (F7 = 6DoF only). Do **not** multiply IPD×WorldScale.  
-Mode **34:** dual **DISABLED** (0x4DDAD0 COUNT ok but `vsPatch=0`/`vsCallsR=0` — no parallax). Forbidden `0x4DDAD0`. Playable stays **30**.  
-**Live proof (buildId `20260724-172208`):** `StereoSep: 1 cm (file)` · `mode 30 PAIR-HOLD` · `PedHide … ok=… dead=0` · `StereoSubmit … mode=30` · `sep=1cm`.
+**As of:** 2026-07-24 ~17:40  
+**Playable / deployed default:** stereo **`30`** (pair-hold) + **`ipd=2`** (user) + **`scale=50`** + **`stereoscale=125`** + **`eyefwd=20`** + **`pedhide=1`** + **`zoom=85`**. Kill stereo → **`26`** or **`0`**. Kill PedHide → **`pedhide=0`**. Kill zoom → **`zoom=100`** (or delete file).  
+F8 presets **`1,2,3,4,6,7,10`**. `scale` preserved (F7 = 6DoF only). Do **not** multiply IPD×WorldScale. Do **not** re-enable FusionFix FieldOfView.  
+Mode **34:** dual **DISABLED**. Forbidden `0x4DDAD0` / `0x2C6AC` / `0x37BD0`. Playable stays **30**.  
+**Live proof (buildId `20260724-173632`):** `CanvasZoom: 85% … scale=1.176` · `gameTan=(1.176,0.662)` · `mode 30 PAIR-HOLD` · `StereoSubmit … mode=30` · `sep=2cm` · `eyeFwd=20cm` · PedHide `dead=0`.
+
+### Session 2026-07-24 ~17:30–17:40 (canvas zoom — less telephoto)
+
+**Problem:** Mode 30 felt **too zoomed in** (world size / window feel). Not a 6DoF WorldScale issue (`scale=50` = less head-move only).
+
+**Lever (ONE change):** soft **`gtaiv_dxvk_vr.zoom`** on Mode 14/30 angle-correct canvas only.
+- Multiplies claimed game half-tangents by `100/zoom%` inside `GetGameFovTangents`.
+- **LOWER% = zoom OUT** (wider feel / less letterbox / less telephoto). **100 = true FOV** (old).
+- Does **not** touch FusionFix FOV, engine FOV, IPD, WorldScale, or Mode 30 pair-hold.
+- Deployed **`zoom=85`** → log `CanvasZoom: 85% (file) scale=1.176` and `gameTan=(1.176,0.662)` (was ~1.000/0.562).
+
+**Preserved:** stereo=30, ipd=2, scale=50, stereoscale=125, eyefwd=20, pedhide=1.
+
+**Headset check:** does world feel less “zoomed in”? If still too close try **`zoom=75`**. If too wide / soft → **`90`** then **`100`**.
 
 ### Session 2026-07-24 ~17:15–17:25 (consolidate: Mode34 dual dead → Mode30)
 
@@ -92,18 +106,19 @@ GTAIV.exe
 | Log | `...\GTAIV\gtaiv_dxvk_vr.log` |
 | Stereo kill switch | `...\GTAIV\gtaiv_dxvk_vr.stereo` → **`30`** playable / **`26`** baseline / **`0`** mono |
 | IPD / scale / stereoscale | `gtaiv_dxvk_vr.ipd` / `.scale` / `.stereoscale` — preserved across mode probes; **ipd ≥1 for 3D** (F8: 1,2,3,4,6,7,10) |
-| Eye-forward | `gtaiv_dxvk_vr.eyefwd` — default **42** cm; lower if PedHide works |
+| Canvas zoom | `gtaiv_dxvk_vr.zoom` — percent **50–150**; **LOWER = zoom out** / less telephoto; **85** deployed; kill **`100`** |
+| Eye-forward | `gtaiv_dxvk_vr.eyefwd` — default **42** cm; live **20** with PedHide |
 | PedHide | `gtaiv_dxvk_vr.pedhide` — **`1`** ON (Inspiration SetDraw) / **`0`** OFF |
 | camoff | `gtaiv_dxvk_vr.camoff` — optional `x y z` cm (Inspiration FPX/FPY/FPZ) |
 | Build | `.\scripts\build-asi.ps1` → `out-asi\gtaiv_dxvk_vr.asi` |
 | Deploy + start | `.\scripts\build-deploy-run.ps1` (Build→Kill→Deploy→Steam start→close dashboard) |
 | Deploy only | `.\scripts\deploy-asi.ps1 -GameDir "<GTAIV>"` (`-Launch` starts the game) |
 
-**Currently deployed:** `gtaiv_dxvk_vr.stereo` = **`30`**, `ipd` = **`1`**, `eyefwd` = **`42`**, `pedhide` = **`1`**.  
+**Currently deployed:** stereo=**`30`**, ipd=**`2`**, eyefwd=**`20`**, pedhide=**`1`**, zoom=**`85`**.  
 **Mode 30 (2026-07-24):** PAIR-HOLD = Mode 14/26 CCam temporal, but submit textures  
 update **only when a complete L→R pair is ready** (both eyes promote together).  
 User: jumps **definitely less**, barely noticeable — keep as playable. With ipd≥1: try fusion.  
-Log: `StereoPairHold: promoted pair #N`, `StereoSubmit … mode=30`, `sep=1cm`, `eyeFwd=42cm`.
+Log: `StereoPairHold: promoted pair #N`, `StereoSubmit … mode=30`, `CanvasZoom: 85%`, `sep=2cm`, `eyeFwd=20cm`.
 
 **Mode 34 RESULT (2026-07-24) — dual armed then DEAD for parallax:**  
 VsRet(`0x2C73E`) stack → fn starts; DISCOVER armed; COUNT `0x4DDAD0` avg=2.0 → DUAL armed;  
@@ -149,8 +164,8 @@ Soft ran before VsRet traffic → empty hist → early seed of stackarg. Mode 33
 | `0x52E7C0` / `0x5303D0` | ~1×/frame starts | Mode34 rare (0x52E7C0 stackarg forbidden; others untested) |
 | `0x37BD0` / `0x2C6AC` | | **FORBIDDEN** |
 
-**Next session:** stay on **30** + tune IPD/F7 / PedHide eyefwd. Mode34 dual off until a walker with live VS uploads is proven.  
-Playable stays **`30`** + **`ipd=1`** + **`eyefwd=42`** + **`pedhide=1`**. Kill → **`26`**.
+**Next session:** headset-check **zoom=85** (less telephoto?). Stay on **30**. Tune zoom 75/90/100 only if needed. Do not re-arm Mode34 dual.  
+Playable stays **`30`** + user **ipd** + **`eyefwd=20`** + **`pedhide=1`** + **`zoom=85`**. Kill stereo → **`26`**. Kill zoom → **`100`**.
 
 **Mode 31:** discover failed (`frameSlots=0`, callee too deep). Superseded by Mode 32/33.
 

@@ -84,6 +84,23 @@ void EnsureBoundsCache() {
   g_boundsReady.store(true);
 }
 
+bool GetAsiDirLocal(char* out, DWORD outLen) {
+  HMODULE self = nullptr;
+  if (!GetModuleHandleExA(
+          GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+          reinterpret_cast<LPCSTR>(&GetAsiDirLocal), &self))
+    return false;
+  if (!GetModuleFileNameA(self, out, outLen))
+    return false;
+  char* slash = strrchr(out, '\\');
+  if (!slash)
+    slash = strrchr(out, '/');
+  if (!slash)
+    return false;
+  slash[1] = 0;
+  return true;
+}
+
 // Optional gtaiv_dxvk_vr.fov next to the ASI: horizontal game FOV in degrees (30..150).
 // Lets the user calibrate world size in Mode 14 without a rebuild. Read once.
 float ReadFovOverrideDegOnce() {
@@ -93,18 +110,8 @@ float ReadFovOverrideDegOnce() {
     return s_deg.load();
 
   char path[MAX_PATH]{};
-  HMODULE self = nullptr;
-  GetModuleHandleExA(
-      GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-      reinterpret_cast<LPCSTR>(&ReadFovOverrideDegOnce), &self);
-  if (!GetModuleFileNameA(self, path, MAX_PATH))
+  if (!GetAsiDirLocal(path, MAX_PATH))
     return 0.f;
-  char* slash = strrchr(path, '\\');
-  if (!slash)
-    slash = strrchr(path, '/');
-  if (!slash)
-    return 0.f;
-  slash[1] = 0;
   strcat_s(path, "gtaiv_dxvk_vr.fov");
 
   FILE* f = nullptr;
@@ -119,6 +126,43 @@ float ReadFovOverrideDegOnce() {
     Log("VrDisplay: game FOV override %d deg horizontal (gtaiv_dxvk_vr.fov)", deg);
   }
   return s_deg.load();
+}
+
+// Soft canvas zoom for Mode 14/30 angle-correct mapping. Does NOT touch FusionFix FOV,
+// engine FOV, IPD, or WorldScale (F7). Multiplies game half-tangents by 100/zoom%:
+//   LOWER zoom% → claim wider FOV → image fills more of HMD → less telephoto / zoom out
+//   100 = true FOV (old Mode 14 feel). File absent = 100.
+// Deployed 85 for "too zoomed in" baseline. Kill: write 100 or delete file.
+float ReadCanvasZoomScaleOnce() {
+  static std::atomic<bool> s_read{false};
+  static std::atomic<float> s_scale{1.f};
+  if (s_read.exchange(true))
+    return s_scale.load();
+
+  float scale = 1.f;
+  char path[MAX_PATH]{};
+  if (GetAsiDirLocal(path, MAX_PATH)) {
+    strcat_s(path, "gtaiv_dxvk_vr.zoom");
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "rb") == 0 && f) {
+      char buf[16]{};
+      const size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+      fclose(f);
+      int pct = 0;
+      if (n > 0 && sscanf_s(buf, "%d", &pct) == 1 && pct >= 50 && pct <= 150) {
+        scale = 100.f / static_cast<float>(pct);
+        Log("CanvasZoom: %d%% (file) scale=%.3f — LOWER%% = zoom OUT / less telephoto; "
+            "100 = true FOV; kill=100",
+            pct, scale);
+      } else {
+        Log("CanvasZoom: 100%% (invalid/empty file) — true FOV mapping");
+      }
+    } else {
+      Log("CanvasZoom: 100%% (no gtaiv_dxvk_vr.zoom) — true FOV; write 85 for mild zoom-out");
+    }
+  }
+  s_scale.store(scale);
+  return scale;
 }
 
 // Soft inset: map game FOV into HMD cover FOV without square-crop UV (that broke fusion).
@@ -270,6 +314,12 @@ void GetGameFovTangents(float* tanHalfH, float* tanHalfV) {
     const float ratio = (tanH > 0.05f) ? (tanV / tanH) : (9.f / 16.f);
     tanH = std::tan(0.5f * ovrDeg * 3.14159265f / 180.f);
     tanV = tanH * ratio;
+  }
+  // Soft zoom: widen/narrow claimed game FOV for canvas placement only.
+  const float z = ReadCanvasZoomScaleOnce();
+  if (z != 1.f) {
+    tanH *= z;
+    tanV *= z;
   }
   if (tanHalfH)
     *tanHalfH = tanH;

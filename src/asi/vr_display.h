@@ -25,7 +25,9 @@ bool GetNativeFovInsetBounds(vr::EVREye eye, vr::VRTextureBounds_t* out);
 bool GetEyeRawProjection(vr::EVREye eye, float* left, float* right, float* top, float* bottom);
 
 // Game half-FOV tangents (horizontal/vertical). Sources, in priority order:
-// gtaiv_dxvk_vr.fov file (horizontal degrees 30..150), D3D projection probe, 70° fallback.
+// gtaiv_dxvk_vr.fov (horiz deg 30..150), then soft gtaiv_dxvk_vr.zoom (percent 50..150;
+// LOWER = zoom out / less telephoto; 100 = true FOV), D3D probe, 70° fallback.
+// Zoom does NOT change FusionFix FOV, IPD, or WorldScale.
 void GetGameFovTangents(float* tanHalfH, float* tanHalfV);
 
 }  // namespace asi
