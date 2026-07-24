@@ -12,6 +12,19 @@ Kill → **37** or **30**. Presence still deferred (independent cam / same-frame
 
 ---
 
+## Session note 2026-07-24 ~19:30 — Mode 39 low-motion FOV comfort
+
+Mode 38 logged successful `Submit_TextureWithPose` but user still reports severe jumping. That rules out
+another pose-submit variation as the best next move; it cannot make the temporally stale eye newly rendered.
+**Shipped Mode 39:** Mode 37 true-FOV canvas/pair-hold, but cap the effective FOV ADD at **12°** even when
+the preserved `fovadd` file says `18`. This is one comfort/FPS behavior change only: less FOV fill/crop stress,
+no CanvasZoom, no new hooks, and no AER v2 optical flow.
+**Test:** check `Mode39: fovadd requested=18 capped=12` plus pair promotion and mode-39 submits. Compare the
+same head turns/walk against 38. Kill → **38** (restore pose/full FOV), **37** (full FOV), or **30** + delete
+`fovadd` (smoothest protected baseline). Same-frame remains the sole root-cause path if this does not help.
+
+---
+
 ## Session note 2026-07-24 ~19:00 — Mode 37 comfort retune
 
 Mode 36 killed bars but cost **jump + FPS + huge world**. Pair-hold was still active.  

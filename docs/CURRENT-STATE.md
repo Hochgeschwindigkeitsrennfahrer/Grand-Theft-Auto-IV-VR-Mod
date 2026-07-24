@@ -1,10 +1,19 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~19:15  
-**Headset test now:** stereo **`38`** (Mode 37 + AER `Submit_TextureWithPose`) + **`fovadd=18`**.  
-**Kill:** stereo **`37`** (keep FOV) or **`30`** + delete **`fovadd`**. Protected: **`36`/`35`**.  
+**As of:** 2026-07-24 ~19:30
+**Headset test now:** stereo **`39`** (Mode 37 pair-hold/true canvas, but `fovadd` is capped at **12°**) + file **`fovadd=18`**.
+**Kill:** stereo **`38`** (restore AER pose + full `fovadd`), **`37`** (full `fovadd`, no pose), or **`30`** + delete **`fovadd`**. Protected: **`36`/`35`**.
 Keep **`ipd`≥1**, canvas **zoom DISABLED**. F7 = 6DoF only (does **not** create “inside VR” alone).  
-**Expectation:** jump/ghost may improve if SteamVR/WMR honors per-eye pose; presence/scale still need same-frame or independent cam later. AER v2 optical-flow **not** implemented.
+**Expectation:** Mode 38's accepted pose submit did not reduce the severe jump. Mode 39 is a conservative comfort A/B: lower true-FOV fill/crop and less canvas stress may improve FPS and reduce FOV-amplified ghost, but it cannot remove inherent temporal L/R motion. A real fix still needs same-frame rendering. AER v2 optical-flow **not** implemented.
+
+### Session 2026-07-24 ~19:30 (Mode 39 low-motion FOV comfort)
+
+**User:** Mode 38 logged `Submit_TextureWithPose` success (`err=0`) but still jumped severely.
+**Root-cause decision:** do **not** repeat another compositor reprojection variation: successful Mode 38 proves the API path runs, while temporal L/R remains one rendered frame apart. Mode 36/37's wider true FOV also correlated with lower FPS and stronger jump.
+**Shipped Mode 39:** Mode 37's fused, pair-held, true-FOV canvas path with the same locked 1536 canvas, but the existing `fovadd` is capped to **12°** (file can remain `18`; log records requested/effective cap). No AER pose submit, no CanvasZoom, no IPD×WorldScale, no new render hooks.
+**Expectation:** a safer comfort/FPS experiment, not a temporal-stereo cure. If no clear improvement, return to Mode 30 and stop spending experiments on temporal reprojection; same-frame remains the only root fix.
+**Deploy verified (`ASI_BUILD_ID 20260724-192011`):** `StereoMode: 39`; `StereoRender: mode 39 LOW-MOTION COMFORT … ok=1 fovSite=1`; `Mode39: fovadd requested=18 capped=12`; `FovSite` writes `45.152 → 57.152 (add=12)`; pair promotion and `StereoSubmit: L=1 R=1 mode=39` are live.
+**Kill:** write `38` to restore AER pose/full FOV, `37` for full FOV without pose, or `30` then delete `gtaiv_dxvk_vr.fovadd` for the smoother protected baseline.
 
 ### Session 2026-07-24 ~19:10 (Mode 38 AER pose submit)
 

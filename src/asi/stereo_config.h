@@ -183,6 +183,11 @@ enum class StereoMode : int {
   // capture time and Submit via Submit_TextureWithPose so SteamVR can reproject
   // the stale eye. Not AER v2 optical-flow. Kill: stereo=37 or 30.
   AerPoseSubmit = 38,
+  // Mode 37 pair-hold / true-FOV canvas, but caps fovadd at 12 degrees. Mode 38
+  // proved pose-aware Submit does not cure the remaining temporal jump; this is
+  // the safer comfort experiment: retain fusion while reducing the wide-FOV
+  // crop/fill and render cost that made Modes 36/37 jumpier. Kill: 38/37/30.
+  FovCanvasLowMotion = 39,
 };
 
 StereoMode GetStereoMode();

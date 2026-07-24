@@ -96,7 +96,8 @@ bool g_submitPoseLValid = false;
 bool g_submitPoseRValid = false;
 
 bool UsesFovComfortPath(StereoMode mode) {
-  return mode == StereoMode::FovCanvasComfort || mode == StereoMode::AerPoseSubmit;
+  return mode == StereoMode::FovCanvasComfort || mode == StereoMode::AerPoseSubmit ||
+         mode == StereoMode::FovCanvasLowMotion;
 }
 
 bool UsesTrueFovCanvasPublish(StereoMode mode) {
@@ -3988,10 +3989,10 @@ void __fastcall HookExecA(void* self, void* edx) {
     g_origExecA(self, edx);
     return;
   }
-  // Mode 30/35/36/37 soft-start / pair-hold: passthrough native exec; EndScene does temporal.
+  // Mode 30/35/36/37/38/39 pair-hold: passthrough native exec; EndScene does temporal.
   if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
       mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort ||
-      mode == StereoMode::AerPoseSubmit) {
+      mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion) {
     const int ph = g_mode30Phase.load();
     if (ph != static_cast<int>(Mode30Phase::Dual) || g_execDualDead.load()) {
       g_origExecA(self, edx);
@@ -4720,7 +4721,7 @@ bool InstallStereoRenderHooks() {
 
   if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
       mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort ||
-      mode == StereoMode::AerPoseSubmit) {
+      mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion) {
     // Pair-hold only: same install surface as Mode 26 (no exec dual hooks).
     // Device-VS dual was probed this session (mode30dev=0) — do not re-arm.
     SetStereoEye(StereoEye::Left);
@@ -4751,6 +4752,13 @@ bool InstallStereoRenderHooks() {
           g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
       Log("StereoRender: kill-switch - stereo=36 or 35 (keep fovadd) or stereo=30 + delete "
           "gtaiv_dxvk_vr.fovadd");
+    } else if (mode == StereoMode::FovCanvasLowMotion) {
+      const bool fovOk = InstallFovRecomputeSiteHook();
+      Log("StereoRender: mode 39 LOW-MOTION COMFORT (Mode37 true-FOV canvas + pair-hold; "
+          "fovadd capped at 12deg; no pose submit; no CanvasZoom) ok=%d fovSite=%d",
+          g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=38/37 (restore fovadd behavior) or stereo=30 "
+          "+ delete gtaiv_dxvk_vr.fovadd");
     } else if (mode == StereoMode::FovRecomputeTrueCanvas) {
       const bool fovOk = InstallFovRecomputeSiteHook();
       Log("StereoRender: mode 36 FOV-RECOMPUTE + TRUE-CANVAS + Mode30 pair-hold "
@@ -5080,10 +5088,10 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
     return;
   }
 
-    // Mode 30 / 35 / 36 / 37 / 38: pair-hold temporal only (device-VS dual proven dead — mode30dev=0).
+    // Mode 30 / 35 / 36 / 37 / 38 / 39: pair-hold temporal only (device-VS dual proven dead — mode30dev=0).
     if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
         mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort ||
-        mode == StereoMode::AerPoseSubmit) {
+        mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion) {
       g_dualDoneThisFrame = false;
       g_skipExecA = g_skipExecC = g_skipExecD = 0;
       IDirect3DSurface9* bb = nullptr;
@@ -5214,7 +5222,8 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
       mode != StereoMode::SameFrameReplayDual && mode != StereoMode::SameFrameVsParentDual &&
       mode != StereoMode::SameFrameLateVsParentDual && mode != StereoMode::SameFrameVsRetCallerDual &&
       mode != StereoMode::FovRecomputeSite && mode != StereoMode::FovRecomputeTrueCanvas &&
-      mode != StereoMode::FovCanvasComfort && mode != StereoMode::AerPoseSubmit)
+      mode != StereoMode::FovCanvasComfort && mode != StereoMode::AerPoseSubmit &&
+      mode != StereoMode::FovCanvasLowMotion)
     return false;
   if (!device || !interop || !g_texL || !g_texR)
     return false;

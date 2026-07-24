@@ -660,7 +660,22 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
     const float before = *fov;
     if (!std::isfinite(before) || before < 5.f || before > 160.f)
       return;
-    const float add = GetFovAddDegrees();
+    const StereoMode sm = GetStereoMode();
+    const float requestedAdd = GetFovAddDegrees();
+    // Mode 39 is intentionally a comfort A/B, not another reprojection attempt:
+    // Mode 38's pose-aware Submit was accepted by SteamVR but did not reduce the
+    // jump. Keep the same pair-held fusion path while reducing the true engine
+    // FOV expansion that correlated with worse FPS/jump in Modes 36/37.
+    const bool lowMotion = sm == StereoMode::FovCanvasLowMotion;
+    const float add = lowMotion ? (std::min)(requestedAdd, 12.f) : requestedAdd;
+    if (lowMotion && requestedAdd > add) {
+      static bool s_loggedLowMotionCap = false;
+      if (!s_loggedLowMotionCap) {
+        s_loggedLowMotionCap = true;
+        Log("Mode39: fovadd requested=%.0f capped=%.0f deg (lower temporal/FOV stress)",
+            requestedAdd, add);
+      }
+    }
     float after = before;
     // Idempotent ADD: the cam CALL usually resets CCam+0x60 to the base FOV, then
     // we ADD. Sometimes the CALL leaves our previous write in place — adding again
@@ -689,16 +704,15 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
     }
     // Mode 36/37: canvas must track TRUE engine FOV (not stale GetTransform).
     // Mode 35 baseline left unchanged (protect headset-good warp).
-    const StereoMode sm = GetStereoMode();
     if (sm == StereoMode::FovRecomputeTrueCanvas || sm == StereoMode::FovCanvasComfort ||
-        sm == StereoMode::AerPoseSubmit)
+        sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion)
       PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
     const uint32_t n = ++g_fovSiteCalls;
     if (n <= 4 || (n % 600) == 0)
       Log("FovSite: #%u CCam+0x60 %.3f -> %.3f (add=%.0f) self=%p trueCanvas=%d", n, before,
           after, add, self,
           (sm == StereoMode::FovRecomputeTrueCanvas || sm == StereoMode::FovCanvasComfort ||
-           sm == StereoMode::AerPoseSubmit)
+           sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion)
               ? 1
               : 0);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
