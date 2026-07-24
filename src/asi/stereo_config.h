@@ -179,6 +179,10 @@ enum class StereoMode : int {
   // gameTan for L+R rects, WorldScale lever for "huge world" (not IPD).
   // Protect: Mode 36 / 35. Kill: stereo=30 + delete fovadd.
   FovCanvasComfort = 37,
+  // Mode 37 + Luke Ross AER lesson: stamp each eye RT with the HMD pose from
+  // capture time and Submit via Submit_TextureWithPose so SteamVR can reproject
+  // the stale eye. Not AER v2 optical-flow. Kill: stereo=37 or 30.
+  AerPoseSubmit = 38,
 };
 
 StereoMode GetStereoMode();
@@ -233,8 +237,8 @@ int GetVehicleFollowMode();
 bool GetFovPatchConfig(int* offsetBytes, float* scale);
 
 // gtaiv_dxvk_vr.fovadd: degrees to ADD at CCam+0x60 after cam FOV recompute
-// (FusionFix-style; Mode 35/36/37). 0 / absent = read-only log. Clamp 0..40.
-// Mode 37 headset default ~18 (Mode 36 used 22 — jump/FPS).
+// (FusionFix-style; Mode 35/36/37/38). 0 / absent = read-only log. Clamp 0..40.
+// Mode 37/38 headset default ~18 (Mode 36 used 22 — jump/FPS).
 float GetFovAddDegrees();
 
 }  // namespace asi

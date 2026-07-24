@@ -4,6 +4,14 @@ Read with `docs/CURRENT-STATE.md` and `docs/HANDOFF_GROK.md`.
 
 ---
 
+## Session note 2026-07-24 ~19:15 — Mode 38 AER pose submit
+
+User: Mode 37 still monitor/huge/jump/FPS; F7 ≠ presence; Luke AER v2 Patreon.  
+**Shipped Mode 38:** Mode 37 + capture-time HMD pose + `Submit_TextureWithPose`. Not AER v2 OF.  
+Kill → **37** or **30**. Presence still deferred (independent cam / same-frame).
+
+---
+
 ## Session note 2026-07-24 ~19:00 — Mode 37 comfort retune
 
 Mode 36 killed bars but cost **jump + FPS + huge world**. Pair-hold was still active.  

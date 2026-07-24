@@ -85,6 +85,42 @@ IDirect3DTexture9* g_holdR = nullptr;
 bool g_pairAwaitingR = false;
 std::atomic<uint32_t> g_pairPromoteCount{0};
 
+// Mode 38 AER: HMD pose at capture time (WaitGetPoses already ran this EndScene).
+vr::HmdMatrix34_t g_holdPoseL{};
+vr::HmdMatrix34_t g_holdPoseR{};
+vr::HmdMatrix34_t g_submitPoseL{};
+vr::HmdMatrix34_t g_submitPoseR{};
+bool g_holdPoseLValid = false;
+bool g_holdPoseRValid = false;
+bool g_submitPoseLValid = false;
+bool g_submitPoseRValid = false;
+
+bool UsesFovComfortPath(StereoMode mode) {
+  return mode == StereoMode::FovCanvasComfort || mode == StereoMode::AerPoseSubmit;
+}
+
+bool UsesTrueFovCanvasPublish(StereoMode mode) {
+  return mode == StereoMode::FovRecomputeTrueCanvas || UsesFovComfortPath(mode);
+}
+
+void SnapshotHoldPose(bool rightEye) {
+  vr::HmdMatrix34_t m{};
+  if (!GetHmdPoseMatrix(&m)) {
+    if (rightEye)
+      g_holdPoseRValid = false;
+    else
+      g_holdPoseLValid = false;
+    return;
+  }
+  if (rightEye) {
+    g_holdPoseR = m;
+    g_holdPoseRValid = true;
+  } else {
+    g_holdPoseL = m;
+    g_holdPoseLValid = true;
+  }
+}
+
 // ---- Mode 31: discover ~1×/frame VsRet walker → same-frame dual + VS patch ----
 enum class Mode31Phase : int {
   SoftPairHold = 0,  // Mode 30 path while cam warms / discover arms
@@ -289,6 +325,8 @@ void ReleaseEyeRts() {
   g_rtW = g_rtH = 0;
   g_haveL = g_haveR = false;
   g_pairAwaitingR = false;
+  g_holdPoseLValid = g_holdPoseRValid = false;
+  g_submitPoseLValid = g_submitPoseRValid = false;
 }
 
 bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
@@ -345,9 +383,14 @@ bool PromoteHoldPair(IDirect3DDevice9* dev) {
   dstR->Release();
   if (ok) {
     g_haveL = g_haveR = true;
+    g_submitPoseL = g_holdPoseL;
+    g_submitPoseR = g_holdPoseR;
+    g_submitPoseLValid = g_holdPoseLValid;
+    g_submitPoseRValid = g_holdPoseRValid;
     const uint32_t n = ++g_pairPromoteCount;
     if (n <= 4 || (n % 300) == 0)
-      Log("StereoPairHold: promoted pair #%u (both eyes update together)", n);
+      Log("StereoPairHold: promoted pair #%u (both eyes update together) poseL=%d poseR=%d", n,
+          g_submitPoseLValid ? 1 : 0, g_submitPoseRValid ? 1 : 0);
   }
   return ok;
 }
@@ -481,7 +524,7 @@ void ComputeCanvasSize(uint32_t bbW, uint32_t bbH, uint32_t* outW, uint32_t* out
 
   uint32_t w = static_cast<uint32_t>(bbW * sx + 0.5f);
   uint32_t h = static_cast<uint32_t>(bbH * sy + 0.5f);
-  const bool comfort = (GetStereoMode() == StereoMode::FovCanvasComfort);
+  const bool comfort = UsesFovComfortPath(GetStereoMode());
   const uint32_t maxDim = comfort ? kCanvasMaxDimComfort : kCanvasMaxDim;
   if (w > maxDim)
     w = maxDim;
@@ -3947,7 +3990,8 @@ void __fastcall HookExecA(void* self, void* edx) {
   }
   // Mode 30/35/36/37 soft-start / pair-hold: passthrough native exec; EndScene does temporal.
   if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
-      mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort) {
+      mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort ||
+      mode == StereoMode::AerPoseSubmit) {
     const int ph = g_mode30Phase.load();
     if (ph != static_cast<int>(Mode30Phase::Dual) || g_execDualDead.load()) {
       g_origExecA(self, edx);
@@ -4060,10 +4104,41 @@ bool SubmitEyeTexture(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye 
   t.eType = vr::TextureType_Vulkan;
   t.eColorSpace = vr::ColorSpace_Gamma;
 
-  // Fusion baseline: nullptr bounds + temporal IPD only.
-  // Soft-inset/square UV experiments reduced or killed fusion — keep off until engine FOV works.
-  const vr::EVRCompositorError err =
-      vr::VRCompositor()->Submit(eye, &t, nullptr, vr::Submit_Default);
+  // Mode 38: Luke Ross AER lesson — stamp capture-time HMD pose so SteamVR can
+  // reproject the stale eye (OpenVR #1253). Fall back to Submit_Default if pose missing.
+  vr::EVRCompositorError err = vr::VRCompositorError_None;
+  const bool wantPose = (GetStereoMode() == StereoMode::AerPoseSubmit);
+  const bool poseOk =
+      wantPose && ((eye == vr::Eye_Left) ? g_submitPoseLValid : g_submitPoseRValid);
+  if (poseOk) {
+    vr::VRTextureWithPose_t tp{};
+    tp.handle = &vd;
+    tp.eType = vr::TextureType_Vulkan;
+    tp.eColorSpace = vr::ColorSpace_Gamma;
+    tp.mDeviceToAbsoluteTracking =
+        (eye == vr::Eye_Left) ? g_submitPoseL : g_submitPoseR;
+    err = vr::VRCompositor()->Submit(eye, &tp, nullptr, vr::Submit_TextureWithPose);
+    static uint32_t s_aer = 0;
+    if ((++s_aer) <= 8 || (s_aer % 300) == 0)
+      Log("AERPose: eye=%s submitWithPose=1 err=%d", eye == vr::Eye_Left ? "L" : "R",
+          static_cast<int>(err));
+    if (err != vr::VRCompositorError_None) {
+      // Runtime may ignore pose (historic WMR bug) — still try default once.
+      err = vr::VRCompositor()->Submit(eye, &t, nullptr, vr::Submit_Default);
+      if (s_aer <= 8 || (s_aer % 300) == 0)
+        Log("AERPose: eye=%s pose-submit failed → Default err=%d",
+            eye == vr::Eye_Left ? "L" : "R", static_cast<int>(err));
+    }
+  } else {
+    if (wantPose) {
+      static uint32_t s_miss = 0;
+      if ((++s_miss) <= 4 || (s_miss % 300) == 0)
+        Log("AERPose: eye=%s pose missing → Submit_Default",
+            eye == vr::Eye_Left ? "L" : "R");
+    }
+    // Fusion baseline: nullptr bounds + temporal IPD only.
+    err = vr::VRCompositor()->Submit(eye, &t, nullptr, vr::Submit_Default);
+  }
   vtex->Release();
   surf->Release();
   return err == vr::VRCompositorError_None;
@@ -4450,21 +4525,25 @@ void TemporalCaptureThisFrame(IDirect3DDevice9* device) {
 
 // Mode 30 soft-start / fallback: capture into hold RTs; promote BOTH submit RTs
 // only when a complete L→R pair is ready (Halo AFR parity lesson — no half-pair).
-// Mode 37: latch gameTan on Left so Right uses identical canvas rects.
+// Mode 37/38: latch gameTan on Left so Right uses identical canvas rects.
+// Mode 38: also stamp HMD pose at capture for Submit_TextureWithPose.
 void TemporalCapturePairHold(IDirect3DDevice9* device) {
   if (!device || !g_holdL || !g_holdR || !g_texL || !g_texR)
     return;
   LogCachedIpdOnce();
   const StereoEye eye = GetStereoEye();
-  const bool latchPair = (GetStereoMode() == StereoMode::FovCanvasComfort);
+  const bool latchPair = UsesFovComfortPath(GetStereoMode());
   if (eye == StereoEye::Left) {
     if (latchPair)
       LatchGameFovForPair();
-    if (CopyBbToEyeCanvas(device, g_holdL, vr::Eye_Left))
+    if (CopyBbToEyeCanvas(device, g_holdL, vr::Eye_Left)) {
+      SnapshotHoldPose(false);
       g_pairAwaitingR = true;
+    }
     SetStereoEye(StereoEye::Right);
   } else {
     if (CopyBbToEyeCanvas(device, g_holdR, vr::Eye_Right) && g_pairAwaitingR) {
+      SnapshotHoldPose(true);
       PromoteHoldPair(device);
       g_pairAwaitingR = false;
     }
@@ -4476,9 +4555,10 @@ void TemporalCapturePairHold(IDirect3DDevice9* device) {
   const uint32_t n = ++g_temporalFrames;
   if (n <= 6 || (n % 120) == 0)
     Log("StereoPairHold: frame #%u captured=%s awaitingR=%d haveSubmit=%d/%d sep=%.0fcm "
-        "latch=%d",
+        "latch=%d poseLR=%d/%d",
         n, eye == StereoEye::Left ? "L" : "R", g_pairAwaitingR ? 1 : 0, g_haveL ? 1 : 0,
-        g_haveR ? 1 : 0, GetStereoSepMeters() * 100.f, latchPair ? 1 : 0);
+        g_haveR ? 1 : 0, GetStereoSepMeters() * 100.f, latchPair ? 1 : 0,
+        g_holdPoseLValid ? 1 : 0, g_holdPoseRValid ? 1 : 0);
 }
 
 bool InstallAllThreePhases() {
@@ -4639,7 +4719,8 @@ bool InstallStereoRenderHooks() {
   }
 
   if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
-      mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort) {
+      mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort ||
+      mode == StereoMode::AerPoseSubmit) {
     // Pair-hold only: same install surface as Mode 26 (no exec dual hooks).
     // Device-VS dual was probed this session (mode30dev=0) — do not re-arm.
     SetStereoEye(StereoEye::Left);
@@ -4651,10 +4732,18 @@ bool InstallStereoRenderHooks() {
     g_mode30ZeroDiff.store(0);
     g_pairAwaitingR = false;
     g_pairPromoteCount.store(0);
+    g_holdPoseLValid = g_holdPoseRValid = false;
+    g_submitPoseLValid = g_submitPoseRValid = false;
     g_vsPatchOn.store(false);
     ClearGameFovPairLatch();
     g_ok = InstallRootProbeHooks(2);
-    if (mode == StereoMode::FovCanvasComfort) {
+    if (mode == StereoMode::AerPoseSubmit) {
+      const bool fovOk = InstallFovRecomputeSiteHook();
+      Log("StereoRender: mode 38 AER-POSE SUBMIT (Mode37 true-FOV + pair-hold + "
+          "Submit_TextureWithPose per eye; Luke AER lesson; no OF/v2) ok=%d fovSite=%d",
+          g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=37 or 30 (+ delete fovadd)");
+    } else if (mode == StereoMode::FovCanvasComfort) {
       const bool fovOk = InstallFovRecomputeSiteHook();
       Log("StereoRender: mode 37 FOV-CANVAS COMFORT (Mode36 true-FOV + Mode30 pair-hold; "
           "fovadd~18; canvasCap=1536; pair-latch tangents; WorldScale for size; no CanvasZoom) "
@@ -4991,9 +5080,10 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
     return;
   }
 
-    // Mode 30 / 35 / 36 / 37: pair-hold temporal only (device-VS dual proven dead — mode30dev=0).
+    // Mode 30 / 35 / 36 / 37 / 38: pair-hold temporal only (device-VS dual proven dead — mode30dev=0).
     if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
-        mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort) {
+        mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort ||
+        mode == StereoMode::AerPoseSubmit) {
       g_dualDoneThisFrame = false;
       g_skipExecA = g_skipExecC = g_skipExecD = 0;
       IDirect3DSurface9* bb = nullptr;
@@ -5124,7 +5214,7 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
       mode != StereoMode::SameFrameReplayDual && mode != StereoMode::SameFrameVsParentDual &&
       mode != StereoMode::SameFrameLateVsParentDual && mode != StereoMode::SameFrameVsRetCallerDual &&
       mode != StereoMode::FovRecomputeSite && mode != StereoMode::FovRecomputeTrueCanvas &&
-      mode != StereoMode::FovCanvasComfort)
+      mode != StereoMode::FovCanvasComfort && mode != StereoMode::AerPoseSubmit)
     return false;
   if (!device || !interop || !g_texL || !g_texR)
     return false;

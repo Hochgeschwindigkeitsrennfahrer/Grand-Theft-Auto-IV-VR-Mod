@@ -1,14 +1,17 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~19:00  
-**Playable fallback:** stereo **`30`** (pair-hold). **Protected:** stereo **`36`** / **`35`**. **Headset test now:** stereo **`37`** + **`fovadd=18`** + **`scale=100`** (Mode 36 true-FOV comfort: softer ADD, canvas cap 1536 locked, pair-latch rects, WorldScale for size). Keep **`ipd`≥1**, **`stereoscale`/`eyefwd`/`pedhide`**. Canvas **zoom DISABLED**.  
-Kill Mode37 → stereo **`36`** or **`35`** (keep fovadd) or **`30`** + delete **`fovadd`**. Kill PedHide → **`pedhide=0`**.  
-F8 presets **`1,2,3,4,6,7,10`**. F7 = 6DoF only (HIGHER = smaller world). Do **not** multiply IPD×WorldScale. Do **not** re-enable FusionFix menu FieldOfView or canvas zoom.  
-Mode **34:** dual **DISABLED**. Forbidden `0x4DDAD0` / `0x2C6AC` / `0x37BD0` / `0x1BF010`.  
-**Live proof (buildId `20260724-185819`):**  
-`StereoMode: 37` · `fovadd=18` · `WorldScale: 1.00` · `mode 37 FOV-CANVAS COMFORT` ·  
-`StereoCanvasSize: LOCKED … 1536x1536` · `eye RTs` count **1** · `fill≈143%h/88%v` ·  
-`StereoPairHold: … latch=1` · `StereoSubmit … mode=37` · `CanvasZoom: DISABLED`.
+**As of:** 2026-07-24 ~19:15  
+**Headset test now:** stereo **`38`** (Mode 37 + AER `Submit_TextureWithPose`) + **`fovadd=18`**.  
+**Kill:** stereo **`37`** (keep FOV) or **`30`** + delete **`fovadd`**. Protected: **`36`/`35`**.  
+Keep **`ipd`≥1**, canvas **zoom DISABLED**. F7 = 6DoF only (does **not** create “inside VR” alone).  
+**Expectation:** jump/ghost may improve if SteamVR/WMR honors per-eye pose; presence/scale still need same-frame or independent cam later. AER v2 optical-flow **not** implemented.
+
+### Session 2026-07-24 ~19:10 (Mode 38 AER pose submit)
+
+**User:** Mode 37 still huge/monitor, jump, bad FPS; F7 doesn’t feel like being in the world; read Luke AER v2 Patreon.  
+**Takeaway:** AER v2 = optical-flow intermediates (skip). Transferable = stamp each eye with capture-time pose (`Submit_TextureWithPose`, OpenVR #1253).  
+**Shipped Mode 38:** Mode 37 path + pose cache on L/R capture + pose promote with pair-hold + `Submit_TextureWithPose`. Fallback to `Submit_Default` if pose missing/err.  
+**Deploy verified (`ASI_BUILD_ID 20260724-191333`):** `StereoMode: 38`, `mode 38 AER-POSE SUBMIT … ok=1`, pair promote `poseL=1 poseR=1`, `AERPose: eye=L/R submitWithPose=1 err=0`, `StereoSubmit … mode=38`. Kill **37** / **30**.  
 
 ### Session 2026-07-24 ~18:45–19:00 (Mode 37 comfort — Mode36 bars-gone + Mode30 smooth)
 

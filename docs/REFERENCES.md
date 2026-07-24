@@ -64,7 +64,9 @@ All important external links for this project.
 | Topic | Link | Takeaway for us |
 |-------|------|-----------------|
 | OpenVR compositor | https://github.com/ValveSoftware/openvr/wiki/IVRCompositor_Overview | `WaitGetPoses` → render L/R → `Submit`; same-thread; serial L then R OK |
-| OpenVR Submit + AER pose | https://github.com/ValveSoftware/openvr/issues/1253 (Luke Ross) | `Submit_TextureWithPose` for alternate-eye; SteamVR historically used last pose for both eyes (WMR/Oculus backends) |
+| OpenVR Submit + AER pose | https://github.com/ValveSoftware/openvr/issues/1253 (Luke Ross) | `Submit_TextureWithPose` + per-eye `mDeviceToAbsoluteTracking`; SteamVR historically used last pose for both eyes on WMR/Oculus backends — test on G2 |
+| Luke AER / 60 fps (public Patreon) | https://www.patreon.com/posts/gaming-in-vr-at-76076877 | Legacy AER = one eye/frame + reproject other; AER v2 = optical-flow intermediates (not for us) |
+| AER v2 announcement | https://www.patreon.com/realvr/posts/aer-v2-152398605 | Paywalled; same lesson: pose-stamped AER, not canvas FOV lies |
 | Meta / Rift render loop | https://developers.meta.com/horizon/documentation/native/pc/dg-render/ | Predicted eye poses; compositor does distortion + timewarp |
 | Meta compositor / timewarp | https://developers.meta.com/horizon/documentation/spatial-sdk/os-compositor/ | Rotational timewarp; positional needs depth |
 | Asymmetric / parallel projection | https://slugcat.systems/post/25-03-18-virtual-reality-projection-shenanigans/ | Per-eye 4-tangent FOV + eye pose; parallel-projection compat mode for canted panels |

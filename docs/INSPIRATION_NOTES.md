@@ -81,7 +81,8 @@ Local: `inspiration/real vr all mods/` (gitignored). Contains `RealVR.ini`, per-
 |------|-----------|------------------------------|
 | **FOV must match HMD** | `UniversalFOVFix`; wrong FOV = warp / wrong scale / edge pop-in | Same lesson as Halo. Our Mode 17 hit recompute fight — still deferred. **Never** fake canvas FOV (zoom warp killed 2026-07-24). |
 | **Square render** | GTA5 `commandline` `-width 1080 -height 1080` | Useful **with** real engine FOV later; alone shrinks image (we already know). |
-| **Alternate-eye stereo (AER)** | Temporal L/R + compositor timewarp / `Submit_TextureWithPose` | We already run temporal (Mode 14/26/30). Real fix remains **same-frame**. AER+pose is a later comfort spike if OpenVR/WMR cooperates (see OpenVR #1253). |
+| **Alternate-eye stereo (AER)** | Temporal L/R + compositor timewarp / `Submit_TextureWithPose` | We already run temporal (Mode 14/26/30/37). **Mode 38** stamps each eye with capture-time pose via `Submit_TextureWithPose` (OpenVR #1253). |
+| **AER v2** (Patreon) | Optical-flow / depth synthesize intermediate frames so both eyes feel “fresh” at 60 fps | **Not copyable** here (closed + CUDA/OF stack). Learn: legacy AER = our temporal; v2 = synthesis we skip. |
 | **Override pitch limits** | Game clamps pitch in vehicles → HMD look blocked | Related to wall-collision / look fights below. |
 | **Supplementary view fix at render** | Cam resists Change → fix during draw | Our CopyMat override is the partial analog. |
 | **Hide / fix body at camera** | Helmet/masks / close body coords; neck stump warning | We have **PedHide** (SetDraw). Keep. |

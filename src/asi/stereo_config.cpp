@@ -256,10 +256,10 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  // Two-digit modes 10..37 (Mode 37 = comfort true-canvas). Cap must track enum max.
+  // Two-digit modes 10..38 (Mode 38 = AER pose submit). Cap must track enum max.
   if (n >= 2 && buf[0] >= '1' && buf[0] <= '3' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 37)
+    if (v <= 38)
       return v;
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
@@ -288,7 +288,7 @@ void ReloadStereoMode() {
   if (n > 0)
     v = ParseModeFile(buf, n);
   int prev = g_mode.load();
-  if (v >= 0 && v <= 37) {
+  if (v >= 0 && v <= 38) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -309,7 +309,8 @@ void ReloadStereoMode() {
                            v == static_cast<int>(StereoMode::SameFrameVsRetCallerDual) ||
                            v == static_cast<int>(StereoMode::FovRecomputeSite) ||
                            v == static_cast<int>(StereoMode::FovRecomputeTrueCanvas) ||
-                           v == static_cast<int>(StereoMode::FovCanvasComfort))) {
+                           v == static_cast<int>(StereoMode::FovCanvasComfort) ||
+                           v == static_cast<int>(StereoMode::AerPoseSubmit))) {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadWorldScale();
@@ -358,7 +359,8 @@ bool UsesAngleCorrectCanvas(StereoMode mode) {
          mode == StereoMode::SameFrameVsRetCallerDual ||
          mode == StereoMode::FovRecomputeSite ||
          mode == StereoMode::FovRecomputeTrueCanvas ||
-         mode == StereoMode::FovCanvasComfort;
+         mode == StereoMode::FovCanvasComfort ||
+         mode == StereoMode::AerPoseSubmit;
 }
 
 float GetStereoSepMeters() {
