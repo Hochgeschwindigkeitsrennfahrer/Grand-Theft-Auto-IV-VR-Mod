@@ -227,11 +227,17 @@ enum class StereoMode : int {
   // view head-owned; gameplay camera/collision, FOV canvas, RT lock, and
   // temporal motion guard are unchanged. Kill: 45/44/37/30.
   HeadOwnedCamFullPose = 46,
-  // Mode 45's exact world-up-leveled reconstruction, with only the vertical
-  // component of the HMD forward vector inverted before the existing yaw and
-  // basis reconstruction. This tests the reported inverted pitch/tilt without
-  // writing the unsafe non-level right/up HMD axes from Mode 46.
+  // Mode 45's exact world-up-leveled reconstruction, retained as the safe
+  // recovery from the failed inverted-pitch experiment. It never writes the
+  // unsafe non-level HMD right/up axes from Mode 46.
   HeadOwnedCamLeveledPitchFlip = 47,
+  // Mode 47 plus pitch-stable leveled basis: when HMD forward is near vertical
+  // the world-up cross product degenerates and snaps to rx=(1,0,0), causing
+  // look-up warp. Mode 48 keeps the last stable right/up and re-orthogonalizes
+  // with the current forward. Also refreshes CopyMat immediately before each
+  // temporal eye capture so a late follow-cam overwrite cannot stale the BB.
+  // Still no Mode-46 full HMD-basis write. Kill: 47/45/44/37/30.
+  HeadOwnedCamPitchStable = 48,
 };
 
 StereoMode GetStereoMode();

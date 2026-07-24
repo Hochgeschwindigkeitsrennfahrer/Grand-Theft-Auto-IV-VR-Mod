@@ -1,9 +1,9 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~20:37
-**Deployed now:** stereo **`47`** (Mode-45 protected head-owned refresh with a
-leveled pitch-sign test) +
-**`fovadd=18`**.
+**As of:** 2026-07-24 ~21:18
+**Deployed now:** stereo **`48`** (Mode-47 leveled pitch flip + **pitch-stable** up/down
+basis + pre-capture CopyMat refresh) + **`fovadd=18`**. The 6DoF `scale` file remains
+**`100`**. Mode 46 stays disabled (post-load freeze). Mode 45/47 remain kill baselines.
 **Mode 46 is disabled: it froze after the loading screen in the only headset test.** Its full
 OpenVR right/forward/up matrix write is not safe for the RAGE follow-camera path. A request for
 `46` is remapped to **`45`** at load; do not deploy a `46` stereo file. Mode 45 remains
@@ -12,33 +12,71 @@ head-owned refresh, temporary-mono motion guard, locked 1536×1536 eye RTs, and 
 Mode 40 is an honest intermediate, not true same-frame stereo: on rapid HMD motion it re-canvases
 the current R game frame to both eye textures for that pair (temporary mono), removing the stale-eye
 disparity during the turn; calm motion returns to normal Mode-37 temporal stereo.
-**Kill:** stereo **`45`** (the user-tested good Mode-45 baseline), **`44`** (remove late refresh),
-**`37`** (always temporal stereo + full FOV), or **`30`** + delete **`fovadd`**.
+**Kill:** stereo **`47`** or **`45`** (prior stable baselines), **`44`**, **`37`**, or **`30`** + delete **`fovadd`**.
 Protected: **`36`/`35`**.
 Keep **`ipd`≥1**, canvas **zoom DISABLED**. F7 = 6DoF only (does **not** create “inside VR” alone).  
-**Expectation:** the bars, RT stability, and motion guard stay unchanged; when Rage performs a late
-camera overwrite, head turns/leans should now remain owned by the HMD rather than snapping to its
-follow-camera view. It cannot bypass physical wall collision, and game motion can still expose
-temporal stereo. Risks are camera/collision, sound-origin, AI-aim, weapon/HUD, and culling desync
-because only the render matrix is refreshed. A real stereo fix still needs same-frame distinct eyes.
+**Expectation:** same bars/RT/motion-guard stability as Mode 47, but looking nearly straight
+up/down should no longer snap the camera basis to `(1,0,0)` (look-up warp). Pre-capture
+CopyMat refresh reduces follow-cam overwrites stale in the submitted backbuffer. Still not
+true same-frame stereo. Kill to **`47`** if up/down feels wrong.
 
-### Session 2026-07-24 ~20:37 (Mode 47 leveled pitch-sign test: automated freeze-test PASS)
+### Session 2026-07-24 ~21:18 (Mode 48 pitch-stable head-owned: shipped + freeze-test PASS)
 
-**Shipped Mode 47:** Mode 45's complete post-CCam refresh stays intact: world-up leveled
-right/up reconstruction, locked 1536×1536 RTs, true-FOV `fovadd=18`, temporal motion guard,
-normal IPD, and no replay/VS/collision write. The **only** camera change is to invert the
-vertical (`z`) component of the converted HMD forward direction before Mode 45's existing yaw
-and world-up basis reconstruction. It does not place OpenVR right/up axes into RAGE, so it
-does not repeat Mode 46's unsafe non-level matrix write. This is a pitch/tilt-direction test,
-not physical roll support and not true same-tick stereo.
+**One behavior change:** Mode 48 extends Mode 47 on the safe leveled path. When HMD forward
+is near vertical (`fwdHoriz < 0.26`), the world-up cross product degenerates and previously
+snapped to `rx=(1,0,0)` — the look-up warp. Mode 48 keeps the last stable horizontal right
+vector and re-orthogonalizes up from the current forward (no Mode-46 full HMD-basis write).
+It also calls `RefreshLiveCamForStereoEye()` immediately before each temporal eye capture so
+a late follow-cam overwrite cannot stale the backbuffer view.
 
-**Automated post-load freeze-test PASS:** build `20260724-203453` ran well beyond the required
-two minutes after load. The log continuously advanced through `StereoSubmit: L=1 R=1 mode=47`,
-`Mode47 ... fullBasis=0; leveledPitchFlip=1`, and `Mode44: RT lock 1536x1536 ... recreates=0`.
-No post-load stall was observed. The headset user must still decide whether looking up/down now
-moves the world in the expected direction; if it is reversed or uncomfortable, restore
-**`45`** and restart. Mode 47 cannot correct roll because retaining a full roll basis is the
-Mode-46 freeze path.
+**Automated post-load freeze-test PASS:** build `20260724-211554` logged `StereoMode: 48`,
+`StereoRender: mode 48 HEAD-OWNED PITCH-STABLE … ok=1 fovSite=1`, continuous
+`StereoSubmit: L=1 R=1 mode=48` through `MonoSubmit #15180+`, `Mode48: late head-owned …
+pitchStable=1`, `leveledPitchFlip=1`, and `Mode44: RT lock … checks=14400 recreates=0`. No
+ASI exception, OpenVR submit error, or RT recreation during the 2+ minute run. The startup
+`CreateDevice FAILED hr=0x8876086c` is still the rejected preliminary device attempt.
+
+**Headset check:** look up at sky/buildings — warp reduced? Lean/strafe with scale=100 still
+OK? Kill: write **`47`** (Mode-47 pitch flip only) or **`45`** if anything regresses.
+
+### Session 2026-07-24 ~21:10 (6DoF WorldScale correction: `50` → `100`, freeze-test PASS)
+
+**One behavior change:** kept the proven Mode 47 binary and all stereo/FOV/RT settings intact,
+but corrected `gtaiv_dxvk_vr.scale` from `50` to **`100`**. The implementation maps the
+OpenVR absolute tracking translation directly through the established Ovr→GTA world-axis mapping,
+then multiplies only that translation by `WorldScale`; it does not rotate translation with the
+head and does not multiply eye separation. Thus `100` gives twice the prior physical lean/strafe
+distance and is expected to make the previously huge-feeling world smaller. It is a headset
+comfort test, not a substitute for real same-frame stereo.
+
+**Automated post-load freeze-test PASS:** the fresh Mode-47 run logged
+`WorldScale: 1.00 (file)`, continuous paired `StereoSubmit: L=1 R=1 mode=47` through
+`MonoSubmit #15600`, repeated `leveledPitchFlip=1` late refreshes, and
+`Mode44: RT lock ... checks=15000 recreates=0`. The motion guard also fired safely during
+HMD movement (`directSubmit=1`). No ASI exception, OpenVR submit error, or RT recreation was
+logged during the more-than-two-minute run. Physical validation still needed: F9 while seated,
+then lean left/right, forward/back, and up/down; if head motion becomes too strong, restore
+`gtaiv_dxvk_vr.scale` to **`50`** and restart.
+
+### Session 2026-07-24 ~20:52 (Mode 47 leveled-pitch flip: deployed and freeze-test PASS)
+
+**Actual deployed Mode 47 behavior:** build `20260724-205222` reverses only the
+vertical component of the HMD forward vector before Mode 45's existing world-up right/up
+reconstruction. It is active for Mode 47+ and logs `leveledPitchFlip=1`; Mode 45 remains
+unchanged. The safe late refresh retains `fullHmdBasis=0`, so it does **not** revive Mode 46's
+unsafe OpenVR right/up full-basis write. RT lock, true-FOV `fovadd=18`, temporal motion guard,
+normal IPD, and no replay/VS/collision write remain unchanged.
+
+**Automated post-load freeze-test PASS:** after more than two minutes, the live
+`20260724-205222` log reached `MonoSubmit #12960` / `StereoSubmit: L=1 R=1 mode=47`, with
+`CamMatrix ... fullHmdBasis=0 leveledPitchFlip=1`,
+`Mode47 ... fullBasis=0; leveledPitchFlip=1`, and
+`Mode44: RT lock 1536x1536 checks=12600 recreates=0`. No post-load stall, exception, RT
+recreation, or OpenVR submit error was observed. The startup `CreateDevice FAILED
+hr=0x8876086c` is followed immediately by `CreateDevice OK` and is a rejected preliminary
+device attempt, not a runtime failure. Headset direction/comfort still needs the user's
+physical up/down check; write **`45`** to restore the committed safe baseline if it feels wrong.
+Mode 47 does not enable physical roll because a full roll basis is the Mode-46 freeze path.
 
 ### Session 2026-07-24 ~20:30 (Mode 46 full HMD-basis / roll test: FAILED and disabled)
 

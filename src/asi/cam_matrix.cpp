@@ -215,15 +215,17 @@ void ApplyHmdToCam(Matrix44* mat) {
   OvrToGta(-h.m[0][2], -h.m[1][2], -h.m[2][2], &fx, &fy, &fz);
   Normalize(&fx, &fy, &fz);
 
-  // Mode 47 is deliberately only a pitch sign experiment on Mode 45's proven
-  // world-up basis. Do this before yaw/basis reconstruction; unlike Mode 46 it
-  // never stores HMD right/up axes in RAGE's late follow-camera matrix.
-  const bool flipLeveledPitch =
-      GetStereoMode() == StereoMode::HeadOwnedCamLeveledPitchFlip;
-  if (flipLeveledPitch)
+  // Mode 47+ stays on Mode 45's world-up-leveled basis, but reverses only
+  // the HMD forward vector's vertical component before that reconstruction.
+  // Do not route this through Mode 46's full right/up HMD-basis write: that
+  // non-level late-camera path froze after loading.
+  const bool leveledPitchFlip =
+      static_cast<int>(GetStereoMode()) >=
+      static_cast<int>(StereoMode::HeadOwnedCamLeveledPitchFlip);
+  if (leveledPitchFlip)
     fz = -fz;
 
-  // Mode 46 keeps the complete HMD basis. The old forward + world-up rebuild
+  // Mode 46 keeps the complete HMD basis. The forward + world-up rebuild
   // deliberately discarded physical roll, which makes a head tilt look like
   // the game camera is resisting/inverting it. OpenVR matrix columns are the
   // HMD local axes in tracking space; apply OvrToGta to each column once.
@@ -260,14 +262,23 @@ void ApplyHmdToCam(Matrix44* mat) {
     Normalize(&fx, &fy, &fz);
   }
 
-  // Modes through 45 and Mode 47 level the horizon by rebuilding right/up from
+  // Modes through 45 and Mode 47+ level the horizon by rebuilding right/up from
   // world-up. Mode 46 uses the HMD's rigid basis: right=X, forward=Y, up=Z in RAGE.
+  const bool pitchStableMode =
+      static_cast<int>(GetStereoMode()) >=
+      static_cast<int>(StereoMode::HeadOwnedCamPitchStable);
+  constexpr float kPitchStableHoriz = 0.26f;  // ~75 deg from horizontal
+  static float s_stableRx = 1.f, s_stableRy = 0.f, s_stableRz = 0.f;
+  static bool s_haveStableBasis = false;
+  const float fwdHoriz = std::sqrt(fx * fx + fy * fy);
+
   float rx = fy;
   float ry = -fx;
   float rz = 0.f;
   float ux = ry * fz - rz * fy;
   float uy = rz * fx - rx * fz;
   float uz = rx * fy - ry * fx;
+  bool usedPitchStable = false;
   if (fullHeadPose) {
     rx = hRightX;
     ry = hRightY;
@@ -275,12 +286,30 @@ void ApplyHmdToCam(Matrix44* mat) {
     ux = hUpX;
     uy = hUpY;
     uz = hUpZ;
+  } else if (pitchStableMode && fwdHoriz < kPitchStableHoriz && s_haveStableBasis) {
+    // Near-vertical look: world-up cross degenerates → snap/warp. Keep last stable
+    // horizontal right and rebuild up from current forward (no Mode-46 HMD up).
+    rx = s_stableRx;
+    ry = s_stableRy;
+    rz = s_stableRz;
+    ux = ry * fz - rz * fy;
+    uy = rz * fx - rx * fz;
+    uz = rx * fy - ry * fx;
+    Normalize(&ux, &uy, &uz);
+    usedPitchStable = true;
   } else {
     float rlen = std::sqrt(rx * rx + ry * ry + rz * rz);
     if (rlen < 1e-4f) {
-      rx = 1.f;
-      ry = 0.f;
-      rz = 0.f;
+      if (pitchStableMode && s_haveStableBasis) {
+        rx = s_stableRx;
+        ry = s_stableRy;
+        rz = s_stableRz;
+        usedPitchStable = true;
+      } else {
+        rx = 1.f;
+        ry = 0.f;
+        rz = 0.f;
+      }
     } else {
       rx /= rlen;
       ry /= rlen;
@@ -290,6 +319,12 @@ void ApplyHmdToCam(Matrix44* mat) {
     uy = rz * fx - rx * fz;
     uz = rx * fy - ry * fx;
     Normalize(&ux, &uy, &uz);
+    if (fwdHoriz >= kPitchStableHoriz) {
+      s_stableRx = rx;
+      s_stableRy = ry;
+      s_stableRz = rz;
+      s_haveStableBasis = true;
+    }
   }
 
   const float eyeFwd = GetEyeForwardMeters();
@@ -369,10 +404,10 @@ void ApplyHmdToCam(Matrix44* mat) {
   const uint32_t n = ++g_applyCount;
   if (n <= 5 || (n % 300) == 0) {
     Log("CamMatrix: FP lock #%u %s pos=(%.3f,%.3f,%.3f) ipd=(%.4f,%.4f,%.4f) sep=%.0fcm "
-        "eyeFwd=%.0fcm fullHmdBasis=%d leveledPitchFlip=%d",
+        "eyeFwd=%.0fcm fullHmdBasis=%d leveledPitchFlip=%d pitchStable=%d",
         n, rightEye ? "R" : "L", eye.x, eye.y, eye.z, ipdX, ipdY, ipdZ,
         GetStereoSepMeters() * 100.f, eyeFwd * 100.f, fullHeadPose ? 1 : 0,
-        flipLeveledPitch ? 1 : 0);
+        leveledPitchFlip ? 1 : 0, usedPitchStable ? 1 : 0);
   }
 }
 
@@ -758,23 +793,28 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         sm == StereoMode::ReplayOwnerCountProbe || sm == StereoMode::FovCanvasMotionGuardFast ||
         sm == StereoMode::FovCanvasMotionGuardRtLock || sm == StereoMode::HeadOwnedCamSpike ||
         sm == StereoMode::HeadOwnedCamFullPose ||
-        sm == StereoMode::HeadOwnedCamLeveledPitchFlip)
+        sm == StereoMode::HeadOwnedCamLeveledPitchFlip ||
+        sm == StereoMode::HeadOwnedCamPitchStable)
       PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
 
-    // Modes 45/46/47: Rage can revise a camera after CopyMat but before this already-safe
+    // Modes 45/46/47/48: Rage can revise a camera after CopyMat but before this already-safe
     // post-process FOV site. Re-apply the HMD pose here, late in the game-thread
     // camera path. Mode 46 additionally preserves HMD roll. This does not move
     // gameplay's collision camera, add a VS offset, or make another render/replay pass.
     if (sm == StereoMode::HeadOwnedCamSpike || sm == StereoMode::HeadOwnedCamFullPose ||
-        sm == StereoMode::HeadOwnedCamLeveledPitchFlip) {
+        sm == StereoMode::HeadOwnedCamLeveledPitchFlip ||
+        sm == StereoMode::HeadOwnedCamPitchStable) {
       RefreshLiveCamForStereoEye();
       static uint32_t s_headOwnedRefreshes = 0;
       const uint32_t refreshes = ++s_headOwnedRefreshes;
       if (refreshes <= 4 || (refreshes % 600) == 0)
         Log("Mode%d: late head-owned CopyMat refresh #%u (CCam site; fullBasis=%d; "
-            "leveledPitchFlip=%d; collision unchanged)",
+            "leveledPitchFlip=%d; pitchStable=%d; collision unchanged)",
             static_cast<int>(sm), refreshes, sm == StereoMode::HeadOwnedCamFullPose ? 1 : 0,
-            sm == StereoMode::HeadOwnedCamLeveledPitchFlip ? 1 : 0);
+            static_cast<int>(sm) >= static_cast<int>(StereoMode::HeadOwnedCamLeveledPitchFlip)
+                ? 1
+                : 0,
+            sm == StereoMode::HeadOwnedCamPitchStable ? 1 : 0);
     }
     const uint32_t n = ++g_fovSiteCalls;
     if (n <= 4 || (n % 600) == 0)
@@ -786,7 +826,8 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
            sm == StereoMode::ReplayOwnerCountProbe || sm == StereoMode::FovCanvasMotionGuardFast ||
            sm == StereoMode::FovCanvasMotionGuardRtLock || sm == StereoMode::HeadOwnedCamSpike ||
            sm == StereoMode::HeadOwnedCamFullPose ||
-           sm == StereoMode::HeadOwnedCamLeveledPitchFlip)
+           sm == StereoMode::HeadOwnedCamLeveledPitchFlip ||
+           sm == StereoMode::HeadOwnedCamPitchStable)
               ? 1
               : 0);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
