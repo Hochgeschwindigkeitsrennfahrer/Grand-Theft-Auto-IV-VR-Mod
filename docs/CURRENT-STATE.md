@@ -1,15 +1,38 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~19:45
-**Headset test now:** stereo **`37`** (pair-hold + true-FOV canvas) + **`fovadd=18`**.
-Mode 39 was rejected: its 12° cap brought the black bars back but did not improve jump/FPS.
-**Kill:** stereo **`38`** (AER pose + full `fovadd`), **`37`** (no pose, full FOV), or
-**`30`** + delete **`fovadd`**. Protected: **`36`/`35`**.
+**As of:** 2026-07-24 ~19:38
+**Headset test now:** stereo **`40`** (Mode 37 true-FOV canvas + motion guard) + **`fovadd=18`**.
+Mode 40 is an honest intermediate, not true same-frame stereo: on rapid HMD motion it re-canvases
+the current R game frame to both eye textures for that pair (temporary mono), removing the stale-eye
+disparity during the turn; calm motion returns to normal Mode-37 temporal stereo.
+**Kill:** stereo **`37`** (always temporal stereo + full FOV) or **`30`** + delete **`fovadd`**.
+Protected: **`36`/`35`**.
 Keep **`ipd`≥1**, canvas **zoom DISABLED**. F7 = 6DoF only (does **not** create “inside VR” alone).  
-**Expectation:** the bars should be gone again. Mode 37 cannot remove the severe temporal jump or
-restore mono-level FPS: L/R are still different game frames. A real fix needs same-frame distinct
-eye rendering; independent head-owned view remains a later, risky camera/collision spike. AER v2
-optical-flow is **not** implemented.
+**Expectation:** the bars remain gone. Rapid head turns should no longer show a stale-eye stereo jump,
+but will briefly lose depth while Mode 40 submits the coherent current-frame mono pair. Motion from the
+game itself can still expose temporal stereo. A real fix needs same-frame **distinct-eye** rendering;
+independent head-owned view remains a later, risky camera/collision spike. AER v2 optical-flow is
+**not** implemented.
+
+### Session 2026-07-24 ~19:38 (Mode 40 motion guard: shipped)
+
+**Same-frame investigation result:** no new safe replay seam exists in the present mapping. Real draws /
+`SetVSConstF` execute on the replay thread (`VsRet=0x2C73E`); `BuildRootA`/`ExecRoot` are game-thread
+paths. The earlier same-frame Phase dual is stable but camera/view constants are baked before its second
+pass; the replay hook and false-prologue options are forbidden/crash-prone (`0x2C6AC`, `0x37BD0`,
+`0x1BF010`, and Mode-34's `0x4DDAD0`). Therefore Mode 40 does **not** claim a true stereo pass.
+
+**Shipped Mode 40:** Mode 37's locked 1536 true-FOV canvas and pair-held stereo remain unchanged while
+still. When the L/R capture poses differ by at least **1.5°** or **2 cm**, Mode 40 rebuilds both canvases
+from the current R backbuffer and promotes them together. This gives both submitted eyes one game/render
+epoch for the turn, at the deliberate cost of temporary mono depth. No new replay/render hook, no
+CCam+VS stack, no CanvasZoom, and no IPD×WorldScale.
+
+**Deployed + live-log verified** (`ASI_BUILD_ID 20260724-193720`): `StereoMode: 40`,
+`StereoRender: mode 40 MOTION-GUARD … ok=1 fovSite=1`, `StereoSubmit: L=1 R=1 mode=40`, and live
+guard firings such as `Mode40: MOTION-GUARD mono pair #1 SameFrame: L+R from current R frame
+rot=2.05deg move=0.24cm`. The first deployment briefly classified Mode 40 as non-temporal and redundantly
+dual-built lists; it was immediately corrected and redeployed in the verified build above.
 
 ### Session 2026-07-24 ~19:45 (reject Mode 39 / restore Mode 37)
 

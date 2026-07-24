@@ -256,10 +256,10 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  // Two-digit modes 10..39 (Mode 39 = lower-FOV temporal comfort). Cap must track enum max.
-  if (n >= 2 && buf[0] >= '1' && buf[0] <= '3' && buf[1] >= '0' && buf[1] <= '9') {
+  // Two-digit modes 10..40 (Mode 40 = temporal motion guard). Cap must track enum max.
+  if (n >= 2 && buf[0] >= '1' && buf[0] <= '4' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 39)
+    if (v <= 40)
       return v;
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
@@ -288,7 +288,7 @@ void ReloadStereoMode() {
   if (n > 0)
     v = ParseModeFile(buf, n);
   int prev = g_mode.load();
-  if (v >= 0 && v <= 39) {
+  if (v >= 0 && v <= 40) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -311,7 +311,8 @@ void ReloadStereoMode() {
                            v == static_cast<int>(StereoMode::FovRecomputeTrueCanvas) ||
                            v == static_cast<int>(StereoMode::FovCanvasComfort) ||
                            v == static_cast<int>(StereoMode::AerPoseSubmit) ||
-                           v == static_cast<int>(StereoMode::FovCanvasLowMotion))) {
+                           v == static_cast<int>(StereoMode::FovCanvasLowMotion) ||
+                           v == static_cast<int>(StereoMode::FovCanvasMotionGuard))) {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadWorldScale();
@@ -324,7 +325,7 @@ void ReloadStereoMode() {
 }
 
 void WriteStereoModeFile(int mode) {
-  if (mode < 0 || mode > 39)
+  if (mode < 0 || mode > 40)
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -345,7 +346,8 @@ StereoMode GetStereoMode() {
 
 bool IsTemporalStereoMode(StereoMode mode) {
   return mode == StereoMode::DualRtSubmit ||
-         (mode >= StereoMode::StereoFusion && mode <= StereoMode::CamFovWrite);
+         (mode >= StereoMode::StereoFusion && mode <= StereoMode::CamFovWrite) ||
+         mode == StereoMode::FovCanvasMotionGuard;
 }
 
 bool UsesAngleCorrectCanvas(StereoMode mode) {
@@ -362,7 +364,8 @@ bool UsesAngleCorrectCanvas(StereoMode mode) {
          mode == StereoMode::FovRecomputeTrueCanvas ||
          mode == StereoMode::FovCanvasComfort ||
          mode == StereoMode::AerPoseSubmit ||
-         mode == StereoMode::FovCanvasLowMotion;
+         mode == StereoMode::FovCanvasLowMotion ||
+         mode == StereoMode::FovCanvasMotionGuard;
 }
 
 float GetStereoSepMeters() {

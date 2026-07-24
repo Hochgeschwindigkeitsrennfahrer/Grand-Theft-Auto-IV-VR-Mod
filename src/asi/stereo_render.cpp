@@ -84,6 +84,7 @@ IDirect3DTexture9* g_holdL = nullptr;
 IDirect3DTexture9* g_holdR = nullptr;
 bool g_pairAwaitingR = false;
 std::atomic<uint32_t> g_pairPromoteCount{0};
+std::atomic<uint32_t> g_mode40MonoPairs{0};
 
 // Mode 38 AER: HMD pose at capture time (WaitGetPoses already ran this EndScene).
 vr::HmdMatrix34_t g_holdPoseL{};
@@ -97,7 +98,7 @@ bool g_submitPoseRValid = false;
 
 bool UsesFovComfortPath(StereoMode mode) {
   return mode == StereoMode::FovCanvasComfort || mode == StereoMode::AerPoseSubmit ||
-         mode == StereoMode::FovCanvasLowMotion;
+         mode == StereoMode::FovCanvasLowMotion || mode == StereoMode::FovCanvasMotionGuard;
 }
 
 bool UsesTrueFovCanvasPublish(StereoMode mode) {
@@ -120,6 +121,36 @@ void SnapshotHoldPose(bool rightEye) {
     g_holdPoseL = m;
     g_holdPoseLValid = true;
   }
+}
+
+// Mode 40 is deliberately NOT a synthetic same-frame stereo claim. The game
+// rendered L and R on separate frames, but a rapid HMD move makes that stale-eye
+// disparity much more objectionable than losing stereo for that one submitted
+// pair. Re-canvas the CURRENT R frame into both eye textures instead.
+bool Mode40NeedsMonoGuard(float* outRotDeg, float* outMoveCm) {
+  if (GetStereoMode() != StereoMode::FovCanvasMotionGuard || !g_holdPoseLValid ||
+      !g_holdPoseRValid)
+    return false;
+  const vr::HmdMatrix34_t& l = g_holdPoseL;
+  const vr::HmdMatrix34_t& r = g_holdPoseR;
+  const float trace = l.m[0][0] * r.m[0][0] + l.m[0][1] * r.m[0][1] +
+                      l.m[0][2] * r.m[0][2] + l.m[1][0] * r.m[1][0] +
+                      l.m[1][1] * r.m[1][1] + l.m[1][2] * r.m[1][2] +
+                      l.m[2][0] * r.m[2][0] + l.m[2][1] * r.m[2][1] +
+                      l.m[2][2] * r.m[2][2];
+  const float cosAngle = (std::max)(-1.f, (std::min)(1.f, (trace - 1.f) * 0.5f));
+  const float rotDeg = std::acos(cosAngle) * 57.2957795f;
+  const float dx = r.m[0][3] - l.m[0][3];
+  const float dy = r.m[1][3] - l.m[1][3];
+  const float dz = r.m[2][3] - l.m[2][3];
+  const float moveCm = std::sqrt(dx * dx + dy * dy + dz * dz) * 100.f;
+  if (outRotDeg)
+    *outRotDeg = rotDeg;
+  if (outMoveCm)
+    *outMoveCm = moveCm;
+  // One temporal pair normally spans two EndScene epochs. These thresholds
+  // preserve stereo while still, but guard the visibly bad turn/lean case.
+  return rotDeg >= 1.5f || moveCm >= 2.f;
 }
 
 // ---- Mode 31: discover ~1×/frame VsRet walker → same-frame dual + VS patch ----
@@ -3992,7 +4023,8 @@ void __fastcall HookExecA(void* self, void* edx) {
   // Mode 30/35/36/37/38/39 pair-hold: passthrough native exec; EndScene does temporal.
   if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
       mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort ||
-      mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion) {
+      mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion ||
+      mode == StereoMode::FovCanvasMotionGuard) {
     const int ph = g_mode30Phase.load();
     if (ph != static_cast<int>(Mode30Phase::Dual) || g_execDualDead.load()) {
       g_origExecA(self, edx);
@@ -4545,6 +4577,25 @@ void TemporalCapturePairHold(IDirect3DDevice9* device) {
   } else {
     if (CopyBbToEyeCanvas(device, g_holdR, vr::Eye_Right) && g_pairAwaitingR) {
       SnapshotHoldPose(true);
+      float rotDeg = 0.f, moveCm = 0.f;
+      if (Mode40NeedsMonoGuard(&rotDeg, &moveCm)) {
+        // Both eye canvases now originate from this exact backbuffer epoch.
+        // They retain their correct per-eye canvas geometry, but intentionally
+        // contain one camera view until the next calm L/R temporal pair.
+        const bool sameFrameL = CopyBbToEyeCanvas(device, g_holdL, vr::Eye_Left);
+        const bool sameFrameR = CopyBbToEyeCanvas(device, g_holdR, vr::Eye_Right);
+        if (sameFrameL && sameFrameR) {
+          g_holdPoseL = g_holdPoseR;
+          g_holdPoseLValid = g_holdPoseRValid;
+          const uint32_t guarded = ++g_mode40MonoPairs;
+          if (guarded <= 6 || (guarded % 120) == 0)
+            Log("Mode40: MOTION-GUARD mono pair #%u SameFrame: L+R from current R frame "
+                "rot=%.2fdeg move=%.2fcm",
+                guarded, rotDeg, moveCm);
+        } else {
+          Log("Mode40: motion guard copy failed; promoting normal temporal pair");
+        }
+      }
       PromoteHoldPair(device);
       g_pairAwaitingR = false;
     }
@@ -4759,6 +4810,15 @@ bool InstallStereoRenderHooks() {
           g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
       Log("StereoRender: kill-switch - stereo=38/37 (restore fovadd behavior) or stereo=30 "
           "+ delete gtaiv_dxvk_vr.fovadd");
+    } else if (mode == StereoMode::FovCanvasMotionGuard) {
+      const bool fovOk = InstallFovRecomputeSiteHook();
+      g_mode40MonoPairs.store(0);
+      Log("StereoRender: mode 40 MOTION-GUARD (Mode37 true-FOV canvas + pair-hold; rapid "
+          "HMD L/R delta -> current-frame mono pair, then stereo resumes; not true stereo) "
+          "ok=%d fovSite=%d",
+          g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=37 (always stereo) or stereo=30 + delete "
+          "gtaiv_dxvk_vr.fovadd");
     } else if (mode == StereoMode::FovRecomputeTrueCanvas) {
       const bool fovOk = InstallFovRecomputeSiteHook();
       Log("StereoRender: mode 36 FOV-RECOMPUTE + TRUE-CANVAS + Mode30 pair-hold "
@@ -5091,7 +5151,8 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
     // Mode 30 / 35 / 36 / 37 / 38 / 39: pair-hold temporal only (device-VS dual proven dead — mode30dev=0).
     if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
         mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort ||
-        mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion) {
+        mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion ||
+        mode == StereoMode::FovCanvasMotionGuard) {
       g_dualDoneThisFrame = false;
       g_skipExecA = g_skipExecC = g_skipExecD = 0;
       IDirect3DSurface9* bb = nullptr;
@@ -5223,7 +5284,7 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
       mode != StereoMode::SameFrameLateVsParentDual && mode != StereoMode::SameFrameVsRetCallerDual &&
       mode != StereoMode::FovRecomputeSite && mode != StereoMode::FovRecomputeTrueCanvas &&
       mode != StereoMode::FovCanvasComfort && mode != StereoMode::AerPoseSubmit &&
-      mode != StereoMode::FovCanvasLowMotion)
+      mode != StereoMode::FovCanvasLowMotion && mode != StereoMode::FovCanvasMotionGuard)
     return false;
   if (!device || !interop || !g_texL || !g_texR)
     return false;

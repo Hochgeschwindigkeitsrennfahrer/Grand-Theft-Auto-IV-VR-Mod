@@ -23,6 +23,32 @@ after that seam is understood and has a hard fallback to 30/37/38.
 
 ---
 
+## Session note 2026-07-24 ~19:38 — Mode 40 motion guard shipped
+
+The safe same-frame **distinct-eye** seam is still blocked: replay-thread VS/draw work is separate
+from the game-thread BuildRootA/ExecRoot paths, and the known replay candidates are either forbidden
+or proven ineffective/unsafe (`0x2C6AC`, `0x37BD0`, `0x1BF010`, `0x4DDAD0`). Do not describe the
+previous Phase dual as a solution: it is same-frame but has identical camera images because its view
+constants were baked before replay.
+
+**Shipped Mode 40:** keep Mode 37's no-bars FOV/canvas and pair-hold. If the cached L/R HMD poses differ
+by ≥1.5° rotation or ≥2 cm translation, rebuild both eye canvases from the current R game frame and submit
+them together. This is a deliberate temporary-mono safety valve for rapid HMD turns, not true VR stereo.
+It should reduce the worst stale-eye jump while retaining normal stereo when calm. Live log proof:
+`StereoSubmit: L=1 R=1 mode=40` and `Mode40: MOTION-GUARD mono pair … SameFrame: L+R from current R
+frame rot=…`.
+
+**Headset test:** turn your head quickly, then stand still. Expect less jump during the turn and depth to
+return after it. If the temporary mono is worse than the jump: write **`37`** to
+`gtaiv_dxvk_vr.stereo`. Hard fallback: **`30`**, then delete `gtaiv_dxvk_vr.fovadd`.
+
+**Next concrete true-VR probe:** a read-only replay-thread call-chain trace around `VsRet=0x2C73E` that
+records only validated return/caller relationships and call cadence—no function hook—until it identifies
+a replay owner that can safely replay a draw batch twice with distinct view constants. Do not retry any
+forbidden RVA or Mode-34 dual.
+
+---
+
 ## Session note 2026-07-24 ~19:15 — Mode 38 AER pose submit
 
 User: Mode 37 still monitor/huge/jump/FPS; F7 ≠ presence; Luke AER v2 Patreon.  

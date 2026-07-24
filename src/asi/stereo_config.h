@@ -188,6 +188,12 @@ enum class StereoMode : int {
   // the safer comfort experiment: retain fusion while reducing the wide-FOV
   // crop/fill and render cost that made Modes 36/37 jumpier. Kill: 38/37/30.
   FovCanvasLowMotion = 39,
+  // Mode 37 true-FOV canvas + pair-hold, with an honest temporal safety valve:
+  // if the cached HMD pose moves materially between the L and R game frames,
+  // rebuild BOTH eye canvases from the current R frame before promotion. This
+  // temporarily becomes mono (not same-frame stereo), so it removes stale-eye
+  // jump on rapid head turns without unsafe replay-thread hooks. Kill: 37/30.
+  FovCanvasMotionGuard = 40,
 };
 
 StereoMode GetStereoMode();

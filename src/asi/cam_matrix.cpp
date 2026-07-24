@@ -705,14 +705,16 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
     // Mode 36/37: canvas must track TRUE engine FOV (not stale GetTransform).
     // Mode 35 baseline left unchanged (protect headset-good warp).
     if (sm == StereoMode::FovRecomputeTrueCanvas || sm == StereoMode::FovCanvasComfort ||
-        sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion)
+        sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion ||
+        sm == StereoMode::FovCanvasMotionGuard)
       PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
     const uint32_t n = ++g_fovSiteCalls;
     if (n <= 4 || (n % 600) == 0)
       Log("FovSite: #%u CCam+0x60 %.3f -> %.3f (add=%.0f) self=%p trueCanvas=%d", n, before,
           after, add, self,
           (sm == StereoMode::FovRecomputeTrueCanvas || sm == StereoMode::FovCanvasComfort ||
-           sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion)
+           sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion ||
+           sm == StereoMode::FovCanvasMotionGuard)
               ? 1
               : 0);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
