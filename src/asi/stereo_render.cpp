@@ -5509,7 +5509,8 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
       mode != StereoMode::SameFrameLateVsParentDual && mode != StereoMode::SameFrameVsRetCallerDual &&
       mode != StereoMode::FovRecomputeSite && mode != StereoMode::FovRecomputeTrueCanvas &&
       mode != StereoMode::FovCanvasComfort && mode != StereoMode::AerPoseSubmit &&
-      mode != StereoMode::FovCanvasLowMotion && mode != StereoMode::FovCanvasMotionGuard)
+      mode != StereoMode::FovCanvasLowMotion && mode != StereoMode::FovCanvasMotionGuard &&
+      mode != StereoMode::ReplayCallChainProbe && mode != StereoMode::ReplayOwnerCountProbe)
     return false;
   if (!device || !interop || !g_texL || !g_texR)
     return false;
