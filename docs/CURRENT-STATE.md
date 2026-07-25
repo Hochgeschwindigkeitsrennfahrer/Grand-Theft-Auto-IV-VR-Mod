@@ -1,35 +1,282 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-## Deployed 2026-07-25 ~15:47 — Mode74 **contentinj** (presence, dual still OFF) — TEST NOW
+## Deployed 2026-07-25 overnight marathon — Mode **74** morning-safe DEFAULT
 
-### Seam hooked
+### User feedback that drove this night
+Mode75 denser fearvr (`20260725-180123-mode75-fearvr`): **felt even LESS like actual 3D** → **SCRAPPED**.
 
-**SetVSConstF `0x220D0` (Mode72)** — Mode74 crash-safe temporal now:
+### Mode map (edit `gtaiv_dxvk_vr.stereo`)
 
-1. **Multi inject/ES** via `DualViewBudget=12` (was 1) — covers more `activeView+0x80` uploads per frame.
-2. **Forced ±half IPD** on src-copy when `dualEn=0` (no `ApplyHmdEyeLocal` basis rewrite fight).
-3. **Near-cam contentHit** also armed (for `0x2A1E10` stack uploads) — live still mostly `ptr=1` / `contentInj=0`.
-4. **CamMatrix IPD back ON** when `dualEn=0` (was skipped while "Mode74 owns IPD").
-5. **Never** `BuildRootA×2`, never write live `view+0x80`.
+| stereo | Name | What |
+|--------|------|------|
+| **74** | **Hitchcut DEFAULT** | Pair-hold temporal + DRAW HMD look/IPD + PubProj HOLD. Dual OFF. Morning boot. |
+| **75** | Safer sparse dual | BuildRootA×2 **1/8** after long gate (NOT denser fearvr). Opt-in. Apt→city risk. |
+| **76** | AER quality | One engine eye/frame + `TextureWithPose` + eye matrices. Jump risk. |
+| **77** | DrawScene-only dual | **Approach A** — dual world DrawScene×2 (not full BuildRootA). Log-proven StereoDiff. |
+| **78** | Shader-const stereo | **Approach C** — VIEW budget 8/ES + EyeProj; no BuildRootA×2. |
+| **79** | FOV presence hammer | **Approach E** — CCam cover + FOVPROOF logs. |
+| 45 | Kill | Safe fallback. |
 
-### Agent verify (live)
+**Never** live `view+0x80` (Mode71 freeze). Kill=**45**.
 
-- `ASI_BUILD_ID 20260725-154721-mode74-contentinj`
-- `Mode74: DUAL OFF` · `dualEn=0` · `dualN=0` · gate `CLOSED`
-- `VIEW inject #… eyeSep=5.0cm` climbing (~11/ES); L/R alternate
-- `CamMatrix: … ipd=(±0.0156,±0.0427,…)` ≠ 0
-- `contentInj=0` (pointer path owns hits); 0 EXCEPTION; GTAIV alive
+### Overnight results (log-validated, no headset)
 
-**Play now:** stereo **`74`**. Kill **`45`**. Soft **`72`**.  
-**Launch:** DirectExe (game left running).
+| Approach | Result |
+|----------|--------|
+| **G scrap denser 75** | Done — safer 1/8 only |
+| **A cheaper seam** | **Mode77 works** — `DRAWSCENE-ONLY dual #` thousands; StereoDiff ~11k–15k; DrawScene is vtable (0 static E8) |
+| **B viewport/SBS** | Exhausted offline — no SBS without second world draw |
+| **C shader-const** | Mode78 armed (budget 8/ES + EyeProj) |
+| **D AER** | Mode76 armed — `Mode76AER: frame #` L↔R + cover tans |
+| **E FOV** | CCam `hmdTarget≈71.5` applied; PubProj injects climb; FOVPROOF still sees +0x180[0]=1.0 on resolved view (slot vs stamp mismatch — headset) |
+| **F RE** | `scripts/offline-world-draw-seam.py` → `docs/_re_scratch/world_draw_seam_report.txt`; BuildRootA **10** E8 callers |
+
+**Build:** morning deploy below · prior smokes `…-marathon-*`  
+**Play tomorrow:** stereo **`74`** already deployed. Optional tests: **77** (true-er same-frame cheap), **76** AER, **79** FOV, **75** only if you want sparse BuildRootA again.
 
 **You test (short English):**
-1. Headset on — game should already be up (or Desktop **GTA IV Quick Restart**).
-2. Exit Roman's apartment → city — **MUST NOT crash**.
-3. Street by a car/wall: lean L/R — **3D or still flat?**
-4. Crash → put **`45`** in `gtaiv_dxvk_vr.stereo`, Quick Restart.
+1. Headset on — boot should be Mode **74**.
+2. Streets: jump / hitch vs last night?
+3. Want depth experiment: put **`77`** in stereo file, Quick Restart — ask if DrawScene dual feels like real 3D (not cinema).
+4. Optional: **`76`** AER, **`79`** FOV, **`75`** safer dual.
+5. Bad → **`45`**, Quick Restart.
 
-**Next if still flat:** true prologue hook on upload fn **`0x2A1E10`** (or sparse dual 1/8 only after long stable in-world). Kill = **45**.
+---
+
+## Prior deployed 2026-07-25 — Mode **75** fear-vr denser — SCRAPPED (less 3D)
+
+### Goal
+Proper **3D stereo** (presence first). Studied [DR-89/fear-vr](https://github.com/DR-89/fear-vr) (MIT) → `docs/FEAR_VR_RE.md`.
+
+### What fear-vr does (short)
+Same-frame world render **twice** (hook below sim): save cam → L eye pose+FOV+`RenderCamera`+capture → R same → restore → Present stages pair. Not AER-as-main.
+
+### What we ported into Mode 75 (then scrapped denser)
+- Same-frame **BuildRootA×2** eye loop + PubProj HMD look/IPD/eye proj + canvas capture
+- Denser dual **1/2** after ~90 street-stable ES — **headset: LESS 3D → SCRAPPED**
+- Mode75 now = safer **1/8** only (see mode map above)
+
+**Build was:** `ASI_BUILD_ID 20260725-180123-mode75-fearvr` — do not re-use denser path.
+
+---
+
+## Prior deployed 2026-07-25 — Mode74 **jump/track fix** (post-remap HARD FAIL)
+
+### User headset (HARD FAIL on `20260725-174441-mode74-hitchcut-remap`)
+
+| stereo | Result |
+|--------|--------|
+| **74** hitchcut | Jumping like crazy; bad street performance |
+| **75** dual | Terrible perf; **giant cinema ~70° tilted**; **NO head tracking** |
+| **76** AER | Ton of L/R jumping; fused in between |
+
+### Root causes
+
+1. **Mode 75 no tracking / ~70° tilt:** Dual path called `Mode74PushLiveCamEyeView` which pushed a **D3D-layout** `BuildLiveViewMatrix16` over the Rage HMD+IPD matrix. UploadFn/PubProj also applied **IPD only** (no `Mode74ApplyHmdEyeLocal`) and `OwnsEye` skipped the SetVSConstF worldlook stamp → body/follow cinema, no HMD look.
+2. **Mode 74 jump:** Same UploadFn OwnsEye without worldlook (when it fired) + CamMatrix **and** inject both adding IPD (double sep) on temporal path.
+3. **Mode 76 L/R jump:** Engine eye flip (`TemporalCaptureAerMode74`) — inherent 1-frame L/R. Disabled; 76 = pair-hold + TextureWithPose only.
+
+### Fixes in this build
+
+1. UploadFn + PubProj dual + WritePubProjSlots: **HMD look then ±IPD** (same as VIEW inject).
+2. Removed dual `PushLiveCamEyeView` D3D overwrite.
+3. Mode74 family outside dual: CamMatrix **skips IPD** (DRAW owns it) — no double-apply.
+4. Mode **76**: pair-hold (no L↔R engine flip); still TextureWithPose.
+5. Keep: pose EMA/reject, seated clamp, VIEW 1/ES, no EyeProj spam, PubProj HOLD, F8 1cm=most fused, dual never on 74/76, never view+0x80, kill=45.
+
+**Build:** `ASI_BUILD_ID 20260725-175453-mode74-jumpfix`  
+**Play:** stereo **`74`**, dual **`0`**.
+
+**Agent verify:** `Mode74: HITCHCUT BASELINE` · `dualOptIn=0` · `viewBudg=1` · UploadFn/PubProj stamp look · F8 1=MOST fused.
+
+**You test (short English):**
+1. Headset on — game should already be up.
+2. Walk **streets** on **74** — less jump than remap? Street hitch better/same?
+3. Look around — world should follow head (not cinema locked to body).
+4. **F8** to **1 cm** — most fused.
+5. Optional: stereo **`75`** only if you want dual again (expect hitch risk; tracking should work now).
+6. Bad → stereo **`45`**, Quick Restart.
+
+---
+
+## Prior deployed 2026-07-25 — Mode map **74/75/76** (hitchcut-remap) — HARD FAIL
+
+### Mode map (pick via `gtaiv_dxvk_vr.stereo`)
+
+| stereo | Name | What it does |
+|--------|------|----------------|
+| **74** | **Hitchcut baseline (DEFAULT)** | Pair-hold temporal + DRAW HMD look/IPD + PubProj HOLD. Dual×2 **OFF**. Smoothest + presence. |
+| **75** | Sparse session dual | Gated BuildRootA×2 1/8 after ~300 street-stable ES; hitch≥45ms → SESSION OFF. True same-frame test (may hitch/crash apt→city). |
+| **76** | AER experimental | One engine eye/frame + `Submit_TextureWithPose`; pose/seat freeze per ES; dual OFF. Jump/perf-tuned — not default. |
+| 72 | Temporal VS inject | Older temporal-only path. |
+| 45 | Kill / LKG | Safe fallback. |
+
+**Remap hard rules:** 71→45, 73→72. Never `view+0x80`. Dual is **not** every-frame default (apt→city safe).
+
+### Why not AER as default
+
+User on `mode74-aer`: 3D maybe better, but **heavy jumping** and **perf way worse** than hitchcut/temporalfirst. So **74 = hitchcut**, AER moved to **76**, dual kept as **75**.
+
+### Fixes in this build
+
+1. **IPD floor bug:** `Mode74OffsetViewLocal` forced half-sep ≥5cm (~10cm full) — F8 lowest did **not** fuse. Removed. **F8: 1cm = MOST fused → 10cm widest.**
+2. **AER jump (mode 76):** pose freeze per ES (`GetFrameHmdPoseMatrix` for Submit); seated lean frozen once/ES (no mid-inject resample); EyeToHead stays cached.
+3. **AER/hitchcut perf:** VIEW budget **1/ES** (was 2); no late CamMatrix refresh on 74-family; dual never arms on 74/76 from dual file.
+4. Default files: stereo **`74`**, dual **`0`**, kill **`45`**.
+
+**Build:** `ASI_BUILD_ID 20260725-174441-mode74-hitchcut-remap`  
+**Play:** stereo **`74`**, dual **`0`**.
+
+**Agent verify:** `Mode74: HITCHCUT BASELINE` · `dualOptIn=0` · `viewBudg=1` · `StereoSep: … F8: 1=MOST fused`.
+
+**You test (short English):**
+1. Headset on — game should already be up.
+2. Walk **streets** — smoother than AER build? Less jump?
+3. Press **F8** until **1 cm** — should be **most fused** (smallest gap between eyes). Higher F8 = more separated.
+4. Want true same-frame dual? Put **`75`** in stereo file, Quick Restart (expect hitch risk).
+5. Want AER again? Put **`76`** in stereo file, Quick Restart.
+6. Bad → stereo **`45`**, Quick Restart.
+
+---
+
+## Prior deployed 2026-07-25 — Mode74 **AER presence** (superseded)
+
+AER-as-default on stereo=74. User: jumping + worse perf → remapped above (74 hitchcut / 75 dual / 76 AER).
+
+### RealVR ideas still available (mode 76 + shared DRAW path)
+
+1. AER + `Submit_TextureWithPose` (mode **76**)
+2. Engine FOV = HMD cover
+3. Render-time worldlook + EyeToHead/IPD + toe-in
+4. Shared FrameDesc; seated 6DoF jump-clamped
+5. Dual×2 = mode **75** only (not default)
+
+---
+
+## Prior: Research 2026-07-25 — Luke Ross RealVR RE (certainty ≥98%)
+
+Full write-up: **`docs/LUKE_ROSS_REALVR_RE.md`** (GTA5 + CP2077 mode matrix).
+
+**Does he only use AER?** **Yes for stereo.** No Halo / same-frame dual mode in GTA5 *or* modern RealVR64 (CP2077).
+
+| | GTA5 folder | CP2077 folder |
+|--|-------------|---------------|
+| Renderer | forked `d3d11.dll` | pack-root `RealVR64.dll` |
+| Stereo | `Stereo=1` = **alternate eyes** only | Overlay **Render mode**: Legacy AER / AER v2 / 1/2…1/6 rate / Mono |
+| Same-frame dual | **No** | **No** |
+| AER v2 (CUDA OF) | **No** | **Yes** (NVIDIA) |
+
+- GTA5 Submit = OpenVR ×2 + `Submit_TextureWithPose` (8); eye bit `'L'`/`'R'` in `RVRGetFrameDesc`.
+- **Mode74 implication:** our AER + pose Submit **is** the RealVR analog. Dual×2 is *our* Halo-class experiment — Luke has nothing to port there.
+
+---
+
+## Prior deployed 2026-07-25 ~17:23 — Mode74 **hitchcut**
+
+### User (after temporalfirst)
+
+> Still hitching a lot on **streets**, smooth in **apartment**. Jumping back but rare. **Why dual off — don't we need that for true VR?**
+
+### Why dual was OFF (clear answer)
+
+**Yes — dual BuildRootA×2 IS needed for true same-frame VR** (both eyes from one game tick).
+
+We turned it **default OFF** because:
+1. **Every-frame dual** crashed apartment → city (streaming).
+2. **Sparse dual** made the headset go stuttery ↔ smooth whenever a hitch latched dual off/on.
+
+So dual=`0` is the **smoothness experiment**. Fake 3D (temporal L/R) stays on. True same-frame 3D is **opt-in**.
+
+**How to turn dual ON (test true VR):**  
+1. Open game folder  
+2. Edit `gtaiv_dxvk_vr.dual` → put **`1`**  
+3. Desktop **GTA IV Quick Restart**  
+4. After ~10s stable street walking, sparse dual 1/8 arms; any hitch ≥45ms → dual stays off for that session (no thrash).  
+5. Bad → put **`0`** back in dual, or **`45`** in stereo, then Quick Restart.
+
+### Log root (temporalfirst streets)
+
+- Apt smooth / street hitchy = more streaming + draws  
+- Hot costs: **EyeProj “see” ~45k log lines**, PubProj ~20 stamps/ES, VIEW×2, FOV refresh, disk log I/O  
+- Rare jump = pose / seated 6DoF spike (not dual)
+
+### What changed (this build)
+
+1. **Street hitch cuts:** EyeProj path **off** when dual OFF; PubProj **HOLD 1×/self/ES**; VIEW budget **1/ES**; FOV target cache **2s**; no Mode74 CamMatrix late refresh; quieter logs  
+2. **Jump clamp:** reject huge HMD pose deltas (~10cm / ~28°) + seated step clamp (~8cm/frame)  
+3. **Dual:** default file **`0`**; code ready for **`1`** = sparse 1/8 after 300 street-stable ES + SESSION OFF on hitch  
+4. Never `view+0x80`; kill=**45**
+
+**Honest:** with dual=`0` you get smoother streets, not true same-frame stereo. Dual=`1` is the true-VR test (may hitch again).
+
+**Play now:** stereo **`74`**, dual **`0`**. Kill **`45`**.  
+**Build:** `ASI_BUILD_ID 20260725-172331-mode74-hitchcut`.  
+**Launch:** Game already restarted by agent (DirectExe).
+
+**Agent verify (boot log):**
+- `DUAL OFF (default)` + `STREET-SMOOTH` + `optIn=0 dualEn=0` + `viewBudg=1`
+- **0** `EyeProj: see` lines (was ~45k)
+- `PubProj: TEMPORAL HOLD` · pubProj≪ prior (~1k/600 ES vs ~10k)
+- Pose/seat spike reject armed
+
+**You test (short English):**
+1. Headset on — game should already be up.  
+2. Walk **streets** — **fewer hitches** than last build?  
+3. Quick look around — **rare jumps gone/less?**  
+4. Still want true VR depth? Put **`1`** in `gtaiv_dxvk_vr.dual`, Quick Restart, walk street ~10s.  
+5. Bad/crash → stereo **`45`**, dual **`0`**, Quick Restart.
+
+---
+
+## Prior deployed 2026-07-25 ~17:15 — Mode74 **temporalfirst**
+
+Dual default OFF + first hitch cuts + full cover FOV. User: streets still hitchy; asks why dual off → superseded by **hitchcut**.  
+Build was `20260725-171527-mode74-temporalfirst`.
+
+---
+
+## Prior deployed 2026-07-25 ~17:09 — Mode74 **sessionlatch**
+
+HARD OFF → SESSION OFF. User: load stutter then smooth; city still hitchy; no presence → superseded by **temporalfirst**.  
+Build was `20260725-170927-mode74-sessionlatch`.
+
+---
+
+## Prior deployed 2026-07-25 ~17:01 — Mode74 **fpsfix**
+
+HOLD-only-while-OPEN + temporal on HARD OFF. Superseded by sessionlatch → temporalfirst.  
+Build was `20260725-170139-mode74-fpsfix`.
+
+---
+
+## Prior deployed 2026-07-25 ~16:55 — Mode74 **sparsedual**
+
+User: better stereo direction; desktop fluent / headset low FPS → superseded by **fpsfix**.  
+Build was `20260725-165539-mode74-sparsedual`.
+
+---
+
+## Prior deployed 2026-07-25 ~16:41 — Mode74 **hmdfov**
+
+FOV→HMD cover; dual OFF. User: less cinema-ish but still fake 3D → superseded by **sparsedual** above. Build was `20260725-164113-mode74-hmdfov`.
+
+---
+
+## Prior deployed 2026-07-25 ~16:30 — Mode74 **worldlook**
+
+HMD look stamp on ReplayDispatch VIEW. Look fixed; scale still giant TV → superseded by **hmdfov**. Build was `20260725-163104-mode74-worldlook`.
+
+---
+
+## Prior deployed 2026-07-25 ~15:59 — Mode74 **toein** (presence + RE)
+
+User later: still giant screen / world moves with head → superseded by **worldlook** above. Build was `20260725-155908-mode74-toein`. Checkpoint `d5bb0ec` / `checkpoint-mode74-contentinj-20260725` still valid fallback.
+
+---
+
+## Prior deployed 2026-07-25 ~15:47 — Mode74 **contentinj** (checkpoint)
+
+Slight depth; still not true VR. Saved as checkpoint **`d5bb0ec`** / tag **`checkpoint-mode74-contentinj-20260725`**. Build was `20260725-154721-mode74-contentinj`. Superseded by **toein** above.
 
 ---
 

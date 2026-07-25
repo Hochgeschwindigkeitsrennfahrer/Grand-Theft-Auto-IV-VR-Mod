@@ -257,17 +257,42 @@ enum class StereoMode : int {
   // load spinner). Remaps to 72. Same-frame needs a path that does not double-build
   // during load / streaming.
   SameFrameVsConstDual = 73,
-  // Mode 74: Mode72 SetVSConstF src-copy + Mode73 BuildRootA×2, but dual ONLY after
-  // in-world streaming gate (live activeView matrix: finite, unit-right, t²≥10 for
-  // N consecutive EndScenes). Gate CLOSED = Mode72 temporal (mono BuildRootA).
-  // Gate OPEN = every-frame same-frame dual (sticky — no miss re-close / no temporal
-  // fallback mid-session; miss-close caused fused↔separated flicker). Never writes
-  // live view+0x80. Exception → 45.
+  // Mode 74 DEFAULT baseline (hitchcut): Mode45 + VS src-copy HMD look/IPD + PubProj
+  // HOLD + pair-hold temporal. Dual BuildRootA×2 OFF. Smooth streets. Morning safe.
+  // Never writes live view+0x80. Exception → 45. Remap: 73→72, 71→45.
   SameFrameVsConstGatedDual = 74,
+  // Mode 75: SAFER sparse BuildRootA×2 dual (1/8 after long gate) — NOT denser fearvr.
+  // Headset 2026-07-25 denser 1/2 fearvr felt LESS 3D → SCRAPPED. Opt-in only.
+  SparseSessionDual = 75,
+  // Mode 76: AER done right — one engine eye/frame + TextureWithPose + perfect L/R
+  // matrices/FOV for that eye. Kill → 74 or 45.
+  AerPresenceExperimental = 76,
+  // Mode 77: cheaper same-frame — dual DrawScene BuildRenderList ONLY (not full
+  // BuildRootA). Approach A world-draw seam. Opt-in. Kill → 74 or 45.
+  DrawSceneOnlyDual = 77,
+  // Mode 78: shader-constant stereo — high-rate SetVSConstF/SetTransform L|R inject
+  // WITHOUT second BuildRootA; temporal/AER capture. Approach C. Kill → 74 or 45.
+  ShaderConstStereo = 78,
+  // Mode 79: FOV/projection presence hammer — prove + strengthen CCam/+0x308/VS proj
+  // until log shows HMD cover FOV (giant-screen killer). Approach E. Kill → 74 or 45.
+  FovPresenceHammer = 79,
 };
 
 // Mode 45 family: LKG camera + RT lock + motion guard (includes RE scaffold 62/63).
 bool IsHeadOwnedCamFamily(StereoMode mode);
+
+// Modes 74..79 share VS inject + PubProj + HMD look infrastructure.
+bool IsMode74Family(StereoMode mode);
+// Mode 75 only — sparse BuildRootA×2 dual path.
+bool IsSparseSessionDual(StereoMode mode);
+// Mode 76 only — AER alternate-eye + TextureWithPose.
+bool IsAerPresenceMode(StereoMode mode);
+// Mode 77 only — DrawScene-only same-frame dual.
+bool IsDrawSceneOnlyDual(StereoMode mode);
+// Mode 78 only — shader-const stereo (no BuildRootA×2).
+bool IsShaderConstStereo(StereoMode mode);
+// Mode 79 only — FOV presence hammer + proof logs.
+bool IsFovPresenceHammer(StereoMode mode);
 
 StereoMode GetStereoMode();
 void ReloadStereoMode();

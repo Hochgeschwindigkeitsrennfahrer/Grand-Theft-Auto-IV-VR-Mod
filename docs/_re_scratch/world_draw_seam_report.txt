@@ -1,0 +1,35 @@
+=== world-draw seam report (Approach A/F) ===
+exe=C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV\GTAIV.exe
+
+BuildRootA RVA 0x8F8B00: MATCH bytes=55 8B EC 83 E4 F0 83 EC 18 56 57 8B
+DrawScene RVA 0x6DD200: MATCH bytes=55 8B EC 83 E4 F0 83 EC 18 56 57 8B
+PhaseA RVA 0x528AC0: MATCH bytes=55 8B EC 83 E4 F0 81 EC D8 06 00 00
+PhaseC RVA 0x976950: MATCH bytes=55 8B EC 83 E4 F0 83 EC 18 80 3D 20
+ReplayDispatch RVA 0x30CD0: PRESENT bytes=83 3D 18 D9 7E 01 00 56 8B F1 75 4A
+
+--- E8 callers of BuildRootA (cheaper dual cannot re-enter all of these) ---
+count=10
+  E8→BuildRootA from 0x8F8220  context=E8 DB 08 00 00 5F 5E 8B E5 5D C2 04 00 8B 87 24
+  E8→BuildRootA from 0x8F877F  context=E8 7C 03 00 00 5F 5E 59 C2 04 00 57 68 CB 00 00
+  E8→BuildRootA from 0x8F8792  context=E8 69 03 00 00 5F 5E 59 C2 04 00 CC CC CC 51 56
+  E8→BuildRootA from 0x8F8877  context=E8 84 02 00 00 5E 5F C2 04 00 8B 47 08 8B 40 1C
+  E8→BuildRootA from 0x8F889F  context=E8 5C 02 00 00 5E 5F C2 04 00 F3 0F 10 47 70 F3
+  E8→BuildRootA from 0x8F88CF  context=E8 2C 02 00 00 5E 5F C2 04 00 8B 74 24 0C 56 8B
+  E8→BuildRootA from 0x8F88F6  context=E8 05 02 00 00 5E 5F C2 04 00 68 20 01 00 00 E8
+  E8→BuildRootA from 0x8F8905  context=E8 F6 01 00 00 5E 5F C2 04 00 2D 87 03 00 00 74
+  E8→BuildRootA from 0x8F893D  context=E8 BE 01 00 00 5E 5F C2 04 00 FF 74 24 0C 8B CF
+  E8→BuildRootA from 0x8F8952  context=E8 A9 01 00 00 5E 5F C2 04 00 6F 88 CF 00 C7 88
+
+--- E8 callers of DrawScene BuildRenderList (Mode77 dual target) ---
+count=0
+
+--- call [reg+0x178] sites (FF 90 78 01 00 00) — upload seams ---
+count=1
+  0x30D0D << ReplayDispatch
+
+--- Verdict (offline) ---
+1. Full BuildRootA×2 remains the fear-vr analog but crashes streaming / denser dual felt LESS 3D on headset — SCRAPPED as Mode75 denser path.
+2. Cheaper candidate = DrawScene BuildRenderList×2 (Mode77) — world-draw phase only; PhaseA/C stay mono. Static callers listed above.
+3. Hot matrix upload = call [eax+0x178] @ 0x30D0D + UploadFn 0x2A1E10 — inject L/R src-copies here (Mode72/74/78); NEVER write live view+0x80.
+4. Viewport/SBS (Approach B): no static evidence of game SBS dual viewport; D3D9 SetViewport alone cannot invent parallax without a second world draw.
+5. SameFrameSeamGate stays CLOSED for ungated every-frame dual until Mode77/headset proves DrawScene×2 is streaming-safe.

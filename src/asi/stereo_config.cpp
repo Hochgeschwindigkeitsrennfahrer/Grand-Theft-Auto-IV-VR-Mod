@@ -172,9 +172,9 @@ void ApplyGeometryCanvasDefaults() {
     SaveStereoScaleFile(115);
   }
   if (!haveIpd) {
-    const int cm = static_cast<int>(ReadHmdIpdMeters() * 100.f + 0.5f);
-    SetSepCm(cm);
-    SaveIpdFile(cm);
+    // Floor 1cm = most fused (user 2026-07-25). Do NOT default to HMD ~6cm.
+    SetSepCm(1);
+    SaveIpdFile(1);
   }
   // Reload* are defined below — call via the public path after mode select.
   g_loggedScale = false;
@@ -233,7 +233,9 @@ void ReloadIpdScale() {
       Log("StereoSep: 0 cm (file) — NO PARALLAX / flat image. Set gtaiv_dxvk_vr.ipd to 1+ "
           "(or F8; presets start at 1cm) for 3D");
     else
-      Log("StereoSep: %d cm (file gtaiv_dxvk_vr.ipd) — F8 cycles 1,2,3,4,6,7,10", cm);
+      Log("StereoSep: %d cm (file gtaiv_dxvk_vr.ipd) — F8: 1=MOST fused … 10=widest; "
+          "presets 1,2,3,4,6,7,10",
+          cm);
   }
 }
 
@@ -272,7 +274,7 @@ int RemapLoadedStereoMode(int v) {
   }
   // Mode 73 BuildRootA×2 same-frame: stable FPS but world streaming never finishes
   // (empty world + load spinner 2026-07-25). Fall back to Mode 72 temporal.
-  // Mode 74 = gated same-frame (dual only after in-world); do NOT remap 74.
+  // Mode 74..79 are live. Do NOT remap them.
   if (v == 73) {
     Log("StereoMode: requested 73 SAME-FRAME dual DISABLED (empty world/streaming) — using 72");
     return 72;
@@ -281,10 +283,11 @@ int RemapLoadedStereoMode(int v) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  // Two-digit modes 10..74 (45 = LKG; 71→45; 72 temporal; 73→72; 74 gated same-frame).
+  // Two-digit modes 10..79 (45=LKG; 71→45; 72 temporal; 73→72; 74 hitchcut;
+  // 75 safer sparse dual; 76 AER; 77 DrawScene dual; 78 shader-const; 79 FOV).
   if (n >= 2 && buf[0] >= '1' && buf[0] <= '7' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 74)
+    if (v <= 79)
       return RemapLoadedStereoMode(v);
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
@@ -313,7 +316,7 @@ void ReloadStereoMode() {
   if (n > 0)
     v = ParseModeFile(buf, n);
   int prev = g_mode.load();
-  if (v >= 0 && v <= 74) {
+  if (v >= 0 && v <= 79) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -355,7 +358,12 @@ void ReloadStereoMode() {
                            v == static_cast<int>(StereoMode::ReplayDispatchTemporalInject) ||
                            v == static_cast<int>(StereoMode::VsConstTemporalInject) ||
                            v == static_cast<int>(StereoMode::SameFrameVsConstDual) ||
-                           v == static_cast<int>(StereoMode::SameFrameVsConstGatedDual))) {
+                           v == static_cast<int>(StereoMode::SameFrameVsConstGatedDual) ||
+                           v == static_cast<int>(StereoMode::SparseSessionDual) ||
+                           v == static_cast<int>(StereoMode::AerPresenceExperimental) ||
+                           v == static_cast<int>(StereoMode::DrawSceneOnlyDual) ||
+                           v == static_cast<int>(StereoMode::ShaderConstStereo) ||
+                           v == static_cast<int>(StereoMode::FovPresenceHammer))) {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadWorldScale();
@@ -368,7 +376,7 @@ void ReloadStereoMode() {
 }
 
 void WriteStereoModeFile(int mode) {
-  if (mode < 0 || mode > 74)
+  if (mode < 0 || mode > 79)
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -422,7 +430,12 @@ bool UsesAngleCorrectCanvas(StereoMode mode) {
          mode == StereoMode::ReplayDispatchTemporalInject ||
          mode == StereoMode::VsConstTemporalInject ||
          mode == StereoMode::SameFrameVsConstDual ||
-         mode == StereoMode::SameFrameVsConstGatedDual;
+         mode == StereoMode::SameFrameVsConstGatedDual ||
+         mode == StereoMode::SparseSessionDual ||
+         mode == StereoMode::AerPresenceExperimental ||
+         mode == StereoMode::DrawSceneOnlyDual ||
+         mode == StereoMode::ShaderConstStereo ||
+         mode == StereoMode::FovPresenceHammer;
 }
 
 bool IsHeadOwnedCamFamily(StereoMode mode) {
@@ -436,7 +449,36 @@ bool IsHeadOwnedCamFamily(StereoMode mode) {
          mode == StereoMode::ReplayDispatchTemporalInject ||
          mode == StereoMode::VsConstTemporalInject ||
          mode == StereoMode::SameFrameVsConstDual ||
-         mode == StereoMode::SameFrameVsConstGatedDual;
+         IsMode74Family(mode);
+}
+
+bool IsMode74Family(StereoMode mode) {
+  return mode == StereoMode::SameFrameVsConstGatedDual ||
+         mode == StereoMode::SparseSessionDual ||
+         mode == StereoMode::AerPresenceExperimental ||
+         mode == StereoMode::DrawSceneOnlyDual ||
+         mode == StereoMode::ShaderConstStereo ||
+         mode == StereoMode::FovPresenceHammer;
+}
+
+bool IsSparseSessionDual(StereoMode mode) {
+  return mode == StereoMode::SparseSessionDual;
+}
+
+bool IsAerPresenceMode(StereoMode mode) {
+  return mode == StereoMode::AerPresenceExperimental;
+}
+
+bool IsDrawSceneOnlyDual(StereoMode mode) {
+  return mode == StereoMode::DrawSceneOnlyDual;
+}
+
+bool IsShaderConstStereo(StereoMode mode) {
+  return mode == StereoMode::ShaderConstStereo;
+}
+
+bool IsFovPresenceHammer(StereoMode mode) {
+  return mode == StereoMode::FovPresenceHammer;
 }
 
 float GetStereoSepMeters() {
@@ -474,7 +516,8 @@ void PollIpdScaleHotkey() {
   if (!KeyPressedEdge(VK_F8, &wasF8))
     return;
 
-  // Floor 1cm (not 0): user 2026-07-24 — 2cm almost fused, needs closer still.
+  // Lowest first = MOST fused (smallest sep). User 2026-07-25: F8 lowest was best.
+  // Cycle: 1 → 2 → 3 → 4 → 6 → 7 → 10 → 1 …
   static const int kPresetsCm[] = {1, 2, 3, 4, 6, 7, 10};
   constexpr int kN = 7;
   const int curCm = static_cast<int>(g_sepM.load() * 100.f + 0.5f);
@@ -491,7 +534,8 @@ void PollIpdScaleHotkey() {
   const int cm = kPresetsCm[idx];
   SetSepCm(cm);
   SaveIpdFile(cm);
-  Log("StereoSep: %d cm (F8) — L4D2 IpdScale knob (presets 1..10; file still 0..500)", cm);
+  Log("StereoSep: %d cm (F8) — %s fused (1=closest/most fused, 10=widest; file 0..500)",
+      cm, cm <= 2 ? "MOST" : (cm <= 4 ? "more" : "less"));
 }
 
 float GetEyeForwardMeters() {

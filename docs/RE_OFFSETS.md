@@ -634,6 +634,20 @@ RTTI strings (file offset): `.?AVCRenderPhaseDrawScene@@` @ `0xC3E664`, `.?AVCRe
 | **UEVR** | Native per-eye view + projection | No UE path — temporal pair-hold only |
 | **Halo MCC VR** | Same-frame + wide FOV | FOV via **`0x706F7C`** OK; same-frame **blocked** |
 
+### Overnight marathon 2026-07-25 (~18:00–18:30) — Approaches A–G
+
+`py -3 scripts/offline-world-draw-seam.py` → `docs/_re_scratch/world_draw_seam_report.txt`
+
+| Fact | Value |
+|------|-------|
+| BuildRootA `0x8F8B00` | prologue **MATCH**; **10** static `E8` callers (all in `0x8F8xxx`) |
+| DrawScene `0x6DD200` | prologue **MATCH**; **0** static `E8` (vtable — Mode77 hooks via AOB) |
+| PhaseA / PhaseC | MATCH |
+| Denser Mode75 fearvr 1/2 | **SCRAPPED** (headset LESS 3D) |
+| Mode77 DrawScene×2 | Log-proven: `DRAWSCENE-ONLY dual #` + StereoDiff ≫0 |
+| Viewport/SBS (B) | Exhausted — no parallax without second world draw |
+| SameFrameSeamGate | Still **CLOSED** for ungated every-frame BuildRootA dual |
+
 **SameFrameSeamGate:** `CLOSED` until a replay-thread owner satisfies:
 
 1. ~1×/frame cadence on VsRet thread  

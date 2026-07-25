@@ -15,8 +15,11 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
 // True while same-frame L/R dual pass is running (projection inject gate).
 bool StereoInDualPass();
 
-// Mode74: true only when gtaiv_dxvk_vr.dual opt-in is on (BuildRootA×2 allowed).
+// Mode74: true only when sparse dual is runtime-armed (gate OPEN; not HARD OFF).
 bool StereoMode74DualEnabled();
+
+// Mode74: upload fn 0x2A1E10 bak/±IPD/restore armed (owns draw-path sep; CamMatrix skips IPD).
+bool StereoMode74UploadFnArmed();
 
 // Broader than dual: Left natural PhaseA..Draw + Right dual (mode 7/8).
 bool StereoProjWindowActive();

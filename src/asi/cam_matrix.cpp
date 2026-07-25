@@ -199,7 +199,10 @@ void ApplyHmdToCam(Matrix44* mat) {
   g_lastEye = eye;
   g_haveLastEye = true;
 
-  // Seated 6DoF on top of ped eye (F9 resets baseline)
+  // Seated 6DoF on top of ped eye (F9 resets baseline).
+  // Mode74: DRAW-PATH Mode74ApplyHmdEyeLocal owns lean (CamMatrix bake often never
+  // reaches ReplayDispatch) — skip here to avoid double translation.
+  const bool mode74SkipLean = IsMode74Family(GetStereoMode());
   float px, py, pz;
   OvrToGta(h.m[0][3], h.m[1][3], h.m[2][3], &px, &py, &pz);
   if (!g_havePosBaseline) {
@@ -208,10 +211,12 @@ void ApplyHmdToCam(Matrix44* mat) {
     g_basePz = pz;
     g_havePosBaseline = true;
   }
-  const float leanGain = GetLeanGain();
-  eye.x += (px - g_basePx) * kPosScale / leanGain;
-  eye.y += (py - g_basePy) * kPosScale / leanGain;
-  eye.z += (pz - g_basePz) * kPosScale / leanGain;
+  if (!mode74SkipLean) {
+    const float leanGain = GetLeanGain();
+    eye.x += (px - g_basePx) * kPosScale / leanGain;
+    eye.y += (py - g_basePy) * kPosScale / leanGain;
+    eye.z += (pz - g_basePz) * kPosScale / leanGain;
+  }
 
   float fx, fy, fz;
   OvrToGta(-h.m[0][2], -h.m[1][2], -h.m[2][2], &fx, &fy, &fz);
@@ -269,15 +274,13 @@ void ApplyHmdToCam(Matrix44* mat) {
   // Stereo eye origin — L4D2VR GetViewOriginLeft/Right:
   //   origin + forward*(-eyeZ*scale) + right*(±IPD*ipdScale*scale/2)
   // Cover FOV + TextureBounds (Submit) handle fusion; IPD alone is not enough.
-  // Mode74 dualEn=0 (crash-safe): CamMatrix supplies IPD on CCam bake AND
-  // SetVSConstF src-copy adds ±half (stronger presence; dual×2 stays off).
-  // Mode74 dualEn=1 temporal: VS owns e2h/IPD on inject — skip here.
-  // Mode74 during same-frame dual: CamMatrix MUST supply IPD (VS often silent).
+  // Mode74 family (outside dual): DRAW-PATH OffsetViewLocal owns ±IPD — skip here
+  // to avoid CamMatrix+inject double-IPD (felt like stereo jump). During same-frame
+  // dual CamMatrix still supplies IPD (VS often silent between walks).
   float ipdX = 0.f, ipdY = 0.f, ipdZ = 0.f;
   const bool rightEye = (GetStereoEye() == StereoEye::Right);
-  const bool mode74 = GetStereoMode() == StereoMode::SameFrameVsConstGatedDual;
-  const bool mode74OwnsIpd =
-      mode74 && !StereoInDualPass() && StereoMode74DualEnabled();
+  const bool mode74 = IsMode74Family(GetStereoMode());
+  const bool mode74OwnsIpd = mode74 && !StereoInDualPass();
   if (GetStereoMode() >= StereoMode::DualIpd && !mode74OwnsIpd) {
     float hrx, hry, hrz;
     OvrToGta(h.m[0][0], h.m[1][0], h.m[2][0], &hrx, &hry, &hrz);
@@ -330,10 +333,15 @@ void ApplyHmdToCam(Matrix44* mat) {
 
   const uint32_t n = ++g_applyCount;
   if (n <= 5 || (n % 300) == 0) {
-    Log("CamMatrix: FP lock #%u %s pos=(%.3f,%.3f,%.3f) ipd=(%.4f,%.4f,%.4f) sep=%.0fcm "
+    const float yawDeg = std::atan2(fx, fy) * (180.f / 3.14159265f);
+    const float pitchDeg =
+        std::asin((std::max)(-1.f, (std::min)(1.f, fz))) * (180.f / 3.14159265f);
+    Log("CamMatrix: FP lock #%u %s pos=(%.3f,%.3f,%.3f) fwd=(%.2f,%.2f,%.2f) "
+        "right=(%.2f,%.2f,%.2f) yaw=%.1f pitch=%.1f ipd=(%.4f,%.4f,%.4f) sep=%.0fcm "
         "eyeFwd=%.0fcm dual=%d",
-        n, rightEye ? "R" : "L", eye.x, eye.y, eye.z, ipdX, ipdY, ipdZ,
-        GetStereoSepMeters() * 100.f, eyeFwd * 100.f, StereoInDualPass() ? 1 : 0);
+        n, rightEye ? "R" : "L", eye.x, eye.y, eye.z, fx, fy, fz, rx, ry, rz, yawDeg,
+        pitchDeg, ipdX, ipdY, ipdZ, GetStereoSepMeters() * 100.f, eyeFwd * 100.f,
+        StereoInDualPass() ? 1 : 0);
   }
 }
 
@@ -660,6 +668,49 @@ CamFovSite_t g_origCamFovSite = nullptr;
 std::atomic<bool> g_fovSiteOk{false};
 std::atomic<uint32_t> g_fovSiteCalls{0};
 
+// Mode74: CCam degrees so engine FOV covers HMD (RealVR UniversalFOVFix class).
+// Mode16 probe: rendered vertical ≈ ccam * (58.7/45). Match BOTH cover V and the
+// V implied by cover H at backbuffer aspect (giant-screen killer). Returns 0 if unknown.
+float Mode74HmdTargetCcamDegrees() {
+  float coverH = 0.f, coverV = 0.f;
+  if (!GetCoverFovTangents(&coverH, &coverV) || !(coverV > 0.05f))
+    return 0.f;
+  constexpr float kEng = 58.7f / 45.f;
+  constexpr float kRad2Deg = 180.f / 3.14159265f;
+  float aspect = GetBackbufferAspect();
+  if (!(aspect > 0.5f) || !(aspect < 3.f))
+    aspect = 16.f / 9.f;
+  // From vertical cover tan.
+  const float targetFromV =
+      (2.f * std::atan(coverV) * kRad2Deg) / kEng;
+  // From horizontal cover: need tanV >= coverH/aspect so game H fills HMD H.
+  float needTanV = coverH / aspect;
+  if (needTanV < 0.05f)
+    needTanV = 0.05f;
+  const float targetFromH =
+      (2.f * std::atan(needTanV) * kRad2Deg) / kEng;
+  float target = (targetFromV > targetFromH) ? targetFromV : targetFromH;
+  // Presence: fill HMD (was V-only @80). Cap 85 — >~85 historically stressed canvas.
+  if (target < 50.f)
+    target = 50.f;
+  if (target > 85.f)
+    target = 85.f;
+  return target;
+}
+
+// Cache HMD CCam target — GetCoverFovTangents is not free; FovSite is hot.
+// Street streaming: 2s cache (was 500ms) — FOV target barely changes mid-walk.
+float Mode74HmdTargetCcamDegreesCached() {
+  static float s_cached = 0.f;
+  static DWORD s_tick = 0;
+  const DWORD now = GetTickCount();
+  if (s_cached > 5.f && (now - s_tick) < 2000u)
+    return s_cached;
+  s_cached = Mode74HmdTargetCcamDegrees();
+  s_tick = now;
+  return s_cached;
+}
+
 void __fastcall HookCamFovSite(void* self, void* edx) {
   if (g_origCamFovSite)
     g_origCamFovSite(self, edx);
@@ -677,7 +728,8 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
     // jump. Keep the same pair-held fusion path while reducing the true engine
     // FOV expansion that correlated with worse FPS/jump in Modes 36/37.
     const bool lowMotion = sm == StereoMode::FovCanvasLowMotion;
-    const float add = lowMotion ? (std::min)(requestedAdd, 12.f) : requestedAdd;
+    const bool mode74 = IsMode74Family(sm);
+    float add = lowMotion ? (std::min)(requestedAdd, 12.f) : requestedAdd;
     if (lowMotion && requestedAdd > add) {
       static bool s_loggedLowMotionCap = false;
       if (!s_loggedLowMotionCap) {
@@ -695,6 +747,68 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
     // must not get +fovadd (load spike 76→98 → 193% fill / heavy crop).
     static float s_lastWritten = -1.f;
     constexpr float kGameplayFovHi = 55.f;
+
+    // Mode74: drive CCam FOV toward HMD cover every frame (absolute, idempotent).
+    // Prior fovadd-only left fill~83%v (cinema). Kill/45 drops this branch.
+    if (mode74) {
+      const float hmdTarget = Mode74HmdTargetCcamDegreesCached();
+      float target = before;
+      if (hmdTarget > 5.f) {
+        // Prefer HMD target; still honor fovadd if file asks for wider.
+        target = hmdTarget;
+        if (requestedAdd > 0.05f && before <= kGameplayFovHi) {
+          const float addTarget = before + requestedAdd;
+          if (addTarget > target)
+            target = addTarget;
+        }
+      } else if (requestedAdd > 0.05f && before <= kGameplayFovHi) {
+        target = before + requestedAdd;
+      }
+      if (target > 85.f)
+        target = 85.f;
+      // Mode79: allow up to 90° cover (giant-screen killer) when HMD asks for it.
+      if (IsFovPresenceHammer(sm) && hmdTarget > 5.f) {
+        target = hmdTarget;
+        if (target > 90.f)
+          target = 90.f;
+      }
+      // Gameplay / our prior write band only — skip cutscene spikes (~90+).
+      const bool inBand = before <= 85.f;
+      if (inBand && target > before + 0.4f) {
+        // Engine reset to base — write target.
+        if (s_lastWritten > 0.f && std::fabs(before - s_lastWritten) < 0.4f) {
+          after = before;  // already holding our write
+        } else {
+          *fov = target;
+          after = target;
+          s_lastWritten = target;
+          add = target - before;
+        }
+      } else if (inBand && s_lastWritten > 0.f &&
+                 std::fabs(before - s_lastWritten) < 0.4f) {
+        after = before;
+        add = 0.f;
+      } else if (!inBand) {
+        s_lastWritten = -1.f;
+        after = before;
+        add = 0.f;
+      } else {
+        s_lastWritten = -1.f;
+        after = before;
+        add = 0.f;
+      }
+      const uint32_t n = ++g_fovSiteCalls;
+      if (n <= 4 || (n % 2400) == 0)
+        Log("FovSite: Mode74 HMD #%u CCam+0x60 %.3f -> %.3f (hmdTarget=%.1f add=%.1f) "
+            "self=%p (full cover FOV; restore on kill=45)",
+            n, before, after, hmdTarget, add, self);
+      // Publish canvas FOV only when we actually changed CCam (skip churn).
+      if (after > before + 0.2f)
+        PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
+      // Mode74 DRAW-PATH owns HMD look — skip late CamMatrix refresh (street hitch).
+      return;
+    }
+
     if (add > 0.05f && before <= kGameplayFovHi) {
       if (s_lastWritten > 0.f && std::fabs(before - s_lastWritten) < 0.4f) {
         after = before;
@@ -725,17 +839,14 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
     // post-process FOV site. Re-apply the exact same ped-eye + relative HMD pose
     // here, late in the game-thread camera path. This does not move gameplay's
     // collision camera, add a VS offset, or make another render/replay pass.
-    if (IsHeadOwnedCamFamily(sm)) {
+    // Mode74 family: hitchcut cut late CamMatrix refresh (street hitch). DRAW-PATH owns look.
+    if (IsHeadOwnedCamFamily(sm) && !IsMode74Family(sm)) {
       RefreshLiveCamForStereoEye();
       static uint32_t s_headOwnedRefreshes = 0;
       const uint32_t refreshes = ++s_headOwnedRefreshes;
       if (refreshes <= 4 || (refreshes % 600) == 0) {
-        if (sm == StereoMode::SameFrameVsConstGatedDual)
-          Log("HmdLook: Mode74 late CamMatrix refresh #%u (CCam site; collision unchanged)",
-              refreshes);
-        else
-          Log("Mode45: late head-owned CopyMat refresh #%u (CCam site; collision unchanged)",
-              refreshes);
+        Log("Mode45: late head-owned CopyMat refresh #%u (CCam site; collision unchanged)",
+            refreshes);
       }
     }
     const uint32_t n = ++g_fovSiteCalls;
