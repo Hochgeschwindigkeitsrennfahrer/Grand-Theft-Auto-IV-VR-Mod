@@ -5,6 +5,22 @@ User is not a programmer — always give exact click/command steps and log lines
 
 ---
 
+## 0. UPDATE 2026-07-25 — PE +0xC00 RVA skew (CRITICAL)
+
+CE `.text` **mapped RVA = file offset + 0xC00**. Mode **66** REJECT at `0x30300` was this bug
+(PublishSync is **`0x30F00`**). ASI in `out-asi\` uses `ResolveReSite()` AOB + mapped RVAs.
+**Do not deploy while user is in-game.** Prefer headset test order: **66 → 67 → 65 → 64**.
+ViewConst (`0x32470`) has one gated caller — may be sparse. SameFrameSeamGate stays **CLOSED**.
+Mode **66** may log **SHARED** (avg>4) because helper **`0x31940`×58** also calls PublishSync — not a failure.
+`ResolveReSite` prefers **expected mapped RVA** when prologue matches (short AOB lookalikes).
+ViewConst gate `[0x1797694]` is cmp-only / starts 0 / needs nonzero → Mode **64** often dead.
+Upload fn `0x2A1E10` (vtable): **two** MatMul×3→+178 paths (`@0x2A217D` / `@0x2A25F9`). Sibling `0x2A1D50` helper-only.
+Mode **41/42** OWNER-EDGE logs triad rets **`0x30D13` / `0x2A2183` / `0x2A25FF`** (`path=` + `match=`). SameFrameSeamGate **CLOSED**.
+Prefer test order: **66 → 67 → 65 → 42 → 64**.
+**No AGENT_LOOP tick shells.** Details: `docs/RE_OFFSETS.md` CRITICAL; `docs/MAPPED_RVA_CHEATSHEET.md`; `scripts/verify-mapped-sites.py`.
+
+---
+
 ## 1. BREAKTHROUGH: stereo fusion is SOLVED (Mode 14, headset-confirmed)
 
 **Root cause of months of diplopia:** we rendered with the game projection (~90° h,

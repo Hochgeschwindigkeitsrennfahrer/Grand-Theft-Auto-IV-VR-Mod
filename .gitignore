@@ -18,6 +18,10 @@
 *.exe
 *.asi
 *.log
+out-re-scan.txt
+out-seam-mapped.txt
+out-caller-map.txt
+out-*.txt
 .DS_Store
 
 # Local game config overrides (keep examples)

@@ -143,6 +143,11 @@ bool UsesMotionGuard(StereoMode mode) {
 
 bool Mode40NeedsMonoGuard(float* outRotDeg, float* outMoveCm) {
   const StereoMode mode = GetStereoMode();
+  // Mode 72 temporal VS-const stereo: mono-guard copies the same BB to L and R and
+  // wipes the only parallax we have. Mode 73/74 same-frame dual also must keep L≠R.
+  if (mode == StereoMode::VsConstTemporalInject || mode == StereoMode::SameFrameVsConstDual ||
+      mode == StereoMode::SameFrameVsConstGatedDual)
+    return false;
   if (!UsesMotionGuard(mode) || !g_holdPoseLValid || !g_holdPoseRValid)
     return false;
   const vr::HmdMatrix34_t& l = g_holdPoseL;
@@ -343,12 +348,16 @@ int g_mode41FrameN = 0;
 Mode41AggNode g_mode41Agg[96]{};
 int g_mode41AggN = 0;
 
-// ---- Mode 64: fixed 0x3187C view-const COUNT-only (Mode 45 renderer) ----
-// Measures avg entries/EndScene at view-const apply (ret 4 stackarg). PASS band [0.8,4] ≈ 1×/frame.
-// Does NOT hook PublishSync 0x30300 or replay dispatch 0x300D0. dual=OFF; auto-reverts to 45.
-constexpr uint32_t kMode64ViewConstRva = 0x3187C;
+// ---- Mode 64: ViewConst COUNT-only (Mode 45 renderer) ----
+// TRUE start mapped RVA 0x32470 (frame+CC-pad). Mid 0x3247C is after sub esp — do not hook mid.
+// PASS band [0.8,4] ≈ 1×/frame. dual=OFF; auto-reverts to 45.
+constexpr uint32_t kMode64ViewConstExpectedRva = 0x32470;
 constexpr uint32_t kMode64CountEsNeed = 45;
-static const uint8_t kMode64Prologue[] = {0x56, 0x57, 0x8B, 0xF9, 0x8D, 0x44, 0x24, 0x70};
+static const uint8_t kMode64Prologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x81, 0xEC,
+                                          0xA8, 0x00, 0x00, 0x00, 0x56, 0x57, 0x8B, 0xF9};
+static const char kMode64Pattern[] =
+    "55 8B EC 83 E4 F0 81 EC A8 00 00 00 56 57 8B F9 8D 44 24 70 F3 0F 10 87";
+std::atomic<uint32_t> g_mode64SiteRva{0};
 std::atomic<uint32_t> g_mode64Es{0};
 std::atomic<uint32_t> g_mode64CountEs{0};
 std::atomic<bool> g_mode64CountDone{false};
@@ -356,7 +365,7 @@ uint32_t g_mode64EntrySum = 0;
 
 // ---- Mode 65: read-only [0x17ed8d8] vtable +0x178/+0x1B4 log (Mode 45 renderer) ----
 // EndScene peek only — no game hook. Logs replayGate [0x17ED918] and activeView [0x17F583C]
-// (PublishSync 0x30349 gate). Compare slot178 RVAs with Mode42 OWNER-EDGE @ 0x3010D.
+// (PublishSync gate). Compare slot178 RVAs with Mode42 OWNER-EDGE.
 constexpr uint32_t kMode65DeviceGlobalVa = 0x17ED8D8;
 constexpr uint32_t kMode65ReplayGateVa = 0x17ED918;
 constexpr uint32_t kMode65ActiveViewVa = 0x17F583C;
@@ -367,16 +376,148 @@ uint32_t g_mode65LastDevice = 0;
 uint32_t g_mode65LastVt178 = 0;
 uint32_t g_mode65LastVt1B4 = 0;
 
-// ---- Mode 66: fixed 0x30300 PublishSync COUNT-only (Mode 45 renderer) ----
-// Measures avg entries/EndScene at PublishSync prologue (thiscall esi=ecx). PASS band [0.8,4].
-// Does NOT call 0x300D0, hook forbidden sites, or arm dual. Auto-reverts to 45 when done.
-constexpr uint32_t kMode66PublishSyncRva = 0x30300;
+// ---- Mode 66: PublishSync COUNT-only (Mode 45 renderer) ----
+// Mapped RVA 0x30F00 (old file-offset doc 0x30300). AOB resolve; CC-pad NOT required
+// (prior fn epilogue). dual=OFF; auto-reverts to 45.
+constexpr uint32_t kMode66PublishSyncExpectedRva = 0x30F00;
 constexpr uint32_t kMode66CountEsNeed = 45;
 static const uint8_t kMode66Prologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8, 0x51, 0x56, 0x8B, 0xF1};
+static const char kMode66Pattern[] =
+    "55 8B EC 83 E4 F8 51 56 8B F1 8D 86 80 00 00 00 50 8D 86 80 01 00 00 50 8D 8E C0 00 00 00 E8";
+std::atomic<uint32_t> g_mode66SiteRva{0};
 std::atomic<uint32_t> g_mode66Es{0};
 std::atomic<uint32_t> g_mode66CountEs{0};
 std::atomic<bool> g_mode66CountDone{false};
 uint32_t g_mode66EntrySum = 0;
+
+// ---- Mode 67: ViewMatWriter COUNT-only (Mode 45 renderer) ----
+// Mapped RVA 0x314C0 (old file-offset doc 0x308C0). CC-pad OK. dual=OFF.
+constexpr uint32_t kMode67ViewMatExpectedRva = 0x314C0;
+constexpr uint32_t kMode67CountEsNeed = 45;
+static const uint8_t kMode67Prologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8, 0x83, 0xEC, 0x10,
+                                          0x56, 0x57, 0x8B, 0xF9};
+static const char kMode67Pattern[] =
+    "55 8B EC 83 E4 F8 83 EC 10 56 57 8B F9 0F 57 C9 F3 0F 10 87 BC 02 00 00";
+std::atomic<uint32_t> g_mode67SiteRva{0};
+std::atomic<uint32_t> g_mode67Es{0};
+std::atomic<uint32_t> g_mode67CountEs{0};
+std::atomic<bool> g_mode67CountDone{false};
+uint32_t g_mode67EntrySum = 0;
+
+// ---- Mode 68: ReplayDispatch COUNT-only (Mode 45 renderer) ----
+// Mapped 0x30CD0 — only 2 E8 callers (SetActiveView + PublishSync). Calls device
+// vtable +0x178 (= live Mode65 slot178 0x220D0 SetVSConstF) with view+0x80 matrix.
+// Prologue is cmp/push/mov esi,ecx (thiscall, no frame) — skip frame ABI check.
+constexpr uint32_t kMode68ReplayDispatchExpectedRva = 0x30CD0;
+constexpr uint32_t kMode68CountEsNeed = 45;
+static const uint8_t kMode68Prologue[] = {0x83, 0x3D, 0x18, 0xD9, 0x7E, 0x01, 0x00, 0x56, 0x8B, 0xF1};
+static const char kMode68Pattern[] = "83 3D 18 D9 7E 01 00 56 8B F1 75";
+std::atomic<uint32_t> g_mode68SiteRva{0};
+std::atomic<uint32_t> g_mode68Es{0};
+std::atomic<uint32_t> g_mode68CountEs{0};
+std::atomic<bool> g_mode68CountDone{false};
+uint32_t g_mode68EntrySum = 0;
+
+// ---- Mode 69: ReplayDispatch view+0x80 matrix PEEK (Mode 45 renderer) ----
+// Same site as Mode 68. READ-ONLY copy of float[16] at ecx+0x80 (VS const src).
+// Never writes game memory; dual=OFF; auto→45 after live matrix + ≥45 EndScenes.
+// WAIT phase: ignore identity (menu/load) until |t| or rotation leaves I, or timeout.
+constexpr uint32_t kMode69ReplayDispatchExpectedRva = 0x30CD0;
+constexpr uint32_t kMode69PeekEsNeed = 45;
+constexpr uint32_t kMode69WaitEsMax = 900;  // ~15–30s of EndScenes waiting for live cam
+static const uint8_t kMode69Prologue[] = {0x83, 0x3D, 0x18, 0xD9, 0x7E, 0x01, 0x00, 0x56, 0x8B, 0xF1};
+static const char kMode69Pattern[] = "83 3D 18 D9 7E 01 00 56 8B F1 75";
+std::atomic<uint32_t> g_mode69SiteRva{0};
+std::atomic<uint32_t> g_mode69Es{0};
+std::atomic<uint32_t> g_mode69PeekEs{0};
+std::atomic<uint32_t> g_mode69WaitEs{0};
+std::atomic<bool> g_mode69Live{false};
+std::atomic<bool> g_mode69PeekDone{false};
+std::atomic<uint32_t> g_mode69PeekOk{0};
+std::atomic<uint32_t> g_mode69PeekFail{0};
+std::atomic<uint32_t> g_mode69LogLeft{8};
+float g_mode69LastMat[16]{};
+bool g_mode69HaveLast = false;
+float g_mode69MaxDelta = 0.f;
+
+// ---- Mode 70: ReplayDispatch ACTIVE-VIEW filtered peek (Mode 45 renderer) ----
+// Same site as 68/69. Only samples when self == *[0x17F583C] AND matrix looks live.
+// READ-ONLY; dual=OFF. Success leaves stereo=70 (no force-45).
+constexpr uint32_t kMode70ReplayDispatchExpectedRva = 0x30CD0;
+constexpr uint32_t kMode70PeekEsNeed = 45;
+constexpr uint32_t kMode70WaitEsMax = 900;
+static const uint8_t kMode70Prologue[] = {0x83, 0x3D, 0x18, 0xD9, 0x7E, 0x01, 0x00, 0x56, 0x8B, 0xF1};
+static const char kMode70Pattern[] = "83 3D 18 D9 7E 01 00 56 8B F1 75";
+std::atomic<uint32_t> g_mode70SiteRva{0};
+std::atomic<uint32_t> g_mode70WaitEs{0};
+std::atomic<uint32_t> g_mode70PeekEs{0};
+std::atomic<bool> g_mode70Live{false};
+std::atomic<bool> g_mode70PeekDone{false};
+std::atomic<uint32_t> g_mode70LiveTotal{0};
+std::atomic<uint32_t> g_mode70ActiveHit{0};
+std::atomic<uint32_t> g_mode70ActiveMiss{0};
+std::atomic<uint32_t> g_mode70LogLeft{8};
+float g_mode70LastMat[16]{};
+bool g_mode70HaveLast = false;
+float g_mode70MaxDelta = 0.f;
+
+// ---- Mode 71: temporal L/R inject at ReplayDispatch (activeView+live) ----
+// WRITE view+0x80 translation ±(sep*stereoScale)/2 along right row, restore after call.
+// Mode-45 TemporalCapturePairHold captures alternating eyes. SameFrameSeamGate=CLOSED.
+// Safety (freeze 2026-07-25): unit right only, finite floats, offset cap, 1 inject/ES,
+// always restore even if call faults.
+constexpr uint32_t kMode71ReplayDispatchExpectedRva = 0x30CD0;
+static const uint8_t kMode71Prologue[] = {0x83, 0x3D, 0x18, 0xD9, 0x7E, 0x01, 0x00, 0x56, 0x8B, 0xF1};
+static const char kMode71Pattern[] = "83 3D 18 D9 7E 01 00 56 8B F1 75";
+std::atomic<uint32_t> g_mode71SiteRva{0};
+std::atomic<bool> g_mode71Armed{false};
+std::atomic<bool> g_mode71Dead{false};
+std::atomic<uint32_t> g_mode71Injects{0};
+std::atomic<uint32_t> g_mode71Skip{0};
+std::atomic<uint32_t> g_mode71RejectMat{0};
+std::atomic<uint32_t> g_mode71Budget{0};  // set to 1 each EndScene; consume one inject
+constexpr float kMode71MaxHalfSep = 0.25f;  // metres cap
+constexpr float kMode71MinT2 = 10.f;        // require real world translation
+
+// ---- Mode 72: SetVSConstF src-copy inject (never writes live view) ----
+// Hook mapped 0x220D0 (Mode65 slot178). When src == activeView+0x80 and matrix sane,
+// copy to local buf, ±IPD/2 along right, call orig with local ptr. 1 inject/ES.
+constexpr uint32_t kMode72SetVSConstExpectedRva = 0x220D0;
+static const uint8_t kMode72Prologue[] = {0x8B, 0x54, 0x24, 0x04, 0x57, 0x8B, 0x7C, 0x24, 0x14};
+static const char kMode72Pattern[] = "8B 54 24 04 57 8B 7C 24 14 8D 04 BD 03 00 00 00";
+using Mode72SetVSConstF_t = void(__stdcall*)(void* device, uint32_t startReg, const float* src,
+                                             uint32_t count);
+Mode72SetVSConstF_t g_origMode72SetVS = nullptr;
+void* g_mode72HookAddr = nullptr;
+std::atomic<uint32_t> g_mode72SiteRva{0};
+std::atomic<bool> g_mode72Armed{false};
+std::atomic<bool> g_mode72Dead{false};
+std::atomic<uint32_t> g_mode72Injects{0};
+std::atomic<uint32_t> g_mode72Skip{0};
+std::atomic<uint32_t> g_mode72RejectMat{0};
+std::atomic<uint32_t> g_mode72Budget{0};
+float g_mode72LocalMat[16]{};
+std::atomic<bool> g_mode73DualDead{false};
+std::atomic<uint32_t> g_mode73DualN{0};
+
+// Mode 74: Mode73 dual gated behind in-world proof (Mode72 live inject streak).
+// After gate OPEN: dual every Nth BuildRootA. Old continuous hang (dual #1–#5) was with
+// inject-every-upload whenever gate OPEN; now inject only while g_inDual — try EveryN=1.
+// Exception permanently disables dual (→45).
+// Sticky OPEN: do NOT re-close on inject-miss (2026-07-25 headset: miss close→Mode72
+// temporal eye-flip felt like fused↔separated flicker; ~55 CLOSE/OPEN in one session).
+constexpr uint32_t kMode74GateNeedLiveEs = 90;   // ~3s @30fps consecutive live inject ES
+constexpr uint32_t kMode74DualEveryN = 1;        // every BuildRootA after gate = same-frame dual (1/1)
+std::atomic<bool> g_mode74GateOpen{false};
+std::atomic<bool> g_mode74DualDead{false};
+std::atomic<uint32_t> g_mode74DualN{0};
+std::atomic<uint32_t> g_mode74LiveStreak{0};
+std::atomic<uint32_t> g_mode74MissStreak{0};
+std::atomic<uint32_t> g_mode74BuildTick{0};
+std::atomic<bool> g_mode74DidDualThisFrame{false};
+uint32_t g_mode74LastInjects = 0;
+// Runtime kill for dual after gate (defaults ON). Exception sets DualDead permanently.
+std::atomic<bool> g_mode74DualEnabled{true};
 
 std::atomic<uint32_t> g_mode41VsRetHits{0};
 std::atomic<uint32_t> g_mode41Es{0};
@@ -1214,6 +1355,36 @@ bool RunBuildDualViewShiftGuarded(void* self, void* edx) {
   }
 }
 
+// Mode 73/74: same-frame BuildRootA twice. Eye L/R via SetStereoEye → CamMatrix IPD +
+// Mode72 SetVSConstF src-copy. Never mutates live view+0x80 or manager cam globals.
+bool RunMode73SameFrameDualGuarded(void* self, void* edx) {
+  __try {
+    SetStereoEye(StereoEye::Left);
+    RefreshLiveCamForStereoEye();
+    g_origRoot[1](self, edx);
+    if (g_device && g_texL && CopyBbToEyeCanvas(g_device, g_texL, vr::Eye_Left))
+      g_haveL = true;
+
+    SetStereoEye(StereoEye::Right);
+    RefreshLiveCamForStereoEye();
+    g_origRoot[1](self, edx);
+    if (g_device && g_texR && CopyBbToEyeCanvas(g_device, g_texR, vr::Eye_Right))
+      g_haveR = true;
+
+    SetStereoEye(StereoEye::Left);
+    RefreshLiveCamForStereoEye();
+    return true;
+  } __except (ExecViewFilter(GetExceptionInformation())) {
+    return false;
+  }
+}
+
+bool Mode74ShouldDual() {
+  return GetStereoMode() == StereoMode::SameFrameVsConstGatedDual &&
+         g_mode74DualEnabled.load() && g_mode74GateOpen.load() && !g_mode74DualDead.load() &&
+         g_mode72Armed.load() && !g_mode72Dead.load();
+}
+
 void __fastcall HookRoot1(void* self, void* edx) {
   const StereoMode mode = GetStereoMode();
   if (mode == StereoMode::RootDispatchProbe) {
@@ -1277,6 +1448,72 @@ void __fastcall HookRoot1(void* self, void* edx) {
     if (n == 600 || n == 3000)
       StereoVsDumpRets();
     return;
+  }
+
+  // Mode 73: ungated BuildRootA×2 (DISABLED via RemapLoadedStereoMode → 72).
+  if (mode == StereoMode::SameFrameVsConstDual && !g_mode73DualDead.load() && !g_inDual.load() &&
+      IsCamMatrixOverrideEnabled() && g_device && g_texL && g_texR && g_mode72Armed.load()) {
+    g_inDual.store(true);
+    const bool ok = RunMode73SameFrameDualGuarded(self, edx);
+    g_inDual.store(false);
+    if (!ok) {
+      g_mode73DualDead.store(true);
+      g_haveL = g_haveR = false;
+      Log("Mode73: EXCEPTION in same-frame dual — permanently disabled; mono BuildRootA; "
+          "wrote stereo=45");
+      WriteStereoModeFile(45);
+      g_origRoot[1](self, edx);
+      return;
+    }
+    const uint32_t n = ++g_mode73DualN;
+    if (n <= 6 || (n % 120) == 0)
+      Log("Mode73: SAME-FRAME dual #%u haveL=%d haveR=%d injects=%u sep=%.0fcm "
+          "(BuildRootA×2 + VSConst src-copy)",
+          n, g_haveL ? 1 : 0, g_haveR ? 1 : 0, g_mode72Injects.load(),
+          GetStereoSepMeters() * 100.f);
+    if (g_haveL && g_haveR && (n == 5 || (n % 300) == 0))
+      CompareEyeCanvases(g_device);
+    return;
+  }
+
+  // Mode 74: same dual as Mode73, but ONLY after streaming/in-world gate opens,
+  // and every kMode74DualEveryN BuildRootA ticks (1 = every-frame after gate).
+  // Gate CLOSED / off-tick → fall through to mono BuildRootA (Mode72 temporal path).
+  // Note: tick%1 is always 0 in C++, so EveryN<=1 must force dualSlot (else never duals).
+  if (Mode74ShouldDual() && !g_inDual.load() && IsCamMatrixOverrideEnabled() && g_device &&
+      g_texL && g_texR) {
+    const uint32_t tick = g_mode74BuildTick.fetch_add(1) + 1;
+    const bool dualSlot =
+        (kMode74DualEveryN <= 1) || ((tick % kMode74DualEveryN) == 1);
+    if (dualSlot) {
+      g_mode74DidDualThisFrame.store(true);
+      g_inDual.store(true);
+      const bool ok = RunMode73SameFrameDualGuarded(self, edx);
+      g_inDual.store(false);
+      if (!ok) {
+        g_mode74DualDead.store(true);
+        g_mode74GateOpen.store(false);
+        g_mode74DidDualThisFrame.store(false);
+        g_haveL = g_haveR = false;
+        Log("Mode74: EXCEPTION in SAME-FRAME dual — permanently disabled; wrote stereo=45");
+        WriteStereoModeFile(45);
+        g_origRoot[1](self, edx);
+        return;
+      }
+      const uint32_t n = ++g_mode74DualN;
+      if (n <= 6 || (n % 120) == 0)
+        Log("Mode74: SAME-FRAME dual #%u haveL=%d haveR=%d injects=%u sep=%.0fcm "
+            "(gate=OPEN every-frame 1/%u BuildRootA×2 + VSConst src-copy)",
+            n, g_haveL ? 1 : 0, g_haveR ? 1 : 0, g_mode72Injects.load(),
+            GetStereoSepMeters() * 100.f, kMode74DualEveryN);
+      if (g_haveL && g_haveR && (n == 5 || (n % 300) == 0))
+        CompareEyeCanvases(g_device);
+      return;
+    }
+    g_mode74DidDualThisFrame.store(false);
+    // off-tick: mono BuildRootA below (Mode72 temporal on EndScene)
+  } else if (GetStereoMode() == StereoMode::SameFrameVsConstGatedDual) {
+    g_mode74DidDualThisFrame.store(false);
   }
 
   if (mode == StereoMode::SameFrameRootDual && !g_rootDualDead.load() && !g_inDual.load() &&
@@ -1439,7 +1676,7 @@ void DumpReplayCandCounts() {
 // invoke (manager cam shift + VS translate on pass 2) + Mode 14 canvas. Until
 // dual is armed (or if it dies), EndScene keeps Mode 26 temporal so the HMD
 // still has stereo. FusionFix FOV stays 0 (look-up warp).
-constexpr uint32_t kVsWrapRva = 0x2C6AC;
+constexpr uint32_t kVsWrapRva = 0x2D2AC;  // mapped; old file-off doc 0x2C6AC FORBIDDEN
 using VsWrap_t = void(__stdcall*)(uint32_t, uint32_t, uint32_t);
 VsWrap_t g_origVsWrap = nullptr;
 std::atomic<bool> g_wrapHooked{false};
@@ -1678,6 +1915,416 @@ bool CallDrawWalkOnceGuarded(void* self, void* edx) {
   }
 }
 
+// Mode 69: SEH-safe read of VS-upload matrix at view+0x80. Never writes.
+bool Mode69TryCopyMat(void* view, float out[16]) {
+  __try {
+    if (!view)
+      return false;
+    const auto* src =
+        reinterpret_cast<const float*>(reinterpret_cast<uintptr_t>(view) + 0x80);
+    for (int i = 0; i < 16; ++i)
+      out[i] = src[i];
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+void Mode69PeekViewMat(void* self) {
+  float m[16]{};
+  if (!Mode69TryCopyMat(self, m)) {
+    ++g_mode69PeekFail;
+    return;
+  }
+  ++g_mode69PeekOk;
+
+  // Identity / near-identity → still menu/load. Live = translation or off-axis basis.
+  const float tx = m[12], ty = m[13], tz = m[14];
+  const float t2 = tx * tx + ty * ty + tz * tz;
+  const float basisOff =
+      (m[0] - 1.f) * (m[0] - 1.f) + m[1] * m[1] + m[2] * m[2] + m[4] * m[4] +
+      (m[5] - 1.f) * (m[5] - 1.f) + m[6] * m[6] + m[8] * m[8] + m[9] * m[9] +
+      (m[10] - 1.f) * (m[10] - 1.f);
+  const bool looksLive = (t2 > 1.f) || (basisOff > 0.01f);
+
+  if (looksLive && !g_mode69Live.load()) {
+    g_mode69Live.store(true);
+    Log("Mode69: LIVE matrix view=%p t=(%.3f,%.3f,%.3f) r0=(%.3f,%.3f,%.3f) "
+        "r1=(%.3f,%.3f,%.3f) — starting %u-ES sample window",
+        self, tx, ty, tz, m[0], m[1], m[2], m[4], m[5], m[6], kMode69PeekEsNeed);
+    g_mode69LogLeft.store(8);
+    g_mode69PeekEs.store(0);
+    g_mode69MaxDelta = 0.f;
+    g_mode69HaveLast = false;
+  }
+
+  if (g_mode69HaveLast) {
+    float d = 0.f;
+    for (int i = 0; i < 16; ++i) {
+      const float t = m[i] - g_mode69LastMat[i];
+      d += t * t;
+    }
+    if (d > g_mode69MaxDelta)
+      g_mode69MaxDelta = d;
+  }
+  for (int i = 0; i < 16; ++i)
+    g_mode69LastMat[i] = m[i];
+  g_mode69HaveLast = true;
+
+  if (!g_mode69Live.load())
+    return;
+
+  uint32_t left = g_mode69LogLeft.load();
+  while (left > 0) {
+    if (g_mode69LogLeft.compare_exchange_weak(left, left - 1)) {
+      Log("Mode69: PEEK view=%p t=(%.3f,%.3f,%.3f) r0=(%.3f,%.3f,%.3f) "
+          "ok=%u fail=%u (read-only dual=OFF)",
+          self, m[12], m[13], m[14], m[0], m[1], m[2], g_mode69PeekOk.load(),
+          g_mode69PeekFail.load());
+      break;
+    }
+  }
+}
+
+bool Mode70ReadActiveView(uint32_t* outActive) {
+  __try {
+    *outActive = *reinterpret_cast<const uint32_t*>(kMode65ActiveViewVa);
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+void Mode70PeekViewMat(void* self) {
+  float m[16]{};
+  if (!Mode69TryCopyMat(self, m))
+    return;
+
+  const float tx = m[12], ty = m[13], tz = m[14];
+  const float t2 = tx * tx + ty * ty + tz * tz;
+  const float basisOff =
+      (m[0] - 1.f) * (m[0] - 1.f) + m[1] * m[1] + m[2] * m[2] + m[4] * m[4] +
+      (m[5] - 1.f) * (m[5] - 1.f) + m[6] * m[6] + m[8] * m[8] + m[9] * m[9] +
+      (m[10] - 1.f) * (m[10] - 1.f);
+  const bool looksLive = (t2 > 1.f) || (basisOff > 0.01f);
+  if (!looksLive)
+    return;
+
+  ++g_mode70LiveTotal;
+  uint32_t active = 0;
+  if (!Mode70ReadActiveView(&active) || !active ||
+      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(self)) != active) {
+    ++g_mode70ActiveMiss;
+    return;
+  }
+  ++g_mode70ActiveHit;
+
+  if (!g_mode70Live.load()) {
+    g_mode70Live.store(true);
+    Log("Mode70: ACTIVE+LIVE view=%p active=0x%X t=(%.3f,%.3f,%.3f) — sample window %u ES",
+        self, active, tx, ty, tz, kMode70PeekEsNeed);
+    g_mode70LogLeft.store(8);
+    g_mode70PeekEs.store(0);
+    g_mode70MaxDelta = 0.f;
+    g_mode70HaveLast = false;
+  }
+
+  if (g_mode70HaveLast) {
+    float d = 0.f;
+    for (int i = 0; i < 16; ++i) {
+      const float t = m[i] - g_mode70LastMat[i];
+      d += t * t;
+    }
+    if (d > g_mode70MaxDelta)
+      g_mode70MaxDelta = d;
+  }
+  for (int i = 0; i < 16; ++i)
+    g_mode70LastMat[i] = m[i];
+  g_mode70HaveLast = true;
+
+  uint32_t left = g_mode70LogLeft.load();
+  while (left > 0) {
+    if (g_mode70LogLeft.compare_exchange_weak(left, left - 1)) {
+      Log("Mode70: PEEK activeHit view=%p t=(%.3f,%.3f,%.3f) hit=%u miss=%u liveTot=%u",
+          self, m[12], m[13], m[14], g_mode70ActiveHit.load(), g_mode70ActiveMiss.load(),
+          g_mode70LiveTotal.load());
+      break;
+    }
+  }
+}
+
+bool Mode71WriteMat(void* view, const float m[16]) {
+  __try {
+    if (!view)
+      return false;
+    auto* dst = reinterpret_cast<float*>(reinterpret_cast<uintptr_t>(view) + 0x80);
+    for (int i = 0; i < 16; ++i)
+      dst[i] = m[i];
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+bool Mode71MatSaneForInject(const float m[16]) {
+  for (int i = 0; i < 16; ++i) {
+    if (!std::isfinite(m[i]))
+      return false;
+  }
+  const float tx = m[12], ty = m[13], tz = m[14];
+  const float t2 = tx * tx + ty * ty + tz * tz;
+  if (t2 < kMode71MinT2)
+    return false;
+  // Right row must be ~unit length (reject m0=10000 garbage that teleported cam).
+  const float rlen = std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+  if (rlen < 0.5f || rlen > 1.5f)
+    return false;
+  return true;
+}
+
+bool Mode71CallOrigOnly(void* self, void* edx) {
+  __try {
+    g_origDrawWalk(self, edx);
+    return true;
+  } __except (ExecViewFilter(GetExceptionInformation())) {
+    return false;
+  }
+}
+
+// Inject ±half IPD along matrix right (m0..m2), call ReplayDispatch, ALWAYS restore.
+bool Mode71InjectCallGuarded(void* self, void* edx) {
+  float m[16]{};
+  if (!Mode69TryCopyMat(self, m))
+    return Mode71CallOrigOnly(self, edx);
+
+  uint32_t active = 0;
+  const bool isActive = Mode70ReadActiveView(&active) && active &&
+                        static_cast<uint32_t>(reinterpret_cast<uintptr_t>(self)) == active;
+  if (!isActive || !Mode71MatSaneForInject(m)) {
+    if (isActive)
+      ++g_mode71RejectMat;
+    else
+      ++g_mode71Skip;
+    return Mode71CallOrigOnly(self, edx);
+  }
+
+  // One inject per EndScene (temporal eye already latched). Prevents 200×/frame thrash.
+  uint32_t budget = g_mode71Budget.load();
+  if (budget == 0) {
+    ++g_mode71Skip;
+    return Mode71CallOrigOnly(self, edx);
+  }
+  if (!g_mode71Budget.compare_exchange_strong(budget, 0)) {
+    ++g_mode71Skip;
+    return Mode71CallOrigOnly(self, edx);
+  }
+
+  float backup[16];
+  for (int i = 0; i < 16; ++i)
+    backup[i] = m[i];
+
+  float half = 0.5f * GetStereoSepMeters() * GetStereoScale();
+  if (half > kMode71MaxHalfSep)
+    half = kMode71MaxHalfSep;
+  if (half < 0.f)
+    half = 0.f;
+  const float sign = (GetStereoEye() == StereoEye::Right) ? 1.f : -1.f;
+  const float rlen = std::sqrt(backup[0] * backup[0] + backup[1] * backup[1] + backup[2] * backup[2]);
+  const float inv = (rlen > 1e-3f) ? (1.f / rlen) : 0.f;
+  const float rx = backup[0] * inv, ry = backup[1] * inv, rz = backup[2] * inv;
+  m[12] = backup[12] + sign * half * rx;
+  m[13] = backup[13] + sign * half * ry;
+  m[14] = backup[14] + sign * half * rz;
+
+  if (!Mode71WriteMat(self, m))
+    return Mode71CallOrigOnly(self, edx);
+
+  const bool ok = Mode71CallOrigOnly(self, edx);
+  Mode71WriteMat(self, backup);  // ALWAYS restore — freeze root if left dirty after fault
+  if (ok)
+    ++g_mode71Injects;
+  return ok;
+}
+
+// Mode 72: SEH-safe read of src floats (may be game memory). Never writes src.
+bool Mode72TryCopySrc(const float* src, float out[16]) {
+  __try {
+    if (!src)
+      return false;
+    for (int i = 0; i < 16; ++i)
+      out[i] = src[i];
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+bool Mode72ReadActiveView(uint32_t* outActive) {
+  __try {
+    *outActive = *reinterpret_cast<const uint32_t*>(kMode65ActiveViewVa);
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+void Mode72CallOrig(void* device, uint32_t startReg, const float* src, uint32_t count) {
+  __try {
+    g_origMode72SetVS(device, startReg, src, count);
+  } __except (ExecViewFilter(GetExceptionInformation())) {
+    g_mode72Dead.store(true);
+    Log("Mode72: EXCEPTION in SetVSConstF code=0x%08X — will kill to 45", g_execViewExcCode);
+  }
+}
+
+// Mode74 HMD look: rewrite LOCAL view basis from OpenVR pose (never writes live view+0x80).
+// CamMatrix already owns CopyMat; this stamps the same orient onto the SetVSConstF upload
+// that actually feeds stereo draws (activeView+0x80 src-copy path).
+void Mode74ApplyHmdLookLocal(float* m) {
+  vr::HmdMatrix34_t h{};
+  if (!GetHmdPoseMatrix(&h) || !m)
+    return;
+  // OpenVR → GTA: (x,y,z)_gta = (x, -z, y)_ovr
+  auto ovrToGta = [](float ox, float oy, float oz, float* gx, float* gy, float* gz) {
+    *gx = ox;
+    *gy = -oz;
+    *gz = oy;
+  };
+  auto norm = [](float* x, float* y, float* z) {
+    const float len = std::sqrt((*x) * (*x) + (*y) * (*y) + (*z) * (*z));
+    if (len < 1e-6f) {
+      *x = 0.f;
+      *y = 1.f;
+      *z = 0.f;
+      return;
+    }
+    *x /= len;
+    *y /= len;
+    *z /= len;
+  };
+  float fx, fy, fz;
+  ovrToGta(-h.m[0][2], -h.m[1][2], -h.m[2][2], &fx, &fy, &fz);
+  norm(&fx, &fy, &fz);
+  float rx = fy, ry = -fx, rz = 0.f;
+  float rlen = std::sqrt(rx * rx + ry * ry + rz * rz);
+  if (rlen < 1e-4f) {
+    rx = 1.f;
+    ry = 0.f;
+    rz = 0.f;
+  } else {
+    rx /= rlen;
+    ry /= rlen;
+    rz /= rlen;
+  }
+  float ux = ry * fz - rz * fy;
+  float uy = rz * fx - rx * fz;
+  float uz = rx * fy - ry * fx;
+  norm(&ux, &uy, &uz);
+  // Rage cam rows: right / forward(up-row) / world-up(at) — keep translation.
+  m[0] = rx;
+  m[1] = ry;
+  m[2] = rz;
+  m[4] = fx;
+  m[5] = fy;
+  m[6] = fz;
+  m[8] = ux;
+  m[9] = uy;
+  m[10] = uz;
+  static uint32_t s_hmdLookN = 0;
+  const uint32_t n = ++s_hmdLookN;
+  if (n == 1)
+    Log("HmdLook: ACTIVE Mode74 (SetVSConstF src-copy HMD orient; never writes view+0x80; "
+        "F9 recenter)");
+  if (n <= 3 || (n % 600) == 0) {
+    const float yawDeg = std::atan2(fx, fy) * (180.f / 3.14159265f);
+    const float pitchDeg = std::asin((std::max)(-1.f, (std::min)(1.f, fz))) * (180.f / 3.14159265f);
+    Log("HmdLook: Mode74 yaw=%.1f pitch=%.1f n=%u (turn head — view should follow)", yawDeg,
+        pitchDeg, n);
+  }
+}
+
+const float* Mode72SelectSrc(const float* src, uint32_t startReg, uint32_t count) {
+  const StereoMode sm = GetStereoMode();
+  const bool mode72 = (sm == StereoMode::VsConstTemporalInject);
+  const bool mode73 = (sm == StereoMode::SameFrameVsConstDual);
+  const bool mode74 = (sm == StereoMode::SameFrameVsConstGatedDual);
+  if (!mode72 && !mode73 && !mode74) {
+    ++g_mode72Skip;
+    return src;
+  }
+  if (count != 16 || startReg != 0 || !src) {
+    ++g_mode72Skip;
+    return src;
+  }
+  uint32_t active = 0;
+  if (!Mode72ReadActiveView(&active) || !active) {
+    ++g_mode72Skip;
+    return src;
+  }
+  const auto* expect = reinterpret_cast<const float*>(static_cast<uintptr_t>(active) + 0x80);
+  if (src != expect) {
+    ++g_mode72Skip;
+    return src;
+  }
+  float m[16]{};
+  if (!Mode72TryCopySrc(src, m) || !Mode71MatSaneForInject(m)) {
+    ++g_mode72RejectMat;
+    return src;
+  }
+  // Mode 72 / Mode74 non-dual frames: 1 inject/ES (temporal).
+  // Mode 73 / Mode74 only while g_inDual: inject every matching upload in both walks.
+  // (Gate OPEN alone must NOT unlock inject-every — that bursted ~300/frame and hung.)
+  const bool dualOpen = mode73 || (mode74 && g_inDual.load());
+  if (!dualOpen) {
+    uint32_t budget = g_mode72Budget.load();
+    if (budget == 0 || !g_mode72Budget.compare_exchange_strong(budget, 0)) {
+      ++g_mode72Skip;
+      return src;
+    }
+  }
+  for (int i = 0; i < 16; ++i)
+    g_mode72LocalMat[i] = m[i];
+  // Mode74: HMD look on local copy BEFORE IPD translate (safe; no live view write).
+  if (mode74)
+    Mode74ApplyHmdLookLocal(g_mode72LocalMat);
+  float half = 0.5f * GetStereoSepMeters() * GetStereoScale();
+  if (half < 0.05f)
+    half = 0.05f;
+  if (half > kMode71MaxHalfSep)
+    half = kMode71MaxHalfSep;
+  if (half < 0.f)
+    half = 0.f;
+  const float sign = (GetStereoEye() == StereoEye::Right) ? 1.f : -1.f;
+  const float rlen = std::sqrt(g_mode72LocalMat[0] * g_mode72LocalMat[0] +
+                               g_mode72LocalMat[1] * g_mode72LocalMat[1] +
+                               g_mode72LocalMat[2] * g_mode72LocalMat[2]);
+  const float inv = (rlen > 1e-3f) ? (1.f / rlen) : 0.f;
+  g_mode72LocalMat[12] = m[12] + sign * half * g_mode72LocalMat[0] * inv;
+  g_mode72LocalMat[13] = m[13] + sign * half * g_mode72LocalMat[1] * inv;
+  g_mode72LocalMat[14] = m[14] + sign * half * g_mode72LocalMat[2] * inv;
+  ++g_mode72Injects;
+  return g_mode72LocalMat;
+}
+
+void __stdcall HookMode72SetVSConstF(void* device, uint32_t startReg, const float* src,
+                                     uint32_t count) {
+  if (!g_origMode72SetVS)
+    return;
+  const StereoMode sm = GetStereoMode();
+  if ((sm != StereoMode::VsConstTemporalInject && sm != StereoMode::SameFrameVsConstDual &&
+       sm != StereoMode::SameFrameVsConstGatedDual) ||
+      !g_mode72Armed.load() || g_mode72Dead.load()) {
+    g_origMode72SetVS(device, startReg, src, count);
+    return;
+  }
+  const float* useSrc = Mode72SelectSrc(src, startReg, count);
+  Mode72CallOrig(device, startReg, useSrc, count);
+}
+
+bool Mode72InstallHook();
+void Mode72OnEndScene(IDirect3DDevice9* device);
+void Mode74OnEndScene(IDirect3DDevice9* device);
+
 bool CallDrawWalkOnceGuarded(void* self, void* edx);
 bool RunMode31DualGuarded(void* self, void* edx);
 void Mode31FallbackPairHold(const char* why);
@@ -1693,22 +2340,76 @@ void __fastcall HookDrawWalk(void* self, void* edx) {
     return;
   ++g_drawWalkEntries;
 
-  // Mode 64: fixed 0x3187C COUNT-only (no dual).
+  // Mode 64: ViewConst COUNT-only (no dual).
   if (GetStereoMode() == StereoMode::ViewConstCountProbe && !g_mode64CountDone.load()) {
     if (!CallDrawWalkOnceGuarded(self, edx)) {
       Log("Mode64: EXCEPTION in count passthrough code=0x%08X @exeRva=0x%X",
-          g_execViewExcCode, kMode64ViewConstRva);
+          g_execViewExcCode, g_mode64SiteRva.load());
       g_drawWalkEntries.store(0xFFFFFFFFu);
     }
     return;
   }
 
-  // Mode 66: fixed 0x30300 PublishSync COUNT-only (no dual).
+  // Mode 66: PublishSync COUNT-only (no dual).
   if (GetStereoMode() == StereoMode::PublishSyncCountProbe && !g_mode66CountDone.load()) {
     if (!CallDrawWalkOnceGuarded(self, edx)) {
       Log("Mode66: EXCEPTION in count passthrough code=0x%08X @exeRva=0x%X",
-          g_execViewExcCode, kMode66PublishSyncRva);
+          g_execViewExcCode, g_mode66SiteRva.load());
       g_drawWalkEntries.store(0xFFFFFFFFu);
+    }
+    return;
+  }
+
+  // Mode 67: ViewMatWriter COUNT-only (no dual).
+  if (GetStereoMode() == StereoMode::ViewMatWriterCountProbe && !g_mode67CountDone.load()) {
+    if (!CallDrawWalkOnceGuarded(self, edx)) {
+      Log("Mode67: EXCEPTION in count passthrough code=0x%08X @exeRva=0x%X",
+          g_execViewExcCode, g_mode67SiteRva.load());
+      g_drawWalkEntries.store(0xFFFFFFFFu);
+    }
+    return;
+  }
+
+  // Mode 68: ReplayDispatch COUNT-only (no dual).
+  if (GetStereoMode() == StereoMode::ReplayDispatchCountProbe && !g_mode68CountDone.load()) {
+    if (!CallDrawWalkOnceGuarded(self, edx)) {
+      Log("Mode68: EXCEPTION in count passthrough code=0x%08X @exeRva=0x%X",
+          g_execViewExcCode, g_mode68SiteRva.load());
+      g_drawWalkEntries.store(0xFFFFFFFFu);
+    }
+    return;
+  }
+
+  // Mode 69: ReplayDispatch matrix peek (read-only; no dual).
+  if (GetStereoMode() == StereoMode::ReplayDispatchMatPeek && !g_mode69PeekDone.load()) {
+    Mode69PeekViewMat(self);
+    if (!CallDrawWalkOnceGuarded(self, edx)) {
+      Log("Mode69: EXCEPTION in peek passthrough code=0x%08X @exeRva=0x%X",
+          g_execViewExcCode, g_mode69SiteRva.load());
+      g_drawWalkEntries.store(0xFFFFFFFFu);
+    }
+    return;
+  }
+
+  // Mode 70: activeView-filtered matrix peek (read-only; no dual).
+  if (GetStereoMode() == StereoMode::ReplayDispatchActivePeek && !g_mode70PeekDone.load()) {
+    Mode70PeekViewMat(self);
+    if (!CallDrawWalkOnceGuarded(self, edx)) {
+      Log("Mode70: EXCEPTION in peek passthrough code=0x%08X @exeRva=0x%X",
+          g_execViewExcCode, g_mode70SiteRva.load());
+      g_drawWalkEntries.store(0xFFFFFFFFu);
+    }
+    return;
+  }
+
+  // Mode 71: temporal L/R inject (write+restore; no same-frame dual).
+  if (GetStereoMode() == StereoMode::ReplayDispatchTemporalInject && g_mode71Armed.load() &&
+      !g_mode71Dead.load()) {
+    if (!Mode71InjectCallGuarded(self, edx)) {
+      Log("Mode71: EXCEPTION inject code=0x%08X @exeRva=0x%X — kill stereo=45",
+          g_execViewExcCode, g_mode71SiteRva.load());
+      g_drawWalkEntries.store(0xFFFFFFFFu);
+      g_mode71Dead.store(true);
     }
     return;
   }
@@ -1987,7 +2688,7 @@ bool StartNextWrapCount() {
 }
 
 // ---- Mode 31 helpers (safer discovery than Mode 27/29 FindFnStartNear blind) ----
-constexpr uint32_t kForbiddenHookRvaA = 0x2C6AC;  // VS wrap — Mode 28 crash
+constexpr uint32_t kForbiddenHookRvaA = 0x2D2AC;  // VS wrap — Mode 28 crash (mapped)
 constexpr uint32_t kForbiddenHookRvaB = 0x37BD0;  // wrong-ABI — Mode 27/29 crash
 constexpr uint32_t kForbiddenMidRva = 0x37C01;    // resolves to 0x37BD0
 constexpr uint32_t kMode31DiscoverEs = 90;
@@ -1995,7 +2696,7 @@ constexpr uint32_t kMode31CountEsNeed = 45;
 
 bool Mode31ForbiddenRva(uint32_t rva) {
   return rva == kForbiddenHookRvaA || rva == kForbiddenHookRvaB || rva == kForbiddenMidRva ||
-         rva == 0x2C73E;  // VsRet itself — hundreds/frame
+         rva == 0x2D33E || rva == 0x2C73E || rva == 0x2C6AC;
 }
 
 // Accept only proven thiscall shapes (mov reg, ecx). Reject Mode 29's 8B FA.
@@ -2281,7 +2982,7 @@ constexpr uint32_t kMode32CountEsNeed = 45;
 
 bool Mode32ForbiddenRva(uint32_t rva) {
   return rva == kForbiddenHookRvaA || rva == kForbiddenHookRvaB || rva == kForbiddenMidRva ||
-         rva == 0x2C73E;
+         rva == 0x2D33E || rva == 0x2C73E || rva == 0x2C6AC;
 }
 
 bool Mode32LooksLikeMovFromEcx(uint8_t b0, uint8_t b1) {
@@ -3615,7 +4316,7 @@ void Mode33OnEndScene(IDirect3DDevice9* device) {
 constexpr uint32_t kMode34SoftWaitMaxEs = 360;
 constexpr uint32_t kMode34DiscoverEs = 90;
 constexpr uint32_t kMode34CountEsNeed = 45;
-constexpr uint32_t kMode34VsRetRva = 0x2C73E;
+constexpr uint32_t kMode34VsRetRva = 0x2D33E;  // mapped; old file-off doc 0x2C73E
 
 // Crash-probe: wrong-ABI hooks can hard-kill OUTSIDE SEH (stack imbalance on return).
 // Write RVA before InstallDrawWalkAt; clear on dual/fallback; on next load recover → 30.
@@ -3687,8 +4388,10 @@ bool Mode34ForbiddenRva(uint32_t rva) {
   // 0x52E7C0: PE confirms [esp+34] stackarg — never hook.
   // 0x4DDAD0: COUNT ok + DUAL armed, but vsPatch=0 / vsCallsR=0 forever (same-cam dual,
   // no parallax). Do not re-arm — StereoDiff gate also failed to catch canvas noise.
-  return Mode33ForbiddenRva(rva) || rva == kMode34VsRetRva || rva == 0x1BF010 ||
-         rva == 0x52E7C0 || rva == 0x4DDAD0;
+  // Mapped (+0xC00) and legacy file-off forms both rejected.
+  return Mode33ForbiddenRva(rva) || rva == kMode34VsRetRva || rva == 0x2C73E ||
+         rva == 0x1BF010 || rva == 0x1BFC10 || rva == 0x52E7C0 || rva == 0x52F3C0 ||
+         rva == 0x4DDAD0 || rva == 0x4DE6D0;
 }
 
 bool Mode34IsCcPaddedThiscall0(uintptr_t addr, const char** tagOut) {
@@ -4072,7 +4775,9 @@ void Mode34OnEndScene(IDirect3DDevice9* device) {
 }
 
 bool Mode41ForbiddenRva(uint32_t rva) {
-  return rva == 0x2C6AC || rva == 0x37BD0 || rva == 0x1BF010 || rva == 0x4DDAD0;
+  return rva == 0x2D2AC || rva == 0x387BD0 || rva == 0x1BFC10 || rva == 0x4DE6D0 ||
+         rva == 0x2C6AC || rva == 0x37BD0 || rva == 0x1BF010 || rva == 0x4DDAD0;
+  // Include both mapped (+0xC00) and legacy file-off RVAs so old probes still reject.
 }
 
 void Mode41NoteFrameNode(uint32_t retRva, uint8_t slot) {
@@ -4221,10 +4926,45 @@ void Mode41FinishFrame() {
         "modrm=0x%02X len=%u frames=%u hits=%u hook=NO",
         label, node.slot, node.retRva, fnRva, abi, call, callRva, targetRva, modrm, callLen,
         node.frames, node.hits);
-    if (mode42 && node.retRva == 0x30D13) {
-      Log("Mode42: OWNER-EDGE ret=0x30D13 enclosing=0x%X abi=%s call=%s@0x%X "
-          "modrm=0x%02X len=%u cadenceFrames=%u hits=%u hook=NO replay=NO",
-          fnRva, abi, call, callRva, modrm, callLen, node.frames, node.hits);
+    // ReplayGate-guarded +178 triad (stereo-relevant of 12 exe-wide sites):
+    //   0x30D0D → ret 0x30D13 (ReplayDispatch)
+    //   0x2A217D → ret 0x2A2183 (upload fn 0x2A1E10 path A)
+    //   0x2A25F9 → ret 0x2A25FF (upload fn 0x2A1E10 path B)
+    // READ-ONLY log only — SameFrameSeamGate stays CLOSED.
+    if (node.retRva == 0x30D13 || node.retRva == 0x2A2183 || node.retRva == 0x2A25FF) {
+      uint32_t owner = fnRva;
+      uint32_t expectCall = 0;
+      const char* path = "?";
+      if (node.retRva == 0x30D13) {
+        expectCall = 0x30D0D;
+        owner = (callRva == expectCall) ? 0x30CD0u : fnRva;
+        path = "ReplayDispatch";
+      } else if (node.retRva == 0x2A2183) {
+        expectCall = 0x2A217D;
+        owner = (callRva == expectCall) ? 0x2A1E10u : fnRva;
+        path = "UploadA";
+      } else {
+        expectCall = 0x2A25F9;
+        owner = (callRva == expectCall) ? 0x2A1E10u : fnRva;
+        path = "UploadB";
+      }
+      Log("%s: OWNER-EDGE ret=0x%X enclosing=0x%X abi=%s call=%s@0x%X "
+          "modrm=0x%02X len=%u cadenceFrames=%u hits=%u path=%s expectCall=0x%X "
+          "match=%d hook=NO replay=NO SameFrameSeamGate=CLOSED",
+          label, node.retRva, owner, abi, call, callRva, modrm, callLen, node.frames,
+          node.hits, path, expectCall, (callRva == expectCall) ? 1 : 0);
+    }
+    // Mapped PublishSync return sites (ViewConst @0x327FF / ViewMat @0x31624 → 0x30F00).
+    if (node.retRva == 0x32804 || node.retRva == 0x31629) {
+      Log("%s: PUBLISH-RET ret=0x%X call=%s@0x%X->0x%X (ViewConst/ViewMat -> PublishSync; "
+          "mapped; SameFrameSeamGate=CLOSED) hook=NO",
+          label, node.retRva, call, callRva, targetRva);
+    }
+    // Old file-off "0x3199A/A4" mid-rets are SSE mid-instr at mapped 0x3259A/A4 — not seams.
+    if (node.retRva == 0x3259A || node.retRva == 0x325A4 || node.retRva == 0x3199A ||
+        node.retRva == 0x319A4) {
+      Log("%s: NOTE ret=0x%X is ViewConst MID-SSE (not a call return; ignore as seam)", label,
+          node.retRva);
     }
   }
 }
@@ -4234,38 +4974,28 @@ void Mode41OnEndScene(IDirect3DDevice9* device) {
   Mode41FinishFrame();
 }
 
-bool Mode64VerifyPrologue(uintptr_t start) {
-  const auto* b = reinterpret_cast<const uint8_t*>(start);
-  __try {
-    for (size_t i = 0; i < sizeof(kMode64Prologue); ++i) {
-      if (b[i] != kMode64Prologue[i])
-        return false;
-    }
-    return true;
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return false;
-  }
-}
-
 bool Mode64InstallCountHook() {
-  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
-  const uintptr_t start = base + kMode64ViewConstRva;
-  const char* tag = "?";
-  if (!Mode64VerifyPrologue(start) || !Mode34IsCcPaddedThiscall0(start, &tag)) {
-    Log("Mode64: REJECT exeRva=0x%X abi=%s bytes=%02X %02X %02X %02X %02X %02X "
-        "(need 56 57 8B F9 + CC-pad thiscall0)",
-        kMode64ViewConstRva, tag, reinterpret_cast<const uint8_t*>(start)[0],
-        reinterpret_cast<const uint8_t*>(start)[1],
-        reinterpret_cast<const uint8_t*>(start)[2],
-        reinterpret_cast<const uint8_t*>(start)[3],
-        reinterpret_cast<const uint8_t*>(start)[4],
-        reinterpret_cast<const uint8_t*>(start)[5]);
+  const ReSiteSpec spec{ "ViewConst", kMode64Pattern, kMode64ViewConstExpectedRva, kMode64Prologue,
+                         sizeof(kMode64Prologue), /*requireCcPad=*/true };
+  const uint32_t siteRva = ResolveReSite(spec);
+  g_mode64SiteRva.store(siteRva);
+  if (!siteRva) {
+    Log("Mode64: REJECT — ResolveReSite failed (expected mapped TRUE start 0x%X; mid 0x3247C "
+        "is unsafe)",
+        kMode64ViewConstExpectedRva);
     return false;
   }
-  Mode34WriteProbe(kMode64ViewConstRva);
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  const uintptr_t start = base + siteRva;
+  const char* tag = "?";
+  if (Mode32ClassifyPrologue(start, &tag) != Mode32Abi::Thiscall) {
+    Log("Mode64: REJECT exeRva=0x%X abi=%s (need thiscall ViewConst)", siteRva, tag);
+    return false;
+  }
+  Mode34WriteProbe(siteRva);
   if (!InstallDrawWalkAt(start)) {
     Mode34ClearProbe("MH fail");
-    Log("Mode64: InstallDrawWalkAt failed exeRva=0x%X", kMode64ViewConstRva);
+    Log("Mode64: InstallDrawWalkAt failed exeRva=0x%X", siteRva);
     return false;
   }
   g_mode64Es.store(0);
@@ -4273,9 +5003,10 @@ bool Mode64InstallCountHook() {
   g_mode64EntrySum = 0;
   g_mode64CountDone.store(false);
   g_drawWalkEntries.store(0);
-  Log("Mode64: COUNT armed exeRva=0x%X abi=%s (view-const apply; want avg in [0.8,4] "
-      "over %u EndScenes; dual=OFF SameFrameSeamGate=CLOSED)",
-      kMode64ViewConstRva, tag, kMode64CountEsNeed);
+  Log("Mode64: COUNT armed exeRva=0x%X abi=%s (ViewConst mapped TRUE start; sole E8 @0x9777C2 "
+      "gated by [0x1797694]; want avg in [0.8,4] over %u EndScenes; dual=OFF "
+      "SameFrameSeamGate=CLOSED)",
+      siteRva, tag, kMode64CountEsNeed);
   return true;
 }
 
@@ -4284,10 +5015,10 @@ void Mode64OnEndScene(IDirect3DDevice9* device) {
   if (g_mode64CountDone.load())
     return;
 
+  const uint32_t siteRva = g_mode64SiteRva.load();
   const uint32_t entries = g_drawWalkEntries.exchange(0);
   if (entries == 0xFFFFFFFFu) {
-    Log("Mode64: COUNT hook died @exeRva=0x%X — wrote stereo=45 (safe default)",
-        kMode64ViewConstRva);
+    Log("Mode64: COUNT hook died @exeRva=0x%X — wrote stereo=45 (safe default)", siteRva);
     Mode34ClearProbe("count died");
     if (g_drawWalkAddr) {
       MH_DisableHook(g_drawWalkAddr);
@@ -4304,8 +5035,8 @@ void Mode64OnEndScene(IDirect3DDevice9* device) {
   g_mode64EntrySum += entries;
   const uint32_t n = g_mode64CountEs.load();
   if (n <= 6 || (n % 15) == 0)
-    Log("Mode64: COUNT es#%u/%u entries=%u sum=%u exeRva=0x%X", n, kMode64CountEsNeed,
-        entries, g_mode64EntrySum, kMode64ViewConstRva);
+    Log("Mode64: COUNT es#%u/%u entries=%u sum=%u exeRva=0x%X", n, kMode64CountEsNeed, entries,
+        g_mode64EntrySum, siteRva);
 
   if (n < kMode64CountEsNeed)
     return;
@@ -4320,74 +5051,44 @@ void Mode64OnEndScene(IDirect3DDevice9* device) {
   }
   g_mode64CountDone.store(true);
   const bool okCadence = avg >= 0.8f && avg <= 4.f;
-  Log("Mode64: COUNT done exeRva=0x%X avgEntries=%.2f cadence=%s (want [0.8,4] ~1x/frame; "
-      "ret4 stackarg; 0 static E8 callers) SameFrameSeamGate=CLOSED dual=OFF",
-      kMode64ViewConstRva, avg, okCadence ? "PASS" : "REJECT");
+  Log("Mode64: COUNT done exeRva=0x%X avgEntries=%.2f cadence=%s (want [0.8,4] ~1x/frame) "
+      "SameFrameSeamGate=CLOSED dual=OFF",
+      siteRva, avg, okCadence ? "PASS" : "REJECT");
   if (okCadence)
-    Log("Mode64: next live step — stereo=65 VT178-LOG then stereo=66 PublishSync COUNT");
+    Log("Mode64: next live step — stereo=41 then 42 (ladder: 66→67→65→64 done)");
   else
-    Log("Mode64: cadence REJECT — not a ~1x/frame replay owner; keep stereo=45");
+    Log("Mode64: cadence REJECT — not ~1x/frame (or ViewConst gate [0x1797694] stays 0; "
+        "gate!=0 required; no static writer; prefer 66/67 already run); keep stereo=45");
   WriteStereoModeFile(45);
 }
 
-bool Mode66VerifyPrologue(uintptr_t start) {
-  const auto* b = reinterpret_cast<const uint8_t*>(start);
-  __try {
-    for (size_t i = 0; i < sizeof(kMode66Prologue); ++i) {
-      if (b[i] != kMode66Prologue[i])
-        return false;
-    }
-    return true;
-  } __except (EXCEPTION_EXECUTE_HANDLER) {
-    return false;
-  }
-}
-
-bool Mode66IsHookSafe(uintptr_t start, const char** tagOut) {
-  if (!Mode66VerifyPrologue(start))
-    return false;
-  if (start < 4)
-    return false;
-  const auto* b = reinterpret_cast<const uint8_t*>(start);
-  if (!(b[-1] == 0xCC && b[-2] == 0xCC)) {
-    if (tagOut)
-      *tagOut = "unpadded";
+bool Mode66InstallCountHook() {
+  // PublishSync sits after prior epilogue (not CC-pad) — requireCcPad=false.
+  const ReSiteSpec spec{ "PublishSync", kMode66Pattern, kMode66PublishSyncExpectedRva,
+                         kMode66Prologue, sizeof(kMode66Prologue), /*requireCcPad=*/false };
+  const uint32_t siteRva = ResolveReSite(spec);
+  g_mode66SiteRva.store(siteRva);
+  if (!siteRva) {
+    Log("Mode66: REJECT — ResolveReSite failed (expected mapped RVA 0x%X; old file-off "
+        "0x30300 was wrong)",
+        kMode66PublishSyncExpectedRva);
     return false;
   }
   const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
-  const uint32_t rva = static_cast<uint32_t>(start - base);
-  if (Mode34ForbiddenRva(rva))
+  const uintptr_t start = base + siteRva;
+  if (Mode34ForbiddenRva(siteRva)) {
+    Log("Mode66: REJECT exeRva=0x%X forbidden", siteRva);
     return false;
+  }
   const char* tag = "?";
   if (Mode32ClassifyPrologue(start, &tag) != Mode32Abi::Thiscall) {
-    if (tagOut)
-      *tagOut = tag;
+    Log("Mode66: REJECT exeRva=0x%X abi=%s (need thiscall PublishSync)", siteRva, tag);
     return false;
   }
-  if (tagOut)
-    *tagOut = tag;
-  return true;
-}
-
-bool Mode66InstallCountHook() {
-  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
-  const uintptr_t start = base + kMode66PublishSyncRva;
-  const char* tag = "?";
-  if (!Mode66IsHookSafe(start, &tag)) {
-    Log("Mode66: REJECT exeRva=0x%X abi=%s bytes=%02X %02X %02X %02X %02X %02X "
-        "(need 55 8B EC 83 E4 F8 51 56 8B F1 CC-pad thiscall PublishSync)",
-        kMode66PublishSyncRva, tag, reinterpret_cast<const uint8_t*>(start)[0],
-        reinterpret_cast<const uint8_t*>(start)[1],
-        reinterpret_cast<const uint8_t*>(start)[2],
-        reinterpret_cast<const uint8_t*>(start)[3],
-        reinterpret_cast<const uint8_t*>(start)[4],
-        reinterpret_cast<const uint8_t*>(start)[5]);
-    return false;
-  }
-  Mode34WriteProbe(kMode66PublishSyncRva);
+  Mode34WriteProbe(siteRva);
   if (!InstallDrawWalkAt(start)) {
     Mode34ClearProbe("MH fail");
-    Log("Mode66: InstallDrawWalkAt failed exeRva=0x%X", kMode66PublishSyncRva);
+    Log("Mode66: InstallDrawWalkAt failed exeRva=0x%X", siteRva);
     return false;
   }
   g_mode66Es.store(0);
@@ -4395,9 +5096,11 @@ bool Mode66InstallCountHook() {
   g_mode66EntrySum = 0;
   g_mode66CountDone.store(false);
   g_drawWalkEntries.store(0);
-  Log("Mode66: COUNT armed exeRva=0x%X abi=%s (PublishSync; 12 static E8 callers; want avg in "
-      "[0.8,4] over %u EndScenes; dual=OFF SameFrameSeamGate=CLOSED; no 0x300D0 hook)",
-      kMode66PublishSyncRva, tag, kMode66CountEsNeed);
+  Log("Mode66: COUNT armed exeRva=0x%X abi=%s (PublishSync mapped; 12 E8 sites: "
+      "11+PublishProj + 1 inside helper 0x31940; helper also x58 E8 — avg may be >4 SHARED; "
+      "upload fn 0x2A1E10 has two +178 paths (0x2A217D/0x2A25F9); "
+      "dual=OFF gate=CLOSED; %u EndScenes)",
+      siteRva, tag, kMode66CountEsNeed);
   return true;
 }
 
@@ -4406,10 +5109,10 @@ void Mode66OnEndScene(IDirect3DDevice9* device) {
   if (g_mode66CountDone.load())
     return;
 
+  const uint32_t siteRva = g_mode66SiteRva.load();
   const uint32_t entries = g_drawWalkEntries.exchange(0);
   if (entries == 0xFFFFFFFFu) {
-    Log("Mode66: COUNT hook died @exeRva=0x%X — wrote stereo=45 (safe default)",
-        kMode66PublishSyncRva);
+    Log("Mode66: COUNT hook died @exeRva=0x%X — wrote stereo=45 (safe default)", siteRva);
     Mode34ClearProbe("count died");
     if (g_drawWalkAddr) {
       MH_DisableHook(g_drawWalkAddr);
@@ -4427,7 +5130,7 @@ void Mode66OnEndScene(IDirect3DDevice9* device) {
   const uint32_t n = g_mode66CountEs.load();
   if (n <= 6 || (n % 15) == 0)
     Log("Mode66: COUNT es#%u/%u entries=%u sum=%u exeRva=0x%X", n, kMode66CountEsNeed, entries,
-        g_mode66EntrySum, kMode66PublishSyncRva);
+        g_mode66EntrySum, siteRva);
 
   if (n < kMode66CountEsNeed)
     return;
@@ -4441,17 +5144,676 @@ void Mode66OnEndScene(IDirect3DDevice9* device) {
     g_drawWalkAddr = nullptr;
   }
   g_mode66CountDone.store(true);
-  const bool okCadence = avg >= 0.8f && avg <= 4.f;
-  Log("Mode66: COUNT done exeRva=0x%X avgEntries=%.2f cadence=%s (want [0.8,4] ~1x/frame; "
-      "PublishSync prologue; active-view 0x300D0 is internal gate @0x30349) "
+  // PublishSync is shared (12 E8 + helper 0x31940×58). High avg = SHARED, not failure.
+  const char* cadence = "REJECT";
+  if (avg >= 0.8f && avg <= 4.f)
+    cadence = "PASS";
+  else if (avg > 4.f)
+    cadence = "SHARED";
+  Log("Mode66: COUNT done exeRva=0x%X avgEntries=%.2f cadence=%s "
+      "(PASS=[0.8,4] owner-like; SHARED=>4 shared publish; REJECT<0.8) "
       "SameFrameSeamGate=CLOSED dual=OFF",
-      kMode66PublishSyncRva, avg, okCadence ? "PASS" : "REJECT");
-  if (okCadence)
-    Log("Mode66: next live step — stereo=41 1min then stereo=42; compare cadence with Mode64 "
-        "and Mode65 activeView/slot178");
+      siteRva, avg, cadence);
+  if (cadence[0] == 'P' || cadence[0] == 'S')
+    Log("Mode66: next live step — stereo=67 ViewMatWriter COUNT then 65/41/42");
   else
-    Log("Mode66: cadence REJECT — PublishSync not ~1x/frame on this path; keep stereo=45");
+    Log("Mode66: cadence REJECT — PublishSync barely entered; keep stereo=45");
   WriteStereoModeFile(45);
+}
+
+bool Mode67InstallCountHook() {
+  const ReSiteSpec spec{ "ViewMatWriter", kMode67Pattern, kMode67ViewMatExpectedRva,
+                         kMode67Prologue, sizeof(kMode67Prologue), /*requireCcPad=*/true };
+  const uint32_t siteRva = ResolveReSite(spec);
+  g_mode67SiteRva.store(siteRva);
+  if (!siteRva) {
+    Log("Mode67: REJECT — ResolveReSite failed (expected mapped RVA 0x%X)",
+        kMode67ViewMatExpectedRva);
+    return false;
+  }
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  const uintptr_t start = base + siteRva;
+  if (Mode34ForbiddenRva(siteRva)) {
+    Log("Mode67: REJECT exeRva=0x%X forbidden", siteRva);
+    return false;
+  }
+  const char* tag = "?";
+  if (Mode32ClassifyPrologue(start, &tag) != Mode32Abi::Thiscall) {
+    Log("Mode67: REJECT exeRva=0x%X abi=%s (need thiscall ViewMatWriter)", siteRva, tag);
+    return false;
+  }
+  Mode34WriteProbe(siteRva);
+  if (!InstallDrawWalkAt(start)) {
+    Mode34ClearProbe("MH fail");
+    Log("Mode67: InstallDrawWalkAt failed exeRva=0x%X", siteRva);
+    return false;
+  }
+  g_mode67Es.store(0);
+  g_mode67CountEs.store(0);
+  g_mode67EntrySum = 0;
+  g_mode67CountDone.store(false);
+  g_drawWalkEntries.store(0);
+  Log("Mode67: COUNT armed exeRva=0x%X abi=%s (ViewMatWriter mapped; want avg in [0.8,4] "
+      "over %u EndScenes; dual=OFF SameFrameSeamGate=CLOSED)",
+      siteRva, tag, kMode67CountEsNeed);
+  return true;
+}
+
+void Mode67OnEndScene(IDirect3DDevice9* device) {
+  TemporalCapturePairHold(device);
+  if (g_mode67CountDone.load())
+    return;
+
+  const uint32_t siteRva = g_mode67SiteRva.load();
+  const uint32_t entries = g_drawWalkEntries.exchange(0);
+  if (entries == 0xFFFFFFFFu) {
+    Log("Mode67: COUNT hook died @exeRva=0x%X — wrote stereo=45 (safe default)", siteRva);
+    Mode34ClearProbe("count died");
+    if (g_drawWalkAddr) {
+      MH_DisableHook(g_drawWalkAddr);
+      MH_RemoveHook(g_drawWalkAddr);
+      g_origDrawWalk = nullptr;
+      g_drawWalkAddr = nullptr;
+    }
+    g_mode67CountDone.store(true);
+    WriteStereoModeFile(45);
+    return;
+  }
+
+  ++g_mode67CountEs;
+  g_mode67EntrySum += entries;
+  const uint32_t n = g_mode67CountEs.load();
+  if (n <= 6 || (n % 15) == 0)
+    Log("Mode67: COUNT es#%u/%u entries=%u sum=%u exeRva=0x%X", n, kMode67CountEsNeed, entries,
+        g_mode67EntrySum, siteRva);
+
+  if (n < kMode67CountEsNeed)
+    return;
+
+  const float avg = static_cast<float>(g_mode67EntrySum) / static_cast<float>(n);
+  Mode34ClearProbe("COUNT done");
+  if (g_drawWalkAddr) {
+    MH_DisableHook(g_drawWalkAddr);
+    MH_RemoveHook(g_drawWalkAddr);
+    g_origDrawWalk = nullptr;
+    g_drawWalkAddr = nullptr;
+  }
+  g_mode67CountDone.store(true);
+  // ViewMat has 9 E8 callers + dirty-flag rebuilds — avg>4 = SHARED, not failure.
+  const char* cadence = "REJECT";
+  if (avg >= 0.8f && avg <= 4.f)
+    cadence = "PASS";
+  else if (avg > 4.f)
+    cadence = "SHARED";
+  Log("Mode67: COUNT done exeRva=0x%X avgEntries=%.2f cadence=%s "
+      "(PASS=[0.8,4]; SHARED=>4 dirty rebuilds; REJECT<0.8; ViewMatWriter) "
+      "SameFrameSeamGate=CLOSED dual=OFF",
+      siteRva, avg, cadence);
+  if (cadence[0] == 'P' || cadence[0] == 'S')
+    Log("Mode67: next live step — stereo=65 then 41/42; SameFrameSeamGate stays CLOSED");
+  else
+    Log("Mode67: cadence REJECT — ViewMatWriter barely entered; keep stereo=45");
+  WriteStereoModeFile(45);
+}
+
+bool Mode68InstallCountHook() {
+  // ReplayDispatch is thiscall without classic frame (cmp [gate]; push esi; mov esi,ecx).
+  // requireCcPad=false — mid-function neighbors / no INT3 pad before next symbol.
+  const ReSiteSpec spec{"ReplayDispatch", kMode68Pattern, kMode68ReplayDispatchExpectedRva,
+                        kMode68Prologue, sizeof(kMode68Prologue), /*requireCcPad=*/false};
+  const uint32_t siteRva = ResolveReSite(spec);
+  g_mode68SiteRva.store(siteRva);
+  if (!siteRva) {
+    Log("Mode68: REJECT — ResolveReSite failed (expected mapped RVA 0x%X)",
+        kMode68ReplayDispatchExpectedRva);
+    return false;
+  }
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  const uintptr_t start = base + siteRva;
+  if (Mode34ForbiddenRva(siteRva)) {
+    Log("Mode68: REJECT exeRva=0x%X forbidden", siteRva);
+    return false;
+  }
+  // Byte gate only — Mode32ClassifyPrologue wants 55 8B EC; ReplayDispatch is 83 3D…56 8B F1.
+  if (std::memcmp(reinterpret_cast<const void*>(start), kMode68Prologue,
+                  sizeof(kMode68Prologue)) != 0) {
+    Log("Mode68: REJECT exeRva=0x%X prologue mismatch (need ReplayDispatch cmp/gate)", siteRva);
+    return false;
+  }
+  Mode34WriteProbe(siteRva);
+  if (!InstallDrawWalkAt(start)) {
+    Mode34ClearProbe("MH fail");
+    Log("Mode68: InstallDrawWalkAt failed exeRva=0x%X", siteRva);
+    return false;
+  }
+  g_mode68Es.store(0);
+  g_mode68CountEs.store(0);
+  g_mode68EntrySum = 0;
+  g_mode68CountDone.store(false);
+  g_drawWalkEntries.store(0);
+  Log("Mode68: COUNT armed exeRva=0x%X abi=thiscall-esi (ReplayDispatch→slot178 0x220D0; "
+      "want avg in [0.8,4] over %u EndScenes; dual=OFF SameFrameSeamGate=CLOSED)",
+      siteRva, kMode68CountEsNeed);
+  return true;
+}
+
+void Mode68OnEndScene(IDirect3DDevice9* device) {
+  TemporalCapturePairHold(device);
+  if (g_mode68CountDone.load())
+    return;
+
+  const uint32_t siteRva = g_mode68SiteRva.load();
+  const uint32_t entries = g_drawWalkEntries.exchange(0);
+  if (entries == 0xFFFFFFFFu) {
+    Log("Mode68: COUNT hook died @exeRva=0x%X — wrote stereo=45 (safe default)", siteRva);
+    Mode34ClearProbe("count died");
+    if (g_drawWalkAddr) {
+      MH_DisableHook(g_drawWalkAddr);
+      MH_RemoveHook(g_drawWalkAddr);
+      g_origDrawWalk = nullptr;
+      g_drawWalkAddr = nullptr;
+    }
+    g_mode68CountDone.store(true);
+    WriteStereoModeFile(45);
+    return;
+  }
+
+  ++g_mode68CountEs;
+  g_mode68EntrySum += entries;
+  const uint32_t n = g_mode68CountEs.load();
+  if (n <= 6 || (n % 15) == 0)
+    Log("Mode68: COUNT es#%u/%u entries=%u sum=%u exeRva=0x%X", n, kMode68CountEsNeed, entries,
+        g_mode68EntrySum, siteRva);
+
+  if (n < kMode68CountEsNeed)
+    return;
+
+  const float avg = static_cast<float>(g_mode68EntrySum) / static_cast<float>(n);
+  Mode34ClearProbe("COUNT done");
+  if (g_drawWalkAddr) {
+    MH_DisableHook(g_drawWalkAddr);
+    MH_RemoveHook(g_drawWalkAddr);
+    g_origDrawWalk = nullptr;
+    g_drawWalkAddr = nullptr;
+  }
+  g_mode68CountDone.store(true);
+  // Exactly 2 E8 callers — owner-like cadence expected in [0.8,4] if view active.
+  const char* cadence = "REJECT";
+  if (avg >= 0.8f && avg <= 4.f)
+    cadence = "PASS";
+  else if (avg > 4.f)
+    cadence = "SHARED";
+  Log("Mode68: COUNT done exeRva=0x%X avgEntries=%.2f cadence=%s "
+      "(PASS=[0.8,4] owner-like ReplayDispatch; SHARED=>4; REJECT<0.8; "
+      "bridge to slot178=0x220D0) SameFrameSeamGate=CLOSED dual=OFF",
+      siteRva, avg, cadence);
+  if (cadence[0] == 'P')
+    Log("Mode68: PASS — candidate seam for future dual BEFORE call [eax+0x178]; "
+        "keep SameFrameSeamGate=CLOSED until dual plan reviewed; kill=45");
+  else if (cadence[0] == 'S')
+    Log("Mode68: SHARED — more entries than 2-caller model; inspect callers before dual; kill=45");
+  else
+    Log("Mode68: cadence REJECT — ReplayDispatch barely entered; keep stereo=45");
+  WriteStereoModeFile(45);
+}
+
+bool Mode69InstallPeekHook() {
+  const ReSiteSpec spec{"ReplayDispatch", kMode69Pattern, kMode69ReplayDispatchExpectedRva,
+                        kMode69Prologue, sizeof(kMode69Prologue), /*requireCcPad=*/false};
+  const uint32_t siteRva = ResolveReSite(spec);
+  g_mode69SiteRva.store(siteRva);
+  if (!siteRva) {
+    Log("Mode69: REJECT — ResolveReSite failed (expected mapped RVA 0x%X)",
+        kMode69ReplayDispatchExpectedRva);
+    return false;
+  }
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  const uintptr_t start = base + siteRva;
+  if (Mode34ForbiddenRva(siteRva)) {
+    Log("Mode69: REJECT exeRva=0x%X forbidden", siteRva);
+    return false;
+  }
+  if (std::memcmp(reinterpret_cast<const void*>(start), kMode69Prologue,
+                  sizeof(kMode69Prologue)) != 0) {
+    Log("Mode69: REJECT exeRva=0x%X prologue mismatch", siteRva);
+    return false;
+  }
+  Mode34WriteProbe(siteRva);
+  if (!InstallDrawWalkAt(start)) {
+    Mode34ClearProbe("MH fail");
+    Log("Mode69: InstallDrawWalkAt failed exeRva=0x%X", siteRva);
+    return false;
+  }
+  g_mode69Es.store(0);
+  g_mode69PeekEs.store(0);
+  g_mode69WaitEs.store(0);
+  g_mode69Live.store(false);
+  g_mode69PeekDone.store(false);
+  g_mode69PeekOk.store(0);
+  g_mode69PeekFail.store(0);
+  g_mode69LogLeft.store(8);
+  g_mode69HaveLast = false;
+  g_mode69MaxDelta = 0.f;
+  g_drawWalkEntries.store(0);
+  Log("Mode69: PEEK armed exeRva=0x%X (WAIT for non-identity view+0x80, then %u ES; "
+      "waitCap=%u; dual=OFF SameFrameSeamGate=CLOSED)",
+      siteRva, kMode69PeekEsNeed, kMode69WaitEsMax);
+  return true;
+}
+
+void Mode69OnEndScene(IDirect3DDevice9* device) {
+  TemporalCapturePairHold(device);
+  if (g_mode69PeekDone.load())
+    return;
+
+  const uint32_t siteRva = g_mode69SiteRva.load();
+  const uint32_t entries = g_drawWalkEntries.exchange(0);
+  if (entries == 0xFFFFFFFFu) {
+    Log("Mode69: PEEK hook died @exeRva=0x%X — wrote stereo=45 (safe default)", siteRva);
+    Mode34ClearProbe("peek died");
+    if (g_drawWalkAddr) {
+      MH_DisableHook(g_drawWalkAddr);
+      MH_RemoveHook(g_drawWalkAddr);
+      g_origDrawWalk = nullptr;
+      g_drawWalkAddr = nullptr;
+    }
+    g_mode69PeekDone.store(true);
+    WriteStereoModeFile(45);
+    return;
+  }
+
+  if (!g_mode69Live.load()) {
+    ++g_mode69WaitEs;
+    const uint32_t w = g_mode69WaitEs.load();
+    if (w <= 6 || (w % 60) == 0)
+      Log("Mode69: WAIT es#%u/%u entries=%u ok=%u (need non-identity — load into world)",
+          w, kMode69WaitEsMax, entries, g_mode69PeekOk.load());
+    if (w < kMode69WaitEsMax)
+      return;
+    Mode34ClearProbe("WAIT timeout");
+    if (g_drawWalkAddr) {
+      MH_DisableHook(g_drawWalkAddr);
+      MH_RemoveHook(g_drawWalkAddr);
+      g_origDrawWalk = nullptr;
+      g_drawWalkAddr = nullptr;
+    }
+    g_mode69PeekDone.store(true);
+    Log("Mode69: PEEK done exeRva=0x%X cadence=REJECT ok=%u fail=%u "
+        "(only identity at view+0x80 during wait) dual=OFF",
+        siteRva, g_mode69PeekOk.load(), g_mode69PeekFail.load());
+    WriteStereoModeFile(45);
+    return;
+  }
+
+  ++g_mode69PeekEs;
+  const uint32_t n = g_mode69PeekEs.load();
+  if (n <= 6 || (n % 15) == 0)
+    Log("Mode69: PEEK es#%u/%u entries=%u ok=%u fail=%u maxDelta2=%.6f exeRva=0x%X", n,
+        kMode69PeekEsNeed, entries, g_mode69PeekOk.load(), g_mode69PeekFail.load(),
+        g_mode69MaxDelta, siteRva);
+
+  if (n < kMode69PeekEsNeed)
+    return;
+
+  Mode34ClearProbe("PEEK done");
+  if (g_drawWalkAddr) {
+    MH_DisableHook(g_drawWalkAddr);
+    MH_RemoveHook(g_drawWalkAddr);
+    g_origDrawWalk = nullptr;
+    g_drawWalkAddr = nullptr;
+  }
+  g_mode69PeekDone.store(true);
+  const uint32_t ok = g_mode69PeekOk.load();
+  const uint32_t fail = g_mode69PeekFail.load();
+  const char* cadence = "REJECT";
+  if (ok >= 20 && fail == 0 && g_mode69MaxDelta > 1e-8f)
+    cadence = "PASS";
+  else if (ok >= 20 && fail == 0 && g_mode69Live.load())
+    cadence = "STATIC";
+  else if (ok >= 20)
+    cadence = "PARTIAL";
+  Log("Mode69: PEEK done exeRva=0x%X cadence=%s ok=%u fail=%u maxDelta2=%.6f "
+      "(PASS=live+changing; STATIC=live but frozen; REJECT=no live) dual=OFF",
+      siteRva, cadence, ok, fail, g_mode69MaxDelta);
+  if (g_mode69HaveLast)
+    Log("Mode69: last t=(%.3f,%.3f,%.3f) — inject L/R here before call @0x30D0D (not yet)",
+        g_mode69LastMat[12], g_mode69LastMat[13], g_mode69LastMat[14]);
+  // Continuous test: chain to Mode 70 (activeView filter). Hook-death still writes 45.
+  WriteStereoModeFile(70);
+}
+
+bool Mode70InstallPeekHook() {
+  const ReSiteSpec spec{"ReplayDispatch", kMode70Pattern, kMode70ReplayDispatchExpectedRva,
+                        kMode70Prologue, sizeof(kMode70Prologue), /*requireCcPad=*/false};
+  const uint32_t siteRva = ResolveReSite(spec);
+  g_mode70SiteRva.store(siteRva);
+  if (!siteRva) {
+    Log("Mode70: REJECT — ResolveReSite failed (expected mapped RVA 0x%X)",
+        kMode70ReplayDispatchExpectedRva);
+    return false;
+  }
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  const uintptr_t start = base + siteRva;
+  if (Mode34ForbiddenRva(siteRva)) {
+    Log("Mode70: REJECT exeRva=0x%X forbidden", siteRva);
+    return false;
+  }
+  if (std::memcmp(reinterpret_cast<const void*>(start), kMode70Prologue,
+                  sizeof(kMode70Prologue)) != 0) {
+    Log("Mode70: REJECT exeRva=0x%X prologue mismatch", siteRva);
+    return false;
+  }
+  Mode34WriteProbe(siteRva);
+  if (!InstallDrawWalkAt(start)) {
+    Mode34ClearProbe("MH fail");
+    Log("Mode70: InstallDrawWalkAt failed exeRva=0x%X", siteRva);
+    return false;
+  }
+  g_mode70WaitEs.store(0);
+  g_mode70PeekEs.store(0);
+  g_mode70Live.store(false);
+  g_mode70PeekDone.store(false);
+  g_mode70LiveTotal.store(0);
+  g_mode70ActiveHit.store(0);
+  g_mode70ActiveMiss.store(0);
+  g_mode70LogLeft.store(8);
+  g_mode70HaveLast = false;
+  g_mode70MaxDelta = 0.f;
+  g_drawWalkEntries.store(0);
+  Log("Mode70: PEEK armed exeRva=0x%X (WAIT activeView+live, then %u ES; waitCap=%u; "
+      "dual=OFF; success keeps stereo=70)",
+      siteRva, kMode70PeekEsNeed, kMode70WaitEsMax);
+  return true;
+}
+
+void Mode70OnEndScene(IDirect3DDevice9* device) {
+  TemporalCapturePairHold(device);
+  if (g_mode70PeekDone.load())
+    return;
+
+  const uint32_t siteRva = g_mode70SiteRva.load();
+  const uint32_t entries = g_drawWalkEntries.exchange(0);
+  if (entries == 0xFFFFFFFFu) {
+    Log("Mode70: PEEK hook died @exeRva=0x%X — wrote stereo=45 (safe default)", siteRva);
+    Mode34ClearProbe("peek died");
+    if (g_drawWalkAddr) {
+      MH_DisableHook(g_drawWalkAddr);
+      MH_RemoveHook(g_drawWalkAddr);
+      g_origDrawWalk = nullptr;
+      g_drawWalkAddr = nullptr;
+    }
+    g_mode70PeekDone.store(true);
+    WriteStereoModeFile(45);
+    return;
+  }
+
+  if (!g_mode70Live.load()) {
+    ++g_mode70WaitEs;
+    const uint32_t w = g_mode70WaitEs.load();
+    if (w <= 6 || (w % 60) == 0)
+      Log("Mode70: WAIT es#%u/%u entries=%u liveTot=%u hit=%u miss=%u "
+          "(need activeView+live — load into world)",
+          w, kMode70WaitEsMax, entries, g_mode70LiveTotal.load(), g_mode70ActiveHit.load(),
+          g_mode70ActiveMiss.load());
+    if (w < kMode70WaitEsMax)
+      return;
+    Mode34ClearProbe("WAIT timeout");
+    if (g_drawWalkAddr) {
+      MH_DisableHook(g_drawWalkAddr);
+      MH_RemoveHook(g_drawWalkAddr);
+      g_origDrawWalk = nullptr;
+      g_drawWalkAddr = nullptr;
+    }
+    g_mode70PeekDone.store(true);
+    Log("Mode70: PEEK done exeRva=0x%X cadence=REJECT liveTot=%u hit=%u miss=%u "
+        "(no activeView+live during wait) dual=OFF",
+        siteRva, g_mode70LiveTotal.load(), g_mode70ActiveHit.load(),
+        g_mode70ActiveMiss.load());
+    // Keep stereo=70 for retry after load — user continuous test.
+    return;
+  }
+
+  ++g_mode70PeekEs;
+  const uint32_t n = g_mode70PeekEs.load();
+  if (n <= 6 || (n % 15) == 0)
+    Log("Mode70: PEEK es#%u/%u entries=%u hit=%u miss=%u maxDelta2=%.6f exeRva=0x%X", n,
+        kMode70PeekEsNeed, entries, g_mode70ActiveHit.load(), g_mode70ActiveMiss.load(),
+        g_mode70MaxDelta, siteRva);
+
+  if (n < kMode70PeekEsNeed)
+    return;
+
+  Mode34ClearProbe("PEEK done");
+  if (g_drawWalkAddr) {
+    MH_DisableHook(g_drawWalkAddr);
+    MH_RemoveHook(g_drawWalkAddr);
+    g_origDrawWalk = nullptr;
+    g_drawWalkAddr = nullptr;
+  }
+  g_mode70PeekDone.store(true);
+  const uint32_t hit = g_mode70ActiveHit.load();
+  const uint32_t miss = g_mode70ActiveMiss.load();
+  const uint32_t live = g_mode70LiveTotal.load();
+  const float hitRate = live ? (100.f * static_cast<float>(hit) / static_cast<float>(live)) : 0.f;
+  const char* cadence = "REJECT";
+  if (hit >= 20 && g_mode70MaxDelta > 1e-8f)
+    cadence = "PASS";
+  else if (hit >= 20)
+    cadence = "STATIC";
+  else if (hit > 0)
+    cadence = "PARTIAL";
+  Log("Mode70: PEEK done exeRva=0x%X cadence=%s hit=%u miss=%u liveTot=%u hitRate=%.1f%% "
+      "maxDelta2=%.6f (PASS=activeView live+changing) dual=OFF SameFrameSeamGate=CLOSED",
+      siteRva, cadence, hit, miss, live, hitRate, g_mode70MaxDelta);
+  if (g_mode70HaveLast)
+    Log("Mode70: last t=(%.3f,%.3f,%.3f) — next: dual inject only when self==activeView",
+        g_mode70LastMat[12], g_mode70LastMat[13], g_mode70LastMat[14]);
+  // Continuous test: do NOT force stereo=45 on success.
+}
+
+bool Mode71InstallInjectHook() {
+  // Hard-disable: in-place write to activeView+0x80 froze the game twice (safe gates
+  // were not enough). Keep symbol so stereo=71 remaps cleanly; never MinHook for 71.
+  Log("Mode71: DISABLED — in-place view+0x80 inject freezes (2026-07-25); use stereo=45; "
+      "next inject path must not mutate live view object");
+  g_mode71Armed.store(false);
+  g_mode71Dead.store(false);
+  return false;
+}
+
+void Mode71OnEndScene(IDirect3DDevice9* device) {
+  TemporalCapturePairHold(device);
+  // Next frame may inject once with the eye we just latched.
+  g_mode71Budget.store(1);
+  if (g_mode71Dead.load()) {
+    Mode34ClearProbe("inject died");
+    if (g_drawWalkAddr) {
+      MH_DisableHook(g_drawWalkAddr);
+      MH_RemoveHook(g_drawWalkAddr);
+      g_origDrawWalk = nullptr;
+      g_drawWalkAddr = nullptr;
+    }
+    g_mode71Armed.store(false);
+    WriteStereoModeFile(45);
+    return;
+  }
+  const uint32_t entries = g_drawWalkEntries.exchange(0);
+  if (entries == 0xFFFFFFFFu) {
+    g_mode71Dead.store(true);
+    return;
+  }
+  static uint32_t s_es = 0;
+  ++s_es;
+  if (s_es <= 6 || (s_es % 120) == 0)
+    Log("Mode71: es#%u entries=%u injects=%u skip=%u rejectMat=%u budget=%u sep=%.0fcm "
+        "scale=%.2f eye=%d (SAFE retest; kill=45)",
+        s_es, entries, g_mode71Injects.load(), g_mode71Skip.load(), g_mode71RejectMat.load(),
+        g_mode71Budget.load(), GetStereoSepMeters() * 100.f, GetStereoScale(),
+        static_cast<int>(GetStereoEye()));
+}
+
+bool Mode72InstallHook() {
+  const ReSiteSpec spec{"SetVSConstF", kMode72Pattern, kMode72SetVSConstExpectedRva,
+                        kMode72Prologue, sizeof(kMode72Prologue), /*requireCcPad=*/false};
+  const uint32_t siteRva = ResolveReSite(spec);
+  g_mode72SiteRva.store(siteRva);
+  if (!siteRva) {
+    Log("Mode72: REJECT — ResolveReSite failed (expected mapped RVA 0x%X)",
+        kMode72SetVSConstExpectedRva);
+    return false;
+  }
+  if (Mode34ForbiddenRva(siteRva)) {
+    Log("Mode72: REJECT exeRva=0x%X forbidden", siteRva);
+    return false;
+  }
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  const uintptr_t start = base + siteRva;
+  if (std::memcmp(reinterpret_cast<const void*>(start), kMode72Prologue,
+                  sizeof(kMode72Prologue)) != 0) {
+    Log("Mode72: REJECT exeRva=0x%X prologue mismatch", siteRva);
+    return false;
+  }
+  if (g_mode72HookAddr) {
+    MH_DisableHook(g_mode72HookAddr);
+    MH_RemoveHook(g_mode72HookAddr);
+    g_mode72HookAddr = nullptr;
+    g_origMode72SetVS = nullptr;
+  }
+  Mode34WriteProbe(siteRva);
+  if (MH_CreateHook(reinterpret_cast<void*>(start), reinterpret_cast<void*>(&HookMode72SetVSConstF),
+                    reinterpret_cast<void**>(&g_origMode72SetVS)) != MH_OK ||
+      MH_EnableHook(reinterpret_cast<void*>(start)) != MH_OK) {
+    Mode34ClearProbe("MH fail");
+    g_origMode72SetVS = nullptr;
+    Log("Mode72: MH_CreateHook failed exeRva=0x%X", siteRva);
+    return false;
+  }
+  g_mode72HookAddr = reinterpret_cast<void*>(start);
+  g_mode72Armed.store(true);
+  g_mode72Dead.store(false);
+  g_mode72Injects.store(0);
+  g_mode72Skip.store(0);
+  g_mode72RejectMat.store(0);
+  g_mode72Budget.store(1);
+  Log("Mode72: INJECT armed exeRva=0x%X (SetVSConstF src-COPY; never writes view+0x80; "
+      "1/ES; unit-right; motion-guard OFF; halfSep floor 5cm for visibility; "
+      "SameFrameSeamGate=CLOSED — still TEMPORAL not true dual)",
+      siteRva);
+  return true;
+}
+
+void Mode72OnEndScene(IDirect3DDevice9* device) {
+  TemporalCapturePairHold(device);
+  g_mode72Budget.store(1);
+  if (g_mode72Dead.load()) {
+    Mode34ClearProbe("Mode72 dead");
+    if (g_mode72HookAddr) {
+      MH_DisableHook(g_mode72HookAddr);
+      MH_RemoveHook(g_mode72HookAddr);
+      g_mode72HookAddr = nullptr;
+      g_origMode72SetVS = nullptr;
+    }
+    g_mode72Armed.store(false);
+    WriteStereoModeFile(45);
+    Log("Mode72: wrote stereo=45 after fault");
+    return;
+  }
+  static uint32_t s_es = 0;
+  ++s_es;
+  if (s_es <= 6 || (s_es % 120) == 0)
+    Log("Mode72: es#%u injects=%u skip=%u rejectMat=%u sepFile=%.0fcm halfFloor=5cm "
+        "scale=%.2f eye=%d motionGuard=OFF (temporal L≠R; kill=45)",
+        s_es, g_mode72Injects.load(), g_mode72Skip.load(), g_mode72RejectMat.load(),
+        GetStereoSepMeters() * 100.f, GetStereoScale(), static_cast<int>(GetStereoEye()));
+}
+
+void Mode74UpdateStreamingGate() {
+  const uint32_t inj = g_mode72Injects.load();
+  // Dual frames count as live even when Mode72 inject count stalls (CamMatrix IPD
+  // can supply L≠R while SetVSConstF injects do not climb every EndScene).
+  const bool dualThisEs = g_mode74DidDualThisFrame.load();
+  const bool liveThisEs = (inj > g_mode74LastInjects) || dualThisEs;
+  g_mode74LastInjects = inj;
+
+  if (g_mode74DualDead.load() || !g_mode74DualEnabled.load()) {
+    if (g_mode74GateOpen.exchange(false))
+      Log("Mode74: streaming gate CLOSED (dual permanently dead)");
+    g_mode74LiveStreak.store(0);
+    g_mode74MissStreak.store(0);
+    return;
+  }
+
+  if (liveThisEs) {
+    g_mode74MissStreak.store(0);
+    const uint32_t streak = g_mode74LiveStreak.fetch_add(1) + 1;
+    if (!g_mode74GateOpen.load() && streak >= kMode74GateNeedLiveEs) {
+      g_mode74GateOpen.store(true);
+      g_mode74BuildTick.store(0);
+      Log("Mode74: streaming gate OPEN after %u live EndScenes (activeView+t²≥10; "
+          "every-frame BuildRootA×2 dual 1/%u; STICKY open — no miss re-close; kill=45)",
+          streak, kMode74DualEveryN);
+    }
+  } else {
+    g_mode74LiveStreak.store(0);
+    const uint32_t miss = g_mode74MissStreak.fetch_add(1) + 1;
+    // Sticky OPEN: never fall back to Mode72 temporal mid-session. Miss-of-inject
+    // was a false positive during every-frame dual (EndScene can outpace BuildRootA;
+    // inject counter stalls while same-frame L≠R still works) → CLOSE/OPEN flicker.
+    if (!g_mode74GateOpen.load() && (miss <= 3 || (miss % 120) == 0)) {
+      Log("Mode74: gate still CLOSED miss=%u (need %u live ES before dual)", miss,
+          kMode74GateNeedLiveEs);
+    }
+  }
+}
+
+void Mode74OnEndScene(IDirect3DDevice9* device) {
+  if (g_mode72Dead.load()) {
+    Mode34ClearProbe("Mode74/72 dead");
+    if (g_mode72HookAddr) {
+      MH_DisableHook(g_mode72HookAddr);
+      MH_RemoveHook(g_mode72HookAddr);
+      g_mode72HookAddr = nullptr;
+      g_origMode72SetVS = nullptr;
+    }
+    g_mode72Armed.store(false);
+    g_mode74GateOpen.store(false);
+    WriteStereoModeFile(45);
+    Log("Mode74: wrote stereo=45 after SetVSConstF fault");
+    return;
+  }
+
+  Mode74UpdateStreamingGate();
+
+  // Dual frames that ran BuildRootA×2 skip temporal capture; else Mode72 temporal
+  // ONLY while gate CLOSED. When gate OPEN, never temporal eye-flip (flicker root).
+  const bool dualCaptured = Mode74ShouldDual() && g_mode74DidDualThisFrame.exchange(false);
+  const bool gateOpen = g_mode74GateOpen.load() && !g_mode74DualDead.load();
+  if (dualCaptured || gateOpen) {
+    // Captures happened in HookRoot1 dual (or hold last same-frame pair).
+    IDirect3DSurface9* bb = nullptr;
+    if (SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
+      D3DSURFACE_DESC desc{};
+      bb->GetDesc(&desc);
+      bb->Release();
+      uint32_t rtW = desc.Width, rtH = desc.Height;
+      ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
+      EnsureEyeRts(device, rtW, rtH);
+    }
+  } else {
+    // Gate CLOSED → Mode72 temporal path (streaming-safe before in-world).
+    TemporalCapturePairHold(device);
+    g_mode72Budget.store(1);
+  }
+
+  static uint32_t s_es = 0;
+  ++s_es;
+  if (s_es <= 6 || (s_es % 120) == 0)
+    Log("Mode74: es#%u gate=%s dualN=%u liveStreak=%u miss=%u injects=%u "
+        "sep=%.0fcm every=1/%u stickyOpen=1 (CLOSED=Mode72; OPEN=every-frame SAME-FRAME; "
+        "kill=45)",
+        s_es, g_mode74GateOpen.load() ? "OPEN" : "CLOSED", g_mode74DualN.load(),
+        g_mode74LiveStreak.load(), g_mode74MissStreak.load(), g_mode72Injects.load(),
+        GetStereoSepMeters() * 100.f, kMode74DualEveryN);
 }
 
 bool Mode65ReadDeviceVtable(uint32_t* outDevice, uint32_t* outVt, uint32_t* out178,
@@ -4524,6 +5886,17 @@ void Mode65OnEndScene(IDirect3DDevice9* device) {
     Log("Mode65: VT178-LOG es#%u/%u device=0x%X rva=0x%X vtable=0x%X slot178=0x%X "
         "slot1B4=0x%X replayGate=%u activeView=0x%X hook=NO",
         es, kMode65LogEsNeed, dev, devRva, vtRva, r178, r1B4, gate, actRva);
+    // First bytes of slot178 target (compare with live ReplayDispatch path @0x30D0D).
+    if (s178) {
+      __try {
+        const auto* p = reinterpret_cast<const uint8_t*>(static_cast<uintptr_t>(s178));
+        Log("Mode65: slot178 bytes %02X %02X %02X %02X %02X %02X %02X %02X "
+            "(want stable target; SameFrameSeamGate=CLOSED)",
+            p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]);
+      } __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log("Mode65: slot178 bytes UNREADABLE");
+      }
+    }
   }
   g_mode65LastDevice = dev;
   g_mode65LastVt178 = s178;
@@ -4533,8 +5906,9 @@ void Mode65OnEndScene(IDirect3DDevice9* device) {
     return;
 
   g_mode65LogDone.store(true);
-  Log("Mode65: VT178-LOG done (%u EndScenes) — compare slot178 RVAs with Mode42 OWNER-EDGE; "
-      "next: stereo=66 PublishSync COUNT then 41/42; SameFrameSeamGate=CLOSED hook=NO",
+  Log("Mode65: VT178-LOG done (%u EndScenes) — compare slot178 with Mode42 OWNER-EDGE "
+      "rets 0x30D13 / 0x2A2183 / 0x2A25FF (ReplayGate triad 0x30D0D+0x2A217D+0x2A25F9); "
+      "next: stereo=66 then 67; SameFrameSeamGate=CLOSED hook=NO",
       kMode65LogEsNeed);
   WriteStereoModeFile(45);
 }
@@ -5465,8 +6839,8 @@ bool InstallStereoRenderHooks() {
         g_mode64EntrySum = 0;
         g_mode64CountDone.store(false);
         const bool countOk = Mode64InstallCountHook();
-        Log("StereoRender: mode 64 VIEW-CONST COUNT (Mode45 renderer; hook @0x3187C "
-            "COUNT-only ≥45 ES; dual=OFF; default stereo stays 45) ok=%d fovSite=%d "
+        Log("StereoRender: mode 64 VIEW-CONST COUNT (Mode45 renderer; AOB→mapped TRUE start "
+            "0x32470; COUNT-only ≥45 ES; dual=OFF; default stereo stays 45) ok=%d fovSite=%d "
             "countHook=%d",
             g_ok.load() ? 1 : 0, fovOk ? 1 : 0, countOk ? 1 : 0);
         Log("StereoRender: how-to — edit gtaiv_dxvk_vr.stereo to 64; play 1 calm minute; "
@@ -5490,12 +6864,125 @@ bool InstallStereoRenderHooks() {
         g_mode66EntrySum = 0;
         g_mode66CountDone.store(false);
         const bool countOk = Mode66InstallCountHook();
-        Log("StereoRender: mode 66 PUBLISHSYNC COUNT (Mode45 renderer; hook @0x30300 "
-            "COUNT-only ≥45 ES; dual=OFF; no 0x300D0 hook) ok=%d fovSite=%d countHook=%d",
+        Log("StereoRender: mode 66 PUBLISHSYNC COUNT (Mode45 renderer; AOB→mapped 0x30F00; "
+            "COUNT-only ≥45 ES; dual=OFF; no 0x30CD0 hook) ok=%d fovSite=%d countHook=%d",
             g_ok.load() ? 1 : 0, fovOk ? 1 : 0, countOk ? 1 : 0);
         Log("StereoRender: how-to — edit gtaiv_dxvk_vr.stereo to 66; play 1 calm minute; "
             "read Mode66: COUNT lines; file reverts to 45 when done");
         Log("StereoRender: kill-switch - stereo=45 or delete gtaiv_dxvk_vr.stereo");
+      } else if (mode == StereoMode::ViewMatWriterCountProbe) {
+        LogRePatternValidationOnce();
+        g_mode67Es.store(0);
+        g_mode67CountEs.store(0);
+        g_mode67EntrySum = 0;
+        g_mode67CountDone.store(false);
+        const bool countOk = Mode67InstallCountHook();
+        Log("StereoRender: mode 67 VIEWMAT COUNT (Mode45 renderer; AOB→mapped 0x314C0; "
+            "COUNT-only ≥45 ES; dual=OFF) ok=%d fovSite=%d countHook=%d",
+            g_ok.load() ? 1 : 0, fovOk ? 1 : 0, countOk ? 1 : 0);
+        Log("StereoRender: how-to — edit gtaiv_dxvk_vr.stereo to 67; play 1 calm minute; "
+            "read Mode67: COUNT lines; file reverts to 45 when done");
+        Log("StereoRender: kill-switch - stereo=45 or delete gtaiv_dxvk_vr.stereo");
+      } else if (mode == StereoMode::ReplayDispatchCountProbe) {
+        LogRePatternValidationOnce();
+        g_mode68Es.store(0);
+        g_mode68CountEs.store(0);
+        g_mode68EntrySum = 0;
+        g_mode68CountDone.store(false);
+        const bool countOk = Mode68InstallCountHook();
+        Log("StereoRender: mode 68 REPLAYDISPATCH COUNT (Mode45 renderer; AOB→mapped 0x30CD0; "
+            "COUNT-only ≥45 ES; dual=OFF; bridge→slot178 0x220D0) ok=%d fovSite=%d countHook=%d",
+            g_ok.load() ? 1 : 0, fovOk ? 1 : 0, countOk ? 1 : 0);
+        Log("StereoRender: how-to — edit gtaiv_dxvk_vr.stereo to 68; play 1 calm minute; "
+            "read Mode68: COUNT lines; file reverts to 45 when done");
+        Log("StereoRender: kill-switch - stereo=45 or delete gtaiv_dxvk_vr.stereo");
+      } else if (mode == StereoMode::ReplayDispatchMatPeek) {
+        LogRePatternValidationOnce();
+        g_mode69Es.store(0);
+        g_mode69PeekEs.store(0);
+        g_mode69WaitEs.store(0);
+        g_mode69Live.store(false);
+        g_mode69PeekDone.store(false);
+        const bool peekOk = Mode69InstallPeekHook();
+        Log("StereoRender: mode 69 REPLAYDISPATCH MAT-PEEK (Mode45 renderer; AOB→mapped 0x30CD0; "
+            "READ-ONLY view+0x80; WAIT for live then sample; dual=OFF) ok=%d fovSite=%d peekHook=%d",
+            g_ok.load() ? 1 : 0, fovOk ? 1 : 0, peekOk ? 1 : 0);
+        Log("StereoRender: how-to — edit gtaiv_dxvk_vr.stereo to 69; play 1 calm minute; "
+            "read Mode69: PEEK lines; file reverts to 45 when done");
+        Log("StereoRender: kill-switch - stereo=45 or delete gtaiv_dxvk_vr.stereo");
+      } else if (mode == StereoMode::ReplayDispatchActivePeek) {
+        LogRePatternValidationOnce();
+        g_mode70WaitEs.store(0);
+        g_mode70PeekEs.store(0);
+        g_mode70Live.store(false);
+        g_mode70PeekDone.store(false);
+        const bool peekOk = Mode70InstallPeekHook();
+        Log("StereoRender: mode 70 REPLAYDISPATCH ACTIVE-PEEK (Mode45 renderer; filter "
+            "self==[0x17F583C]+live; READ-ONLY; dual=OFF) ok=%d fovSite=%d peekHook=%d",
+            g_ok.load() ? 1 : 0, fovOk ? 1 : 0, peekOk ? 1 : 0);
+        Log("StereoRender: how-to — stereo=70; load into world; read Mode70: PEEK lines");
+        Log("StereoRender: kill-switch - stereo=45 or delete gtaiv_dxvk_vr.stereo");
+      } else if (mode == StereoMode::ReplayDispatchTemporalInject) {
+        LogRePatternValidationOnce();
+        g_mode71Armed.store(false);
+        g_mode71Dead.store(false);
+        const bool okHook = Mode71InstallInjectHook();
+        Log("StereoRender: mode 71 REPLAYDISPATCH TEMPORAL-INJECT (Mode45 capture; "
+            "±IPD/2 at activeView+live view+0x80; restore; SameFrameSeamGate=CLOSED) "
+            "ok=%d fovSite=%d injectHook=%d",
+            g_ok.load() ? 1 : 0, fovOk ? 1 : 0, okHook ? 1 : 0);
+        Log("StereoRender: how-to — stereo=71; load world; look for L≠R parallax; kill=45");
+        Log("StereoRender: kill-switch - stereo=45 or delete gtaiv_dxvk_vr.stereo");
+      } else if (mode == StereoMode::VsConstTemporalInject) {
+        LogRePatternValidationOnce();
+        g_mode72Armed.store(false);
+        g_mode72Dead.store(false);
+        const bool okHook = Mode72InstallHook();
+        Log("StereoRender: mode 72 VSCONST TEMPORAL-INJECT (Mode45 capture; SetVSConstF "
+            "0x220D0 src-COPY ±IPD/2; never writes view object; SameFrameSeamGate=CLOSED) "
+            "ok=%d fovSite=%d injectHook=%d",
+            g_ok.load() ? 1 : 0, fovOk ? 1 : 0, okHook ? 1 : 0);
+        Log("StereoRender: how-to — stereo=72; load world; check stability + parallax; kill=45");
+        Log("StereoRender: kill-switch - stereo=45 or delete gtaiv_dxvk_vr.stereo");
+      } else if (mode == StereoMode::SameFrameVsConstDual) {
+        LogRePatternValidationOnce();
+        g_mode72Armed.store(false);
+        g_mode72Dead.store(false);
+        g_mode73DualDead.store(false);
+        g_mode73DualN.store(0);
+        g_haveL = g_haveR = false;
+        const bool okHook = Mode72InstallHook();
+        Log("StereoRender: mode 73 SAME-FRAME VSCONST DUAL (BuildRootA×2 L/R + SetVSConstF "
+            "src-COPY; never writes view+0x80; motion-guard OFF) ok=%d fovSite=%d vsHook=%d",
+            g_ok.load() ? 1 : 0, fovOk ? 1 : 0, okHook ? 1 : 0);
+        Log("StereoRender: how-to — stereo=73; load world; expect Mode73: SAME-FRAME dual; "
+            "kill=45 on exception");
+        Log("StereoRender: kill-switch - stereo=72 or 45");
+      } else if (mode == StereoMode::SameFrameVsConstGatedDual) {
+        LogRePatternValidationOnce();
+        g_mode72Armed.store(false);
+        g_mode72Dead.store(false);
+        g_mode74GateOpen.store(false);
+        g_mode74DualDead.store(false);
+        g_mode74DualEnabled.store(true);
+        g_mode74DualN.store(0);
+        g_mode74LiveStreak.store(0);
+        g_mode74MissStreak.store(0);
+        g_mode74BuildTick.store(0);
+        g_mode74DidDualThisFrame.store(false);
+        g_mode74LastInjects = 0;
+        g_haveL = g_haveR = false;
+        const bool okHook = Mode72InstallHook();
+        Log("StereoRender: mode 74 GATED SAME-FRAME EVERY-FRAME (Mode72 until in-world gate; "
+            "then BuildRootA×2 every frame 1/%u + VSConst src-COPY + HMD look; need %u live ES; "
+            "STICKY open — no miss→temporal; never writes view+0x80; inject only while "
+            "g_inDual) ok=%d fovSite=%d vsHook=%d dualEnabled=%d",
+            kMode74DualEveryN, kMode74GateNeedLiveEs, g_ok.load() ? 1 : 0, fovOk ? 1 : 0,
+            okHook ? 1 : 0, g_mode74DualEnabled.load() ? 1 : 0);
+        Log("StereoRender: how-to — stereo=74; load INTO WORLD; sticky SAME-FRAME dual + "
+            "HmdLook ACTIVE; turn head; kill=45");
+        Log("HmdLook: ENABLED Mode74 path (src-copy HMD orient + CamMatrix; F9 recenter)");
+        Log("StereoRender: kill-switch - stereo=72 or 45");
       } else if (mode == StereoMode::HeadOwnedCamSpike) {
         Log("StereoRender: mode 45 HEAD-OWNED CAM SPIKE (Mode44 RT lock + post-CCam "
             "CopyMat HMD reapply; no collision/VS/replay change; not true stereo) ok=%d "
@@ -5904,7 +7391,36 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
         Mode65OnEndScene(device);
       else if (mode == StereoMode::PublishSyncCountProbe)
         Mode66OnEndScene(device);
-      else
+      else if (mode == StereoMode::ViewMatWriterCountProbe)
+        Mode67OnEndScene(device);
+      else if (mode == StereoMode::ReplayDispatchCountProbe)
+        Mode68OnEndScene(device);
+      else if (mode == StereoMode::ReplayDispatchMatPeek)
+        Mode69OnEndScene(device);
+      else if (mode == StereoMode::ReplayDispatchActivePeek)
+        Mode70OnEndScene(device);
+      else if (mode == StereoMode::ReplayDispatchTemporalInject)
+        Mode71OnEndScene(device);
+      else if (mode == StereoMode::VsConstTemporalInject)
+        Mode72OnEndScene(device);
+      else if (mode == StereoMode::SameFrameVsConstGatedDual)
+        Mode74OnEndScene(device);
+      else if (mode == StereoMode::SameFrameVsConstDual) {
+        // Captures happen in HookRoot1 dual; EndScene only ensures RTs exist.
+        if (!IsCamMatrixOverrideEnabled())
+          return;
+        IDirect3DSurface9* bb = nullptr;
+        if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb)
+          return;
+        D3DSURFACE_DESC desc{};
+        bb->GetDesc(&desc);
+        bb->Release();
+        uint32_t rtW = desc.Width, rtH = desc.Height;
+        ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
+        EnsureEyeRts(device, rtW, rtH);
+        if (g_mode73DualDead.load())
+          TemporalCapturePairHold(device);
+      } else
         TemporalCapturePairHold(device);
       return;
     }

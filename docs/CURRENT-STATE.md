@@ -1,8 +1,495 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-## While you were away (2026-07-25 — offline RE, no game launch)
+## Deployed 2026-07-25 ~06:48 — Mode 74 **noflicker + HMD look** (test now)
 
-**Built:** `out-asi\gtaiv_dxvk_vr.asi` + `openvr_api.dll` — Mode **45** default path, RE probes **64/65/66** (COUNT-only / read-only peek), F7 **11-step** leanGain to **30.0**. No new risky hooks. SameFrameSeamGate **CLOSED**.
+**User report (build `20260725-0635-mode74-every`):** no freeze, but **"jumps between a fused picture and two separated pictures"** (alternating).
+
+### Part A — flicker root cause (log proof)
+
+Hypothesis **1 confirmed** — gate re-close → Mode72 temporal fallback:
+
+Live log on `20260725-0635-mode74-every` showed **~55×** `streaming gate CLOSED` and **~56×** `streaming gate OPEN` in one session. Examples:
+
+- `Mode74: streaming gate OPEN after 90 live EndScenes …`
+- `Mode74: es#360 gate=OPEN dualN=98 liveStreak=0 miss=43 …` ← miss climbing while duals still ran
+- `Mode74: streaming gate CLOSED after 60 miss EndScenes (no live inject — likely load/streaming; back to Mode72 temporal)`
+- then OPEN again → CLOSE again … throughout play
+
+When **OPEN**: every-frame same-frame dual → separated L≠R (`StereoDiff absdiff≠0`).  
+When **CLOSED**: Mode72 **temporal** L/R eye flip + pair-hold → feels fused / flat vs separated → **fused↔separated flicker**.
+
+Miss detector was a **false positive** during dual: EndScene can outpace BuildRootA / Mode72 inject counter stalls while CamMatrix still supplies L≠R. Closing mid-session was wrong for normal play.
+
+**Fix (one primary behavior change):** Mode74 gate is **STICKY OPEN** after first open — no miss re-close; while OPEN never call `TemporalCapturePairHold` (no temporal eye flip). Dual-this-frame also counts as live. Still: inject-only-in-`g_inDual`, never write view+0x80, exception→45.
+
+**Agent verify (`20260725-0644-mode74-noflicker`):** after gate OPEN → **0** further CLOSE; `stickyOpen=1`; `liveStreak` climbed 1000+ with `miss=0`; `dualN` tracked ES; `StereoDiff absdiff≠0`; no EXCEPTION.
+
+### Part B — HMD look (second build, same session)
+
+**Change:** Mode74 SetVSConstF **src-copy** now stamps **HMD orientation** onto the local matrix before IPD translate (never writes live view+0x80). CamMatrix late refresh log tagged `HmdLook: Mode74…`. Clear enable lines: `HmdLook: ENABLED` / `HmdLook: ACTIVE`.
+
+**Play now:** stereo **`74`**. Kill **`45`**. Soft **`72`**.  
+**Build:** `ASI_BUILD_ID 20260725-0648-mode74-hmdlook` (noflicker sticky + HMD look). Prior intermediate: `20260725-0644-mode74-noflicker`.
+
+**You test:**
+1. SteamVR on → start GTA IV → load **into the world** (not just menu).
+2. Watch headset: stereo should stay **stable** (no jump fused↔separated).
+3. **Turn your head** — view should follow. F9 = recenter.
+4. If freeze / wrong: set `gtaiv_dxvk_vr.stereo` next to the EXE to **`45`**, save, restart game.
+
+**Honesty / limits:** still matrix IPD stereo (not asymmetric HMD projection). HMD look is orientation on the VS upload + CamMatrix — not full 6DoF room-scale. Sticky gate means dual stays on after open (mission-load empty-world risk theoretically higher than miss-close; every-frame dual already accepted). Kill = **45**.
+
+---
+
+## Headset 2026-07-25 ~06:38 — Mode 74 every-frame 1/1 **MAJOR PASS** (superseded by noflicker)
+
+**User:** **"no freeze"**.
+
+**Build confirmed:** `ASI_BUILD_ID 20260725-0635-mode74-every` · stereo **`74`** · soft **`72`** · kill **`45`**.  
+(Deploy file `gtaiv_dxvk_vr.buildid` = `20260725-0635-mode74-every`.)
+
+**PASS — every-frame same-frame BuildRootA×2 actually ran (not just “no freeze”):**
+- `ASI_BUILD_ID 20260725-0635-mode74-every` · `StereoMode: 74` · cadence `every=1/1` (DualEveryN=1)
+- Gate: `Mode74: streaming gate OPEN after 90 live EndScenes (… every-frame BuildRootAx2 dual 1/1 …)`
+- Same-frame duals past old hang (#5): `#1` → `#5` → `#6` → `#120` … live to **`dualN≈9664`** / `SAME-FRAME dual #8880+` with `haveL=1 haveR=1` and `gate=OPEN every=1/1`
+- Example late line: `Mode74: es#14880 gate=OPEN dualN=9664 … every=1/1`
+- `StereoSubmit: L=1 R=1 mode=74` throughout
+- `StereoDiff: … absdiff=8675` / `11551` / `21160` / `9816` / `11655` (≠0 → real L≠R)
+- **0** `EXCEPTION` lines; no auto-45
+
+**MAJOR PASS meaning:** gated + inject-only-while-`g_inDual` made continuous every-frame dual stable after the old #1–#5 hang. Sparse ladder (1/8→1/4→1/2→1/1) complete.
+
+**Follow-up user:** fused↔separated flicker → fixed by sticky gate (section above). HMD look shipped in same session.
+
+**Play:** keep stereo **`74`**. Kill anytime: **`45`**.
+
+---
+
+## Deployed 2026-07-25 ~06:35 — Mode 74 every-frame 1/1 → **PASS above**
+
+**One behavior change:** `kMode74DualEveryN` **2 → 1** (every BuildRootA after gate = same-frame dual). Also fixed `tick % 1 == 1` never-true bug so EveryN=1 actually duals. Gate 90 live ES / inject-only-`g_inDual` / never view+0x80 / SetVSConstF src-copy / exception→45 / miss re-close / remap 73→72 / 71→45 kept. No IPD/camera/projection change.
+
+**Build:** `ASI_BUILD_ID 20260725-0635-mode74-every` · stereo **`74`** · soft **`72`** · kill **`45`**.
+
+**Headset:** user **"no freeze"** → MAJOR PASS section above (duals to thousands, absdiff≠0, 0 EXCEPTION).
+
+---
+
+## Prior deploy 2026-07-25 ~06:29 — Mode 74 sparse 1/2 → user go-ahead
+
+**User:** **"no freeze, go ahead"** after Mode74 **1/2 PASS** → shipped every-frame above.
+
+**Build then:** `ASI_BUILD_ID 20260725-0629-mode74-1of2` · stereo **`74`** · soft **`72`** · kill **`45`**. Superseded by every-frame 1/1.
+
+---
+
+## Headset 2026-07-25 ~06:27 — Mode 74 sparse 1/4 PASS (no freeze)
+
+**User:** game running / playing fine with newest changes, **no freezes**. Treat as Mode74 **1/4 PASS**.
+
+**Build confirmed:** `ASI_BUILD_ID 20260725-0621-mode74-1of4` · stereo **`74`** · soft **`72`** · kill **`45`**.
+(Deploy files: `gtaiv_dxvk_vr.buildid` = `20260725-0621-mode74-1of4`, stereo file = `74`.)
+
+**PASS — dual actually ran this session (not just “no freeze”):**
+- Live log (still writing ~06:27+): `Mode74: … gate=OPEN dualN=… sparse=1/4`
+- Same-frame duals far past old hang (#5): e.g. `SAME-FRAME dual #720` → `#1200` → `#4200` → `#4800` with `haveL=1 haveR=1` and `gate=OPEN sparse 1/4`
+- Cadence examples: `es#2880 gate=OPEN dualN=654 … sparse=1/4` · later `es#17040 gate=OPEN dualN=4194 … sparse=1/4`
+- `StereoSubmit: L=1 R=1 mode=74` throughout sampled lines
+- `StereoDiff: … absdiff=15578` / `8045` / `8391` / `8549` (≠0 → real L≠R on sampled dual frames)
+- **0** `EXCEPTION` lines; no auto-45
+- `PlayGTAIV.exe` still up (started ~06:23); log LastWrite kept advancing while user played
+
+**False alarm corrected:** earlier agent note that Steam was “LAUNCHING” / game not seen / `GTAIV.exe` gone was **wrong** — user was already playing. Do not treat that as a hang.
+
+**Honesty:** still sparse **1/4** = ~1 true same-frame dual + **3/4** Mode72 temporal frames. Superseded by denser **1/2** deploy above.
+
+**Play was:** stereo **`74`**. Kill=**`45`**.
+
+---
+
+## Deployed 2026-07-25 ~06:21 — Mode 74 denser sparse 1/4 → PASS above
+
+**One behavior change:** `kMode74DualEveryN` **8 → 4** (1 dual + 3 Mode72 temporal frames). Gate / inject-only-in-dual / exception→45 / re-close on miss streak unchanged.
+
+**Build:** `ASI_BUILD_ID 20260725-0621-mode74-1of4` · stereo **`74`** · soft **`72`** · kill **`45`**.
+
+**Early agent-watch (before false “game gone” alarm):** Gate CLOSED→OPEN; dual #1→#5→#6 past hang; climbed to dual #1200+ / `sparse=1/4` / `StereoDiff absdiff≈11k` / no EXCEPTION. Superseded by headset **PASS** above (duals continued to #4800+ while user played).
+
+---
+
+## Headset 2026-07-25 ~06:18 — Mode 74 sparse 1/8 PASS (no freeze)
+
+**User:** **"no freeze"**.
+
+**Build confirmed:** `ASI_BUILD_ID 20260725-0615-mode74-sparse` · stereo **`74`** · soft **`72`** · kill **`45`**.
+
+**PASS — dual actually ran (not just “no freeze”):**
+- Gate CLOSED through load: `Mode74: es#240 gate=CLOSED dualN=0 liveStreak=76 miss=0 injects=76 … sparse=1/8`
+- Gate OPEN: `Mode74: streaming gate OPEN after 90 live EndScenes (… sparse BuildRootAx2 dual 1/8 frames …)`
+- Same-frame dual armed and kept climbing past the old hang point (#5):
+  - `Mode74: SAME-FRAME dual #1 haveL=1 haveR=1 injects=91 … (gate=OPEN sparse 1/8 …)`
+  - `#2` injects=98 → `#5` 119 → `#6` 126 (survived where continuous Mode74 hung)
+  - `#120` injects=924 → `#240` 1764 → `#480` 3445
+- Cadence: `es#4080 gate=OPEN dualN=479 … injects=3438 … sparse=1/8` (still live; no hang)
+- `StereoSubmit: L=1 R=1 mode=74` throughout
+- `StereoDiff: … absdiff=10540` and `absdiff=9896` (≠0 → real L≠R on sampled dual frames)
+- No `EXCEPTION` / no auto-45; PedHide `dead=0`
+
+**Honesty — was temporal-heavy at 1/8:** only ~1 of 8 BuildRootA ticks true same-frame; superseded by denser **1/4** above.
+
+**Play was:** stereo **`74`**. Kill=**`45`**. Soft=**`72`**.
+
+---
+
+## Prior — Mode 74 freeze AFTER gate OPEN (2026-07-25 ~06:14) — FIXED by sparse
+
+**User:** Freeze very shortly after loading screen; process hung (not crash).
+
+**Log evidence (build `20260725-0609-mode74-gated`):**
+- Gate CLOSED through load OK: `Mode74: es#240 gate=CLOSED … liveStreak=74 miss=0 injects=74`
+- Gate **did** open: `Mode74: streaming gate OPEN after 90 live EndScenes …`
+- Dual ran 5× then silence (no EXCEPTION / no auto-45):
+  - `Mode74: SAME-FRAME dual #1 … injects=239`
+  - `… dual #2 … injects=537` → `#3 835` → `#4 1133` → `#5 1431` (~+298 injects/dual frame)
+- Last lines = dual #5; PlayGTAIV hung. Freeze was **AFTER** gate OPEN, **not** Mode72 CLOSED path.
+
+**Root cause:** Continuous BuildRootA×2 every frame after gate still hang-prone in-world.
+**Fix shipped:** sparse **1/8** after gate + inject only while `g_inDual` → **PASS** above.
+
+---
+
+## Prior test — Mode 74 GATED same-frame (2026-07-25 ~06:10) — FROZE
+
+**Build:** `20260725-0609-mode74-gated` · stereo **`74`**  
+Superseded by sparse fix. Continuous dual after gate hung at dual #5.
+
+---
+
+## Headset 2026-07-25 ~06:02 — Mode 73 empty world (DISABLED)
+
+**User:** no crash, but world objects never load (empty + load spinner).  
+**Cause:** BuildRootA×2 every frame breaks Rage streaming/load.  
+**Action:** Mode **73** remaps → **72**; killed process; redeploy Mode72 temporal (world loads OK).
+
+**Play now:** stereo **`72`**. Kill=**`45`**.  
+**Next same-frame:** must NOT double BuildRootA during load — e.g. dual only after in-world gate, or dual at Present with a safer seam.
+
+---
+
+## Headset 2026-07-25 ~05:59 — Mode 73 SAME-FRAME live (agent watch)
+
+**Build:** `20260725-0558-mode73-sameframe` · stereo **`73`**  
+**Log:** `Mode73: SAME-FRAME dual #… haveL=1 haveR=1` · `StereoDiff absdiff=425/131/433/180` (≠0 = real L≠R)  
+sometimes `absdiff=0` (identical pair). Process stayed up. No auto-45.
+
+**Meaning:** First **same-frame** dual path that is stable + proves image difference. Uses BuildRootA×2 + SetVSConstF src-copy (no live view write).
+
+**User:** Check headset — should feel more “real stereo” than Mode72 temporal. Kill=**`45`**.
+
+---
+
+## Next test — Mode 73 SAME-FRAME dual (2026-07-25 ~05:58)
+
+**Build:** `20260725-0558-mode73-sameframe` · stereo **`73`**  
+**What:** BuildRootA ×2 (L then R) + Mode72 SetVSConstF **src-copy** inject. No live `view+0x80` write.  
+**Expect:** `Mode73: SAME-FRAME dual #… haveL=1 haveR=1` + `StereoDiff` absdiff≠0.  
+**Kill:** stereo **`45`** (auto on dual exception).
+
+---
+
+## Headset 2026-07-25 ~05:54 — user: still “monitor”, barely different
+
+**Honest status:** Mode **72** is **not** true stereo yet. It only nudges the VS view matrix
+±IPD/2 on alternating frames (temporal). Motion-guard was often copying **one** BB to both
+eyes → looks mono. Small IPD (~2 cm) made any leftover parallax nearly invisible.
+
+**Fix now:** Mode72 motion-guard **OFF** + inject halfSep **floor 5 cm** (10 cm total) so L≠R
+is visible enough to judge. Still temporal; SameFrameSeamGate=CLOSED.
+
+---
+
+## Headset 2026-07-25 ~05:53 — Mode 72 PASS (stable + some depth)
+
+**User:** Spiel läuft gut, kein Hängen; **etwas Tiefe** sichtbar.  
+**Build:** `20260725-0549-mode72-vscopy` · stereo **`72`** (SetVSConstF src-copy @ `0x220D0`).  
+**Follow-up:** raised `gtaiv_dxvk_vr.ipd` **2→5** cm for clearer parallax (still safe vs 25 cm half-cap).
+
+**Meaning:** First working true-ish stereo path that does not freeze. SameFrameSeamGate still CLOSED (temporal L/R).  
+**Kill:** stereo **`45`**. Next options: tune IPD/F8 further, or later same-frame dual without mutating view object.
+
+---
+
+## Headset 2026-07-25 ~05:50 — Mode 72 VSCONST src-copy (live)
+
+**Build:** `20260725-0549-mode72-vscopy` · stereo **`72`**  
+**Approach:** MinHook SetVSConstF @ **`0x220D0`** — offset a **local copy** of src when `src==activeView+0x80`; **never** writes the live view object (Mode71 freeze root).
+
+**Agent watch:** armed OK; in-world ~1 inject/ES (`es#960 injects=791`); process still up; no EXCEPTION / no auto-45.
+
+**User check:** Freeze gone? Any depth/parallax? (IPD still ~2 cm — weak.) Kill=**`45`**.
+
+---
+
+## EMERGENCY 2026-07-25 ~05:45 — Mode 71 DISABLED (freeze×2)
+
+**User:** Bild kurz besser → Freeze, Sound kurz weiter, Prozess hängt. Auch nach SAFE-Build.
+
+**Log (SAFE):** injects climbed ~1/ES (`es#720 injects=552`) then hard hang — no EXCEPTION line.
+
+**Root cause (working theory):** mutating live `activeView+0x80` in place (even 1×/frame + restore) is unsafe — engine/other readers see torn/wrong cam → hang. Mode **68/69/70** read-only hooks were stable; **writes** are the difference.
+
+**Action taken:**
+- Killed hung `PlayGTAIV`
+- stereo → **`45`**
+- Mode **71** hard-disabled: `RemapLoadedStereoMode(71)→45` + `Mode71InstallInjectHook` never arms
+- buildid: disable stamp below
+
+**Next (freeze fixed first):** inject via **copy** (hook `0x220D0` SetVSConstF and offset the *src buffer arg* without writing the view object) — or same-frame dual elsewhere. Do **not** re-enable in-place `view+0x80` writes.
+
+**Kill / play:** stereo **`45`**.
+
+---
+
+## Headset 2026-07-25 ~05:43 — Mode 71 SAFE after freeze
+
+**Problem:** first Mode71 freeze after brief “looks better” image. Cause: ~200 injects/frame + bad matrices (`right` length ≫1, e.g. 10000) → camera teleport; also dirty matrix if call faulted before restore.
+
+**Fix build:** `20260725-0543-mode71-safe`
+- 1 inject per EndScene only
+- require unit-length right + finite + `t²≥10`
+- always restore after call
+- half-sep capped at 25 cm
+
+**Live log:** in-world `injects` ≈1/ES (e.g. +120 over 120 ES), not 16k/ES. Process stayed up in agent watch. stereo stays **71**.
+
+**User:** load in, check freeze + parallax. Kill=**45**. IPD file still ~2 cm (weak); raise if stable but flat.
+
+---
+
+## Headset 2026-07-25 ~05:38 — Mode 71 TEMPORAL-INJECT live
+
+**Build:** `20260725-0537-mode71-inject` · stereo stays **`71`** (no force-45)  
+**Log:** `INJECT armed @0x30CD0` → in-world `injects` climbing (e.g. 16k+/ES burst), `skip` = non-active/identity  
+**What it does:** on `self==activeView` + live matrix, offset `view+0x80` by ±IPD/2 along right, upload, restore. Mode-45 temporal L/R capture. SameFrameSeamGate=CLOSED.
+
+**User check:** In headset, do near objects show **depth/parallax** vs flat Mode 45?  
+If too weak: raise `gtaiv_dxvk_vr.ipd` (currently ~2cm in log). Kill = stereo **`45`**.
+
+---
+
+## Headset 2026-07-25 ~05:36 — Mode 70 ACTIVE-PEEK = PASS
+
+**Build:** `20260725-0535-mode70-active`  
+**Log:** `ACTIVE+LIVE view=… active=0x… t=(892…)` → `cadence=PASS hit=5985 miss=0 hitRate=100.0%`  
+**stereo file stayed `70`** (no force-45 on success).
+
+**Meaning:** Every live `view+0x80` upload was the activeView object. Dual inject filter = `self == *[0x17F583C]` + live matrix.
+
+**Next:** Mode **71** temporal L/R inject at that filter (Mode-45 capture path). Kill still **`45`** on hook death only.
+
+---
+
+## Headset 2026-07-25 ~05:31 — Mode 69 WAIT+LIVE = PASS
+
+**Build:** `20260725-0530-mode69-wait`  
+**Log:** WAIT through menu/load (identity) → **`LIVE matrix t=(892.519,-20.271,499.430)`** once in world → `cadence=PASS` `maxDelta2` huge · auto→**`45`**.
+
+**Meaning:** `view+0x80` **does** carry a live camera translation in-world (not only identity).  
+Mixed with identity peeks in the same frame burst (~200–250 entries/ES) — dual inject must filter the live view object, not blindly patch every ReplayDispatch entry.  
+SameFrameSeamGate still **CLOSED**. Kill=**`45`**.
+
+**Next:** offline dual plan / filter (activeView match or non-identity gate) — one step, still no dual until reviewed.
+
+---
+
+## Headset 2026-07-25 ~05:26 — Mode 69 PEEK PASS (identity caveat)
+
+**Log:** `ASI_BUILD_ID 20260725-0525-mode69-peek`  
+`Mode69: PEEK armed exeRva=0x30CD0` → `ok=180 fail=0 cadence=PASS`  
+Readable `float[16]` at view+0x80 every entry. Auto→**`45`**.
+
+**Caveat:** all samples were **identity** (`t=(0,0,0)` `r0=(1,0,0)` `maxDelta2=0`) — likely menu/load or not the live cam translation layout.  
+**Next:** one calm **in-world** retest of **69** (walk/turn — expect nonzero `t` / `maxDelta2`), OR offline dump more of the view object to find the live cam floats. Still **no dual**. Kill=**`45`**.
+
+---
+
+## Next test — Mode 69 MAT-PEEK (ready)
+
+**Build:** `20260725-0525-mode69-peek` in `out-asi\`  
+**What:** READ-ONLY copy of `float[16]` at **view+0x80** inside ReplayDispatch (same site as 68). No dual.  
+**Expect:** `Mode69: PEEK armed` → `PEEK view=… t=(…)` → `cadence=PASS|PARTIAL|REJECT` → auto **`45`**.
+
+---
+
+## Headset 2026-07-25 ~05:24 — Mode 68 PASS
+
+**Log:** `ASI_BUILD_ID 20260725-0359-mode68-count`  
+`Mode68: COUNT armed exeRva=0x30CD0` → `avgEntries=4.00 cadence=PASS`  
+Stable `entries=4` every EndScene over 45 ES. Auto-wrote stereo **`45`**.  
+**Meaning:** ReplayDispatch is an owner-like seam (bridge → slot178 `0x220D0`).  
+SameFrameSeamGate stays **CLOSED** — no dual yet. Kill = **`45`**.
+
+**Next:** Mode **69** matrix peek (read-only).
+
+---
+
+## Overnight offline 2026-07-25 ~03:59 — Mode 68 COUNT ready
+
+**Shipped to `out-asi\` only (NOT deployed to game):**
+- Mode **68** `ReplayDispatchCountProbe` — COUNT-only MinHook @ mapped **`0x30CD0`**
+- Fixed parse caps (was rejecting stereo>67) in `stereo_config.cpp`
+- buildid: **`20260725-0359-mode68-count`**
+- Dual=OFF · SameFrameSeamGate=CLOSED · auto→**45**
+
+**Identity chain (headset-proven):**
+- Mode **65** OK: live `slot178=0x220D0` (DXVK SetVSConstF)
+- ReplayDispatch **`0x30CD0`** → `lea arg,[view+0x80]` → `call [eax+0x178]` @ **`0x30D0D`** → **`0x220D0`**
+
+**Next headset test (one mode):**
+1. Quit GTA if running
+2. `.\scripts\deploy-asi.ps1 -GameDir "C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV"`
+3. Set stereo file to **`68`**
+4. Expect: `Mode68: COUNT armed exeRva=0x30CD0` then `cadence=PASS|SHARED|REJECT`
+5. Kill / auto = **`45`**. **No dual.**
+
+---
+
+## Headset ladder done 2026-07-25 ~03:51
+
+| Mode | Result |
+|------|--------|
+| **66** | **PASS** `avgEntries=3.00` @ `0x30F00` |
+| **67** | armed OK, COUNT **REJECT** `avg=0.16` (sparse ViewMat) |
+| **65** | **OK** stable `slot178=0x220D0` |
+| **42** | playable; `VsRetHits=0` — no OWNER-EDGE |
+| **64** | armed @ `0x32470`, COUNT **REJECT** `avg=0.00` (gate dead, as predicted) |
+
+Stereo file = **45**. Next headset: stereo **68** ReplayDispatch COUNT. SameFrameSeamGate stays CLOSED.
+
+## Headset 2026-07-25 ~03:48 — Mode 42 playable, OWNER-EDGE dry
+
+**Log:** Mode **42** ran long (`epoch` thousands), no freeze.  
+`VsRetHits=0 nodes=0` entire session — **no** `OWNER-EDGE` lines (VsRet stack probe collected nothing).  
+Useful negative: Mode **65** `slot178=0x220D0` remains the live upload target evidence. Next optional: **64**.
+
+## Headset 2026-07-25 ~03:45 — Mode 65 OK
+
+**Log:** stable `slot178=0x220D0` bytes `8B 54 24 04 57 8B 7C 24`, `replayGate=0`, later `activeView` non-zero.  
+No hook/crash. Next: **42** OWNER-EDGE triad.
+
+## Headset 2026-07-25 ~03:40 — Mode 67 armed, COUNT REJECT
+
+**Log:** `Mode67: COUNT armed exeRva=0x314C0` then `avgEntries=0.16 cadence=REJECT`  
+Hook/AOB OK, no freeze; ViewMatWriter rarely entered (dirty-rebuild path). Next: **65**.
+
+## Headset 2026-07-25 ~03:38 — Mode 66 PASS
+
+**Log:** `Mode66: COUNT done exeRva=0x30F00 avgEntries=3.00 cadence=PASS`  
+Armed at mapped PublishSync; auto-reverted to **45**. Next: **67**.
+
+---
+
+## Offline continue 2026-07-25 ~03:07+ (no headset / no deploy)
+
+**Shipped to `out-asi\` only:**
+- Mode **41/42** OWNER-EDGE covers full ReplayGate +178 triad:
+  - `ret=0x30D13` → call `0x30D0D` (ReplayDispatch)
+  - `ret=0x2A2183` → call `0x2A217D` (UploadA in `0x2A1E10`)
+  - `ret=0x2A25FF` → call `0x2A25F9` (UploadB in `0x2A1E10`)
+- Log: `path=ReplayDispatch|UploadA|UploadB` + `match=0/1`
+- Still READ-ONLY — SameFrameSeamGate=CLOSED, no dual
+- Prefer later test order: **66 → 67 → 65 → 42 → 64**
+
+---
+
+## While you were playing (2026-07-25 ~01:36–03:36 — offline, no deploy)
+
+**Root cause of Mode 66 REJECT:** PE section skew — CE `.text` **mapped RVA = file offset + 0xC00**.
+Doc/Mode used file offset `0x30300` as RVA; live PublishSync is **`0x30F00`**.
+
+**Shipped to `out-asi\` only (NOT deployed — you were in-game):**
+- `ResolveReSite()` AOB resolver (`re_validate.h/cpp`)
+- Mode **64/66/67** AOB + mapped RVAs: ViewConst **`0x32470`** (TRUE; mid `0x3247C` unsafe) / PublishSync **`0x30F00`** / ViewMat **`0x314C0`**
+- Mode **66** no longer requires CC-pad (PublishSync follows epilogue)
+- Mode **41/42** PUBLISH-RET notes; Mode **65** logs slot178 first bytes
+- `scripts/offline-seam-mapped.py` — PE-mapped deep scan
+- MatMul **`0x307F0`** (docs had typo `0x307BF0`); ReplayDispatch **2** E8 callers; ViewConst TRUE **1** E8 (gated)
+- PublishProj **`0x31BA0`**: **11** callers; **11/12** PublishSync sites immediately call it — Mode **66** covers proj tails
+- 12th PublishSync path: activeView thunks **`0x32B40`/`0x32B60`** → copy helper **`0x31940`** (×**58** E8) → PublishSync-only `@0x3199F`
+- Mode **66** COUNT: avg in `[0.8,4]` = PASS; **avg>4** = **SHARED** (still useful, not REJECT); avg<0.8 = REJECT
+- ViewConst gate **`[0x1797694]`**: BSS, **no static writer** — Mode **64** COUNT may always be 0 (gate starts 0; needs nonzero; no writer)
+- **12** exe-wide `call [reg+0x178]` — stereo path is **`0x30D0D`**; VsRet obs stays **`0x2D33E`** (do not confuse with mapped `0x2C73E` epilogue after another +0x178 call)
+- Viewport **`0x31110`** / apply **`0x22FD0`** documented
+- Ladder: **`45 → 66 → 67 → 65 → 64 → 41 → 42`**
+- Cheat sheet: `docs/MAPPED_RVA_CHEATSHEET.md`
+- buildid in `out-asi\`: `20260725-0354-gate178ABAB` (Mode66 PASS/SHARED/REJECT; PublishSync 12-site table)
+- Upload fn **`0x2A1E10`**: TWO MatMulx3→+178 paths (@0x2A217D after helper; @0x2A25F9 second); sibling **`0x2A1D50`** helper-only
+- Mode **42** OWNER-EDGE (`ret=0x30D13`) may **miss** `0x2A1E10` uploads — Mode **65** slot178 still sees all paths
+- Only **3** +178 sites are ReplayGate-guarded: `0x30D0D` + upload `@0x2A217D/@0x2A25F9`
+- Publish chain: **PublishSync → (if activeView) ReplayDispatch → `call [eax+0x178]`** — Mode **66** counts Sync; Mode **42** edges slot178
+- ResolveReSite prefers **expected mapped RVA** when prologue matches (guards multi-hit short AOBs)
+- Helper **`0x31940`**: copy→`0x30720`→PublishSync; thunk **`0x32B40`** pushes global **`0x1110090`**
+- **AGENT_LOOP_TICK_re2h killed** (pid 37992, terminal 515193 failed) — continuous work only, no 15m ticks; do not re-arm
+
+**When you return:**
+1. Quit GTA (or finish session)
+2. `.\scripts\deploy-asi.ps1 -GameDir "C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV"`
+3. Optional restore: `fovadd=18`, `ipd=3`, `scale=100`
+4. One test first: stereo **`66`** → must see `Mode66: COUNT armed exeRva=0x30F00` then real `avgEntries` (not REJECT at 0x30300)
+5. Then **`67`** → **`65`** → **`64`** (64 may stay 0) one at a time
+
+**Do not dual.** Kill = **`45`**.
+
+---
+
+## Session 2026-07-25 ~01:33 — Mode 66 headset: renderer OK, COUNT REJECT
+
+**User:** Mode **66** ausprobiert — **funktioniert** (kein Freeze/Blackscreen).
+
+**Log:**
+- `StereoMode: 66` → Mode-45 renderer path (`countHook=0`)
+- `ReValidate: anchor DRIFT PublishSync 0x30300`
+- `Mode66: REJECT … bytes=FF 83 F8 FF 74 0C` (need `55 8B EC 83 E4 F8 51 56 8B F1`)
+- `Mode66: COUNT done … avgEntries=0.00 cadence=REJECT` (hook never armed — zeros)
+- Auto-wrote stereo **`45`**; live submits `StereoSubmit … mode=45` (long session OK)
+
+**Meaning:** Mode **45** family is playable again. Fixed RVA **`0x30300`** does **not** match
+live bytes (offline PE still has correct prologue there; live read ≠ file — patch/module
+skew; same class of drift as FovSite logging `0x706F7C` vs doc `0x70637C`). **No dual.**
+SameFrameSeamGate stays **CLOSED**.
+
+**Config now:** stereo **`45`**, `fovadd` **MISSING**, `ipd=1`, `scale=3000` (leanGain **30**
+from F7 max — very small lean). Optional restore: `fovadd=18`, `ipd=3`, `scale=100`.
+
+**Next (one at a time):** Mode **65** (vtable peek, no hook) · or fix PublishSync via **AOB**
+before retrying 66/67 COUNT · Mode **64** only after AOB/RVA confirm.
+
+---
+
+## EMERGENCY 2026-07-25 ~01:25 — post-load blackscreen/freeze report
+
+**User:** blackscreen + freeze after load screen (self-started after deploy).
+
+**Log fact (same session):** Mode **45** DID arm and keep submitting after load —
+`StereoMode: 45`, `mode 45 HEAD-OWNED … ok=1 fovSite=1`, `StereoSubmit … mode=45`,
+`CamMatrix: FP lock`, `FovSite 45→63`, through `MonoSubmit #840` / PedHide#300.
+**Not** a Mode-46 hard hang (those stop EndScene). Soft hang / HMD-black / control lock
+still possible; treat as fail-safe.
+
+**Kill applied on disk now:**
+- stereo **`30`**
+- **`fovadd` deleted** (Mode-30 comfort kill)
+- ASI redeployed; buildid stamp `20260725-0125-kill30`
+
+**User next:** Start GTA from Steam yourself. Expect Mode **30** (pair-hold, no late
+head-owned CopyMat). Log: `StereoMode: 30`, `StereoSubmit … mode=30`.
+
+If **30** OK → 45 late-cam/FOV path is the suspect. If **30** also freezes → not today's
+Mode-67 work (shared stack / DXVK / SteamVR).
+
+---
+
+**Built:** `out-asi\gtaiv_dxvk_vr.asi` + `openvr_api.dll` — Mode **45** default path, RE probes **64/65/66/67** (COUNT-only / read-only peek), F7 **11-step** leanGain to **30.0**. No new risky hooks. SameFrameSeamGate **CLOSED**.
 
 **Config on disk:** stereo **`45`**, **`ipd=3`**, scale **`100`** (leanGain **1.0**), **`fovadd=18`**.  
 **Hotkeys:** F9=SteamVR recenter · F6/F7/F8 stereo scale / world lean / IPD.
@@ -17,22 +504,34 @@
 | # | stereo | Pass log line |
 |---|--------|---------------|
 | 0 | **45** | `StereoSubmit: L=1 R=1 mode=45` — smooth baseline |
-| 1 | **64** | `Mode64: COUNT done … cadence=PASS` |
-| 2 | **65** | `Mode65: VT178-LOG … slot178=0x… activeView=0x…` |
-| 3 | **66** | `Mode66: COUNT done … cadence=PASS` |
-| 4 | **41** | `Mode41: CHAIN … ret=0x3199A fn=0x3187C` |
-| 5 | **42** | `Mode42: OWNER-EDGE … call=FF/2@0x3010D` |
+| 1 | **66** | `Mode66: COUNT done … cadence=PASS` (@**`0x30F00`**) — prefer first |
+| 2 | **67** | `Mode67: COUNT done … cadence=PASS` (@**`0x314C0`**) |
+| 3 | **65** | `Mode65: VT178-LOG … slot178=0x…` (+ bytes) |
+| 4 | **64** | `Mode64: COUNT done …` (@**`0x32470`**) — may be sparse (gated) |
+| 5 | **41** | `Mode41: CHAIN …` (ignore mid-SSE `0x3259A`; watch `PUBLISH-RET`) |
+| 6 | **42** | `Mode42: OWNER-EDGE … ret=0x30D13` |
 
 **F7 leanGain (11 steps):** `eyeDelta = hmdDelta / leanGain` — higher = smaller world when you lean.  
 Cycle: **1.0 → 1.25 → 1.5 → 2.0 → 2.5 → 3.0 → 4.0 → 5.0 → 8.0 → 12.0 → 30.0** (file stores ×100).
 
-**Kill anytime:** write **`45`** to stereo file (modes **64/65/66** auto-revert when done).
+**Kill anytime:** write **`45`** to stereo file (modes **64/65/66/67** auto-revert when done).
 
-**RE map:** [`docs/RE_OFFSETS.md`](RE_OFFSETS.md) — offline disasm of **`0x2FFF0`** SetActiveView (sole writer of active view), **`0x3187C`** view-const, **`0x30300`** PublishSync, **`0x300D0`** replay vtable dispatch, plus forbidden list. Key finding: activation and publish are separate paths; both converge on **`0x300D0`** → **`call [eax+0x178]`** @ **`0x3010D`**.
+**RE map:** [`docs/RE_OFFSETS.md`](RE_OFFSETS.md) · [`docs/MAPPED_RVA_CHEATSHEET.md`](MAPPED_RVA_CHEATSHEET.md) · `scripts/verify-mapped-sites.py`.
 
 ---
 
-### Session 2026-07-25 ~05:00–07:30 (deep offline RE — no headset)
+### Session 2026-07-25 ~01:15 (ViewMatWriter 0x308C0 + Mode 67 — no headset)
+
+**Shipped:**
+- **Correction:** ViewMatWriter start is **`0x308C0`** (CC-pad frame thiscall), **not** mid **`0x308C9`**
+- **Mode 67** — COUNT-only @ **`0x308C0`** (9 static `E8` callers; builds `[this+0x1C0]` then PublishSync); auto-reverts to **45**
+- **`re_validate.cpp`** + **`offline-re-scan.py`** — prefer frame prologue; Mode 67 anchor
+- Ladder now **`45→64→65→66→67→41→42`**
+
+**Still blocking perfect VR:** temporal L/R; replay owner not proven; COUNT results pending headset.
+
+---
+**As of (prior):** 2026-07-25 ~05:00–07:30 (deep offline RE — no headset)
 
 **Shipped:**
 - **`docs/RE_OFFSETS.md`** — full call graphs for **`0x2FFF0`/`0x3187C`/`0x30300`/`0x300D0`**, safe ladder table, forbidden list
@@ -41,7 +540,7 @@ Cycle: **1.0 → 1.25 → 1.5 → 2.0 → 2.5 → 3.0 → 4.0 → 5.0 → 8.0 �
 - **Modes 64/65/66** — COUNT-only @ **`0x3187C`**, read-only vtable peek, COUNT-only @ **`0x30300`** (all on Mode 45 renderer; auto-revert to **45**)
 - **F7** 11-step leanGain ladder to **30.0**
 
-**Still blocking perfect VR:** temporal L/R; replay owner not proven; **`0x3187C`** best static lead.
+**Still blocking perfect VR:** temporal L/R; replay owner not proven. Best COUNT lead now **PublishSync `0x30F00`** (Mode **66**); ViewConst TRUE **`0x32470`** is gated.
 
 ---
 **As of (prior):** 2026-07-25 ~04:30 (RE offset map + Mode 62/63 scaffold; no game launch)

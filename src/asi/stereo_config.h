@@ -97,7 +97,7 @@ enum class StereoMode : int {
   // axis (= view/viewProj matrix, either matrix convention) by the eye delta.
   // RESULT 2026-07-24: vsCallsTotal ~380/frame but vsCallsR=0 — the re-executed
   // phase objects are dispatch stubs; ALL uploads flow through ONE Rage wrapper
-  // call site (exeRva 0x2C73E) on ONE thread. The real draws happen during the
+  // call site (mapped VsRet 0x2D33E; old file-off 0x2C73E) on ONE thread. Draws during
   // BUILD walk (mode 18's inline-exec sites), not in our re-run.
   ExecViewConstDual = 24,
   // Mode 20 v1 machinery (BuildRootA x2 per frame = real double render, 50 FPS,
@@ -159,7 +159,7 @@ enum class StereoMode : int {
   // promote. No CCam+VS stack. SEH / no cand → write stereo=30. Kill → 30/26.
   SameFrameLateVsParentDual = 33,
   // Mode 33 finding: VsParent mid slots are epilogues (5F C2 10 00), not walkers.
-  // Mode 34: VsRet(0x2C73E) stack → fn starts → COUNT only. DUAL DISABLED:
+  // Mode 34: VsRet(mapped 0x2D33E) stack → fn starts → COUNT only. DUAL DISABLED:
   // 0x4DDAD0 COUNT ok but vsPatch=0/vsCallsR=0 (no parallax). Forbidden list
   // includes 0x4DDAD0. Fail/COUNT-ok → write stereo=30. Kill → 30/26.
   SameFrameVsRetCallerDual = 34,
@@ -195,7 +195,7 @@ enum class StereoMode : int {
   // jump on rapid head turns without unsafe replay-thread hooks. Kill: 37/30.
   FovCanvasMotionGuard = 40,
   // Mode 40's true-FOV pair-hold and rapid-motion mono guard, plus a READ-ONLY
-  // trace of the replay-thread chain behind SetVSConstF's live 0x2C73E return.
+  // trace of the replay-thread chain behind SetVSConstF's live mapped VsRet 0x2D33E.
   // It installs no game-function hook and never duplicates draws. It maps a
   // future same-tick seam; it is NOT distinct-eye same-frame stereo. Kill: 40/37/30.
   ReplayCallChainProbe = 41,
@@ -225,15 +225,45 @@ enum class StereoMode : int {
   RePatternValidate = 62,
   // Mode 45 renderer + logs SameFrameSeamGate=CLOSED until replay owner proven.
   SameFrameSeamGate = 63,
-  // Mode 45 renderer + COUNT-only at view-const apply 0x3187C (opt-in stereo=64).
-  // Logs avg entries/EndScene over 45 ES; never arms dual. Default stereo stays 45.
+  // Mode 45 renderer + COUNT-only @ ViewConst TRUE start mapped 0x32470 (opt-in stereo=64).
+  // Mid 0x3247C is unsafe. AOB resolve. Never arms dual. Default stereo stays 45.
   ViewConstCountProbe = 64,
   // Mode 45 renderer + read-only EndScene log of [0x17ed8d8] vtable slots +0x178/+0x1B4
   // and active view [0x17F583C]. No game-function hook; opt-in stereo=65; auto-reverts to 45.
   ReplayVtable178Log = 65,
-  // Mode 45 renderer + COUNT-only @ PublishSync 0x30300 (opt-in stereo=66).
-  // Logs avg entries/EndScene over 45 ES; never arms dual or calls 0x300D0; auto-reverts to 45.
+  // Mode 45 renderer + COUNT-only @ PublishSync mapped 0x30F00 (opt-in stereo=66).
+  // Old file-off doc 0x30300 was wrong (+0xC00 skew). Never arms dual or hooks 0x30CD0.
   PublishSyncCountProbe = 66,
+  // Mode 45 renderer + COUNT-only @ ViewMatWriter mapped 0x314C0 (opt-in stereo=67).
+  // Old file-off 0x308C0 / mid 0x308C9. Never arms dual; auto-reverts to 45.
+  ViewMatWriterCountProbe = 67,
+  // Mode 45 renderer + COUNT-only @ ReplayDispatch mapped 0x30CD0 (opt-in stereo=68).
+  // Bridge PublishSync → call [device+0x178] (=live slot178 0x220D0 SetVSConstF).
+  // thiscall without frame prologue; CC-pad N/A. Never arms dual; auto-reverts to 45.
+  ReplayDispatchCountProbe = 68,
+  // Mode 45 renderer + READ-ONLY peek of float[16] at view+0x80 inside ReplayDispatch
+  // (src for call [eax+0x178]). No writes / no dual. Opt-in stereo=69.
+  // Success does NOT force stereo=45 (user tests continuously); hook-death still →45.
+  ReplayDispatchMatPeek = 69,
+  // Mode 45 renderer + READ-ONLY peek filtered to activeView [0x17F583C] + live matrix.
+  // Proves which ReplayDispatch entries are the gameplay camera. dual=OFF. stereo=70.
+  ReplayDispatchActivePeek = 70,
+  // Mode 71 DISABLED (freeze 2026-07-25): in-place view+0x80 write. Remaps to 45.
+  ReplayDispatchTemporalInject = 71,
+  // Mode 45 temporal + SetVSConstF hook @ mapped 0x220D0: offset a *local copy* of the
+  // src matrix when src==activeView+0x80. Never writes the live view object.
+  VsConstTemporalInject = 72,
+  // Mode 73 DISABLED (2026-07-25): BuildRootA×2 broke world streaming (empty world +
+  // load spinner). Remaps to 72. Same-frame needs a path that does not double-build
+  // during load / streaming.
+  SameFrameVsConstDual = 73,
+  // Mode 74: Mode72 SetVSConstF src-copy + Mode73 BuildRootA×2, but dual ONLY after
+  // in-world streaming gate (live activeView matrix: finite, unit-right, t²≥10 for
+  // N consecutive EndScenes). Gate CLOSED = Mode72 temporal (mono BuildRootA).
+  // Gate OPEN = every-frame same-frame dual (sticky — no miss re-close / no temporal
+  // fallback mid-session; miss-close caused fused↔separated flicker). Never writes
+  // live view+0x80. Exception → 45.
+  SameFrameVsConstGatedDual = 74,
 };
 
 // Mode 45 family: LKG camera + RT lock + motion guard (includes RE scaffold 62/63).

@@ -720,9 +720,14 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
       RefreshLiveCamForStereoEye();
       static uint32_t s_headOwnedRefreshes = 0;
       const uint32_t refreshes = ++s_headOwnedRefreshes;
-      if (refreshes <= 4 || (refreshes % 600) == 0)
-        Log("Mode45: late head-owned CopyMat refresh #%u (CCam site; collision unchanged)",
-            refreshes);
+      if (refreshes <= 4 || (refreshes % 600) == 0) {
+        if (sm == StereoMode::SameFrameVsConstGatedDual)
+          Log("HmdLook: Mode74 late CamMatrix refresh #%u (CCam site; collision unchanged)",
+              refreshes);
+        else
+          Log("Mode45: late head-owned CopyMat refresh #%u (CCam site; collision unchanged)",
+              refreshes);
+      }
     }
     const uint32_t n = ++g_fovSiteCalls;
     if (n <= 4 || (n % 600) == 0)

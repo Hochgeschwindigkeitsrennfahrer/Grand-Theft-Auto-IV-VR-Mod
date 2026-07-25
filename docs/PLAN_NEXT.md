@@ -1,6 +1,179 @@
 # Plan — where we are and what to do next (2026-07-25)
 
-Read with `docs/CURRENT-STATE.md`, **`docs/RE_OFFSETS.md`**, and `docs/HANDOFF_GROK.md`.
+Read with `docs/CURRENT-STATE.md`, **`docs/RE_OFFSETS.md`**, **`docs/MAPPED_RVA_CHEATSHEET.md`**, and `docs/HANDOFF_GROK.md`.
+
+**Mapped RVA rule:** CE `.text` **file_offset + 0xC00**. Older session notes below still say `0x30300` / `0x3187C` etc. as historical — live targets are **`0x30F00` / `0x32470`**.
+
+## Session note 2026-07-25 ~06:48 — Mode74 fused↔separated flicker FIX + HMD look
+
+**User:** every-frame Mode74 no freeze, but fused↔separated alternating.
+
+**Root cause (log):** gate miss-close → Mode72 temporal. ~**55 CLOSE / 56 OPEN** on `20260725-0635-mode74-every` (`streaming gate CLOSED after 60 miss… back to Mode72 temporal`).
+
+**Part A shipped:** sticky gate OPEN (no miss re-close) + no `TemporalCapturePairHold` while OPEN.  
+buildid: **`20260725-0644-mode74-noflicker`** · stereo **`74`** · kill **`45`**.  
+Agent: 0 further CLOSE, `stickyOpen=1`, `liveStreak` 1000+, `StereoDiff≠0`.
+
+**Part B shipped:** Mode74 HMD orient on SetVSConstF **src-copy** (never view+0x80) + `HmdLook: ACTIVE/ENABLED` logs.  
+buildid: **`20260725-0648-mode74-hmdlook`** · stereo **`74`** · kill **`45`**.
+
+**User test:** load world → stable stereo (no jump) → turn head (view follows) → F9 recenter. Kill file **`45`**.
+
+**Next after headset confirm:** tune HMD look / IPD, or projection asymmetry (Mode 15 known dead — need different lever). Do **not** reopen dual seam unless freeze returns.
+
+---
+
+## Session note 2026-07-25 ~06:38 — Mode 74 every-frame **MAJOR PASS** (flicker found later)
+
+**Headset:** user **"no freeze"** + log proves every-frame dual: buildid `20260725-0635-mode74-every`, `StereoMode: 74`, `every=1/1`, gate OPEN, `SAME-FRAME dual` past #5 to **dualN≈9k+**, `StereoDiff absdiff≠0`, `StereoSubmit mode=74`, **0** EXCEPTION.
+
+**Stereo ladder done:** 1/8 → 1/4 → 1/2 → **1/1 every-frame** stable with gate + inject-only-in-dual.
+
+**Follow-up:** fused↔separated flicker + HMD look → see ~06:48 note above.
+
+---
+
+## Session note 2026-07-25 ~06:35 — Mode 74 every-frame 1/1 (shipped → PASS above)
+
+**Shipped:** `kMode74DualEveryN` **2→1** only (true same-frame every BuildRootA after gate). Fixed EveryN=1 modulo (`tick%1` never `==1`). Gate / inject-only-`g_inDual` / exception→45 / miss re-close kept. No IPD/camera/projection.
+buildid: **`20260725-0635-mode74-every`** · stereo **`74`** · kill **`45`** · soft **`72`**.
+
+**Headset:** **"no freeze"** → MAJOR PASS; next = Camera/HMD look (above).
+
+---
+
+## Session note 2026-07-25 ~06:29 — Mode 74 sparse 1/2 PASS → go-ahead
+
+**User:** **"no freeze, go ahead"** → every-frame shipped above.
+buildid then: **`20260725-0629-mode74-1of2`** · stereo **`74`** · kill **`45`** · soft **`72`**.
+
+---
+
+## Session note 2026-07-25 ~06:27 — Mode 74 sparse 1/4 PASS
+
+**Headset:** user **playing fine, no freezes**. Log proves duals this session: `gate=OPEN`, `sparse=1/4`, `SAME-FRAME dual` past #5 hang to **#4800+**, `StereoDiff absdiff≠0` (e.g. 15578 / 8391), `StereoSubmit mode=74`, **0** EXCEPTION.
+buildid: **`20260725-0621-mode74-1of4`** · stereo **`74`** · kill **`45`** · soft **`72`**.
+
+**False alarm:** “Steam LAUNCHING / game not seen” was wrong — user was already in-world.
+
+**Honesty:** still ~**1/4** same-frame + **3/4** Mode72 temporal — superseded by **1/2** ship above.
+
+---
+
+## Session note 2026-07-25 ~06:21 — Mode 74 denser sparse 1/4 (shipped → PASS above)
+
+**Shipped:** `kMode74DualEveryN` **8→4** only. Gate / inject-only-`g_inDual` / exception→45 / miss re-close kept.
+buildid: **`20260725-0621-mode74-1of4`** · stereo **`74`** · kill **`45`** · soft **`72`**.
+
+---
+
+## Session note 2026-07-25 ~06:18 — Mode 74 sparse 1/8 PASS
+
+**Headset:** user **"no freeze"** + log proves dual ran: gate CLOSED→OPEN, `SAME-FRAME dual` #1→#480+,
+`dualN≈479`, `haveL/R=1`, `StereoDiff absdiff≈10k`, `StereoSubmit mode=74`, no EXCEPTION.
+Sparse 1/8 = occasional true same-frame mixed with Mode72 — superseded by **1/4** above.
+
+buildid: **`20260725-0615-mode74-sparse`** · kill **`45`** · soft **`72`**.
+
+---
+
+## Session note 2026-07-25 ~06:15 — Mode 74 sparse after freeze (shipped; PASS above)
+
+**Evidence then:** continuous Mode74 gate OPEN → dual #1–#5 → hard hang.  
+**Shipped:** gated + dual **1/8** + inject only while `g_inDual`. Remap **73→72**, **71→45**.
+
+---
+
+## Session note 2026-07-25 ~06:10 — Mode 74 gated same-frame (froze)
+
+Continuous dual after gate hung at #5 — superseded by sparse.
+buildid was **`20260725-0609-mode74-gated`**.
+
+---
+
+**Headset ladder (done):** **66 PASS** → **67 REJECT** → **65 OK** (`slot178=0x220D0`) → **42 dry** → **64 REJECT**.
+
+**Prior next:** stereo **`69`** ReplayDispatch MAT-PEEK — superseded by 70–74 path.
+
+---
+
+## Session note 2026-07-25 ~05:25 — Mode 69 matrix peek (after 68 PASS)
+
+**Shipped:**
+- Mode **69** `ReplayDispatchMatPeek` — same hook site as 68; SEH-safe read of `float[16]` at view+0x80
+- Logs translation `t=(m12,m13,m14)` + max frame-to-frame delta²; dual=OFF; auto→45
+- Parse caps raised to **69**
+
+**Test:** stereo **`69`** → `Mode69: PEEK armed` → `cadence=PASS` if readable.
+
+---
+
+## Session note 2026-07-25 ~03:57 — Mode 68 ReplayDispatch COUNT (offline only)
+
+**Shipped to out-asi only:**
+- Mode **68** `ReplayDispatchCountProbe` — COUNT-only @ mapped **`0x30CD0`** (AOB; no CC-pad; thiscall-esi)
+- Parse/write caps raised to **68** (was silently ignoring stereo=68)
+- Chain: PublishSync **66 PASS** → ReplayDispatch → `call [eax+0x178]` → live **`0x220D0`**
+- Dual plan NOTES only (docs): inject L/R at **view+0x80** before call @ **`0x30D0D`** — **not implemented**
+
+**When ready — ONE test:**
+1. Deploy ASI
+2. stereo **`68`** → `Mode68: COUNT armed exeRva=0x30CD0` then `cadence=PASS|SHARED|REJECT`
+3. Kill **`45`**
+
+---
+
+## Session note 2026-07-25 ~02:00–03:36 — mapped seam RE (user playing; no deploy)
+
+**Shipped to out-asi only:**
+- ViewConst Mode **64** TRUE start **`0x32470`**; PublishSync **`0x30F00`**; ViewMat **`0x314C0`**
+- Mode **41/42** OWNER-EDGE @ **`0x30D13`** + upload rets **`0x2A2183`/`0x2A25FF`** (ReplayGate triad; READ-ONLY)
+- Mode **65** slot178 first-bytes; Mode **66** log notes 11/12 PublishProj pairing
+- PublishProj **`0x31BA0`** (11 callers); viewport fn **`0x31110`** optional ViewMat
+- Helper **`0x31940`** ×58 E8 → Mode **66** may report **SHARED** (avg>4), not REJECT
+- ViewConst gate BSS **no writer** → prefer ladder **`45→66→67→65→64→41→42`**
+- Scripts: `offline-seam-mapped.py`, `verify-mapped-sites.py`, `offline-publishproj-map.py`, `offline-31940-clusters.py`, …
+- Docs: `MAPPED_RVA_CHEATSHEET.md`, RE_OFFSETS CRITICAL + ladder reorder
+- ResolveReSite prefers expected mapped RVA when prologue matches
+- Upload fn 0x2A1E10 (vtable): two MatMulx3->+178 paths; sibling 0x2A1D50 helper-only
+- ReplayGate-guarded +178 triad: 0x30D0D + 0x2A217D + 0x2A25F9 — Mode42 OWNER-EDGE logs all three rets
+- Mode66/67 COUNT: PASS / SHARED / REJECT labels
+- **No AGENT_LOOP ticks** — continuous offline only
+
+**When ready to test — ONE mode:**
+1. Deploy ASI
+2. stereo **`66`** → `Mode66: COUNT armed exeRva=0x30F00` then `cadence=PASS|SHARED|REJECT`
+3. Kill **`45`**
+4. Later: **67** → **65** → **42** (triad OWNER-EDGE); **64** last
+
+---
+
+## Session note 2026-07-25 ~01:45 — PE +0xC00 RVA skew fix (user playing; no deploy)
+
+**Root cause:** CE `.text` mapped RVA = file offset **+0xC00**. Mode 66 REJECT was wrong fixed RVA.
+
+**Shipped to out-asi only:**
+- `ResolveReSite()` AOB + corrected expected RVAs
+- Mode **64/66/67** AOB-armed COUNT (PublishSync **0x30F00**, ViewConst **0x32470**, ViewMat **0x314C0**)
+- Mode **66** CC-pad relaxed
+- VsRet constant **0x2D33E** (was 0x2C73E file-off) for Mode 34/41 filters
+- `re_validate` + `offline-re-scan.py` + RE_OFFSETS CRITICAL banner
+
+**When user returns — ONE test:**
+1. Deploy ASI (game must be quit)
+2. stereo **`66`** → expect `Mode66: COUNT armed exeRva=0x30F00` then `cadence=PASS|REJECT` with real entries
+3. Kill **`45`**
+
+---
+
+## Session note 2026-07-25 ~01:15 — Mode 67 ViewMatWriter COUNT (no game launch)
+
+**Shipped:**
+- **Correction:** ViewMatWriter TRUE start = **`0x308C0`** (not mid **`0x308C9`**) — *superseded: that was still file-offset; mapped is **`0x314C0`***
+- **Mode 67** — Mode 45 renderer + COUNT-only MinHook; dual=OFF
+- Ladder **`45→66→67→65→64→41→42`** (*superseded order — prefer 66 first*)
+
+**Kill:** **`45`**. **No dual.**
 
 ---
 

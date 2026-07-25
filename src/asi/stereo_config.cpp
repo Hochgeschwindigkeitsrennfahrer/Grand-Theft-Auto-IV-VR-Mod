@@ -265,14 +265,26 @@ int RemapLoadedStereoMode(int v) {
     Log("StereoMode: requested %d is DISABLED — using 45 (see docs/RE_OFFSETS.md)", v);
     return 45;
   }
+  // Mode 71 in-place view+0x80 WRITE froze twice (2026-07-25).
+  if (v == 71) {
+    Log("StereoMode: requested 71 TEMPORAL-INJECT is DISABLED (freeze) — using 45");
+    return 45;
+  }
+  // Mode 73 BuildRootA×2 same-frame: stable FPS but world streaming never finishes
+  // (empty world + load spinner 2026-07-25). Fall back to Mode 72 temporal.
+  // Mode 74 = gated same-frame (dual only after in-world); do NOT remap 74.
+  if (v == 73) {
+    Log("StereoMode: requested 73 SAME-FRAME dual DISABLED (empty world/streaming) — using 72");
+    return 72;
+  }
   return v;
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  // Two-digit modes 10..66 (45 = LKG; 62..66 = RE scaffold on same renderer).
-  if (n >= 2 && buf[0] >= '1' && buf[0] <= '6' && buf[1] >= '0' && buf[1] <= '9') {
+  // Two-digit modes 10..74 (45 = LKG; 71→45; 72 temporal; 73→72; 74 gated same-frame).
+  if (n >= 2 && buf[0] >= '1' && buf[0] <= '7' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 66)
+    if (v <= 74)
       return RemapLoadedStereoMode(v);
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
@@ -301,7 +313,7 @@ void ReloadStereoMode() {
   if (n > 0)
     v = ParseModeFile(buf, n);
   int prev = g_mode.load();
-  if (v >= 0 && v <= 66) {
+  if (v >= 0 && v <= 74) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -335,7 +347,15 @@ void ReloadStereoMode() {
                            v == static_cast<int>(StereoMode::SameFrameSeamGate) ||
                            v == static_cast<int>(StereoMode::ViewConstCountProbe) ||
                            v == static_cast<int>(StereoMode::ReplayVtable178Log) ||
-                           v == static_cast<int>(StereoMode::PublishSyncCountProbe))) {
+                           v == static_cast<int>(StereoMode::PublishSyncCountProbe) ||
+                           v == static_cast<int>(StereoMode::ViewMatWriterCountProbe) ||
+                           v == static_cast<int>(StereoMode::ReplayDispatchCountProbe) ||
+                           v == static_cast<int>(StereoMode::ReplayDispatchMatPeek) ||
+                           v == static_cast<int>(StereoMode::ReplayDispatchActivePeek) ||
+                           v == static_cast<int>(StereoMode::ReplayDispatchTemporalInject) ||
+                           v == static_cast<int>(StereoMode::VsConstTemporalInject) ||
+                           v == static_cast<int>(StereoMode::SameFrameVsConstDual) ||
+                           v == static_cast<int>(StereoMode::SameFrameVsConstGatedDual))) {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadWorldScale();
@@ -348,7 +368,7 @@ void ReloadStereoMode() {
 }
 
 void WriteStereoModeFile(int mode) {
-  if (mode < 0 || mode > 66)
+  if (mode < 0 || mode > 74)
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -394,13 +414,29 @@ bool UsesAngleCorrectCanvas(StereoMode mode) {
          mode == StereoMode::FovCanvasMotionGuardRtLock ||
          mode == StereoMode::HeadOwnedCamSpike || mode == StereoMode::RePatternValidate ||
          mode == StereoMode::SameFrameSeamGate || mode == StereoMode::ViewConstCountProbe ||
-         mode == StereoMode::ReplayVtable178Log || mode == StereoMode::PublishSyncCountProbe;
+         mode == StereoMode::ReplayVtable178Log || mode == StereoMode::PublishSyncCountProbe ||
+         mode == StereoMode::ViewMatWriterCountProbe ||
+         mode == StereoMode::ReplayDispatchCountProbe ||
+         mode == StereoMode::ReplayDispatchMatPeek ||
+         mode == StereoMode::ReplayDispatchActivePeek ||
+         mode == StereoMode::ReplayDispatchTemporalInject ||
+         mode == StereoMode::VsConstTemporalInject ||
+         mode == StereoMode::SameFrameVsConstDual ||
+         mode == StereoMode::SameFrameVsConstGatedDual;
 }
 
 bool IsHeadOwnedCamFamily(StereoMode mode) {
   return mode == StereoMode::HeadOwnedCamSpike || mode == StereoMode::RePatternValidate ||
          mode == StereoMode::SameFrameSeamGate || mode == StereoMode::ViewConstCountProbe ||
-         mode == StereoMode::ReplayVtable178Log || mode == StereoMode::PublishSyncCountProbe;
+         mode == StereoMode::ReplayVtable178Log || mode == StereoMode::PublishSyncCountProbe ||
+         mode == StereoMode::ViewMatWriterCountProbe ||
+         mode == StereoMode::ReplayDispatchCountProbe ||
+         mode == StereoMode::ReplayDispatchMatPeek ||
+         mode == StereoMode::ReplayDispatchActivePeek ||
+         mode == StereoMode::ReplayDispatchTemporalInject ||
+         mode == StereoMode::VsConstTemporalInject ||
+         mode == StereoMode::SameFrameVsConstDual ||
+         mode == StereoMode::SameFrameVsConstGatedDual;
 }
 
 float GetStereoSepMeters() {

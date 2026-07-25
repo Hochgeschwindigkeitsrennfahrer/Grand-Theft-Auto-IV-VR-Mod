@@ -40,6 +40,7 @@ Stock-DXVK **3.0.2** `d3d9.dll` flat ok + ASI Glue: SteamVR/OpenVR, **Mono** eye
 | `docs/CONSTRAINTS.md` | Hard rules |
 | `docs/REFERENCES.md` | Links |
 | `docs/RE_OFFSETS.md` | CE exe RVAs, AOBs, forbidden/safe seam map |
+| `docs/MAPPED_RVA_CHEATSHEET.md` | Quick file-off → mapped RVA table (+0xC00) |
 | `docs/IRONWOLF_DXVK.md` | Historical mailbox (reference) |
 | `docs/FAQ.md` | User questions |
 | `docs/BUILD.md` | Build |
