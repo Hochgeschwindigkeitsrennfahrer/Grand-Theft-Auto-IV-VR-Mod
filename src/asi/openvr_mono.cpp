@@ -222,6 +222,8 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
     TryCloseSteamVrDashboard();
   }
   UpdateHmdPose(poses, vr::k_unMaxTrackedDeviceCount);
+  // Snapshot for this EndScene epoch — CamMatrix / Mode74 injects share one sample.
+  BeginFrameHmdPoseSample();
 
   StereoRenderOnDevice(device);
   UpdateGameFovFromDevice(device);

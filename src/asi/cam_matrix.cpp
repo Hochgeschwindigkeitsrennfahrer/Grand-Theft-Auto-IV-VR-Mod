@@ -186,7 +186,8 @@ void ApplyHmdToCam(Matrix44* mat) {
     return;
 
   vr::HmdMatrix34_t h{};
-  if (!GetHmdPoseMatrix(&h))
+  // Prefer once-per-frame snapshot when available (matches Mode74 dual L/R).
+  if (!GetFrameHmdPoseMatrix(&h))
     return;
 
   Vec4 eye{};
@@ -267,9 +268,12 @@ void ApplyHmdToCam(Matrix44* mat) {
   // Stereo eye origin — L4D2VR GetViewOriginLeft/Right:
   //   origin + forward*(-eyeZ*scale) + right*(±IPD*ipdScale*scale/2)
   // Cover FOV + TextureBounds (Submit) handle fusion; IPD alone is not enough.
+  // Mode74: Mode74 SetVSConstF owns EyeToHead/IPD on the VS upload — skip
+  // CamMatrix IPD to avoid double separation (flicker / hyper-stereo).
   float ipdX = 0.f, ipdY = 0.f, ipdZ = 0.f;
   const bool rightEye = (GetStereoEye() == StereoEye::Right);
-  if (GetStereoMode() >= StereoMode::DualIpd) {
+  const bool mode74OwnsIpd = GetStereoMode() == StereoMode::SameFrameVsConstGatedDual;
+  if (GetStereoMode() >= StereoMode::DualIpd && !mode74OwnsIpd) {
     float hrx, hry, hrz;
     OvrToGta(h.m[0][0], h.m[1][0], h.m[2][0], &hrx, &hry, &hrz);
     float hrlen = std::sqrt(hrx * hrx + hry * hry + hrz * hrz);
@@ -283,13 +287,12 @@ void ApplyHmdToCam(Matrix44* mat) {
       hrz = rz;
     }
 
-    // Optional EyeToHead forward (OpenVR col2 translation) like L4D2 m_EyeZ.
+    // Cached EyeToHead forward (OpenVR col2 translation) like L4D2 m_EyeZ.
+    // Never call VRSystem from CopyMat hot path (perf).
     float eyeZ = 0.f;
-    if (vr::VRSystem()) {
-      const vr::HmdMatrix34_t e2h =
-          vr::VRSystem()->GetEyeToHeadTransform(rightEye ? vr::Eye_Right : vr::Eye_Left);
+    vr::HmdMatrix34_t e2h{};
+    if (GetCachedEyeToHead(rightEye, &e2h))
       eyeZ = e2h.m[2][3];
-    }
 
     // LeanGain (F7) = 6DoF only. StereoScale (F6, default 1.15, cap 1.30) =
     // soft disparity for size-without-fusion-break. LeanGain does not touch IPD.
@@ -546,6 +549,7 @@ bool IsCamMatrixOverrideEnabled() {
 void CamMatrixOnRecenter() {
   g_havePosBaseline = false;
   g_haveVehYawBase = false;
+  HmdPoseOnRecenter();
   Log("CamMatrix: 6DoF baseline reset (F9)");
 }
 

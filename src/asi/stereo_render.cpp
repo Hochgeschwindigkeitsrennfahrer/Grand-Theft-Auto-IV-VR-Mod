@@ -1359,6 +1359,9 @@ bool RunBuildDualViewShiftGuarded(void* self, void* edx) {
 // Mode72 SetVSConstF src-copy. Never mutates live view+0x80 or manager cam globals.
 bool RunMode73SameFrameDualGuarded(void* self, void* edx) {
   __try {
+    // Freeze HMD pose once for both eyes — mid-dual WaitGetPoses updates caused
+    // L≠R yaw / jumpy vision when Mode74 stamped live pose per inject.
+    BeginFrameHmdPoseSample();
     SetStereoEye(StereoEye::Left);
     RefreshLiveCamForStereoEye();
     g_origRoot[1](self, edx);
@@ -2177,13 +2180,19 @@ void Mode72CallOrig(void* device, uint32_t startReg, const float* src, uint32_t 
   }
 }
 
-// Mode74 HMD look: rewrite LOCAL view basis from OpenVR pose (never writes live view+0x80).
-// CamMatrix already owns CopyMat; this stamps the same orient onto the SetVSConstF upload
-// that actually feeds stereo draws (activeView+0x80 src-copy path).
-void Mode74ApplyHmdLookLocal(float* m) {
+// Mode74 HMD eye on LOCAL src-copy only (never writes live view+0x80).
+// Stability build after hmd6dof headset report (jumpy + ~half FPS + ~1Hz flicker):
+//   - Use once-per-dual frozen pose (BeginFrameHmdPoseSample) so L/R match.
+//   - Stamp HMD orientation only (CamMatrix already owns seated 6DoF — do NOT
+//     re-apply lean here; double 6DoF was the jumpy/perf regress).
+//   - EyeToHead from CACHE only (never VRSystem in inject hot path).
+//   - When e2h ok, apply eye translation and skip crude ±IPD (no double sep).
+// Projection VS slots still unknown / Mode15 dead — follow-up.
+// Returns true when EyeToHead was applied (caller must NOT also add crude ±IPD).
+bool Mode74ApplyHmdEyeLocal(float* m) {
   vr::HmdMatrix34_t h{};
-  if (!GetHmdPoseMatrix(&h) || !m)
-    return;
+  if (!GetFrameHmdPoseMatrix(&h) || !m)
+    return false;
   // OpenVR → GTA: (x,y,z)_gta = (x, -z, y)_ovr
   auto ovrToGta = [](float ox, float oy, float oz, float* gx, float* gy, float* gz) {
     *gx = ox;
@@ -2202,25 +2211,63 @@ void Mode74ApplyHmdLookLocal(float* m) {
     *y /= len;
     *z /= len;
   };
-  float fx, fy, fz;
-  ovrToGta(-h.m[0][2], -h.m[1][2], -h.m[2][2], &fx, &fy, &fz);
-  norm(&fx, &fy, &fz);
-  float rx = fy, ry = -fx, rz = 0.f;
-  float rlen = std::sqrt(rx * rx + ry * ry + rz * rz);
-  if (rlen < 1e-4f) {
-    rx = 1.f;
-    ry = 0.f;
-    rz = 0.f;
-  } else {
-    rx /= rlen;
-    ry /= rlen;
-    rz /= rlen;
+
+  // Head forward / right from FROZEN HMD pose (OpenVR -Z = forward).
+  float hfx, hfy, hfz;
+  ovrToGta(-h.m[0][2], -h.m[1][2], -h.m[2][2], &hfx, &hfy, &hfz);
+  norm(&hfx, &hfy, &hfz);
+  float hrx, hry, hrz;
+  ovrToGta(h.m[0][0], h.m[1][0], h.m[2][0], &hrx, &hry, &hrz);
+  float hrlen = std::sqrt(hrx * hrx + hry * hry + hrz * hrz);
+  if (hrlen < 1e-4f) {
+    hrx = hfy;
+    hry = -hfx;
+    hrz = 0.f;
+    hrlen = std::sqrt(hrx * hrx + hry * hry + hrz * hrz);
   }
-  float ux = ry * fz - rz * fy;
-  float uy = rz * fx - rx * fz;
-  float uz = rx * fy - ry * fx;
-  norm(&ux, &uy, &uz);
-  // Rage cam rows: right / forward(up-row) / world-up(at) — keep translation.
+  if (hrlen > 1e-4f) {
+    hrx /= hrlen;
+    hry /= hrlen;
+    hrz /= hrlen;
+  } else {
+    hrx = 1.f;
+    hry = 0.f;
+    hrz = 0.f;
+  }
+  float hux = hry * hfz - hrz * hfy;
+  float huy = hrz * hfx - hrx * hfz;
+  float huz = hrx * hfy - hry * hfx;
+  norm(&hux, &huy, &huz);
+
+  const bool rightEye = (GetStereoEye() == StereoEye::Right);
+  vr::HmdMatrix34_t e2h{};
+  // CACHE ONLY — never call GetEyeToHeadTransform from inject (perf).
+  bool haveE2h = GetCachedEyeToHead(rightEye, &e2h);
+
+  float rx = hrx, ry = hry, rz = hrz;
+  float fx = hfx, fy = hfy, fz = hfz;
+  float ux = hux, uy = huy, uz = huz;
+
+  // Pivot = CamMatrix position (already has ped eye + seated 6DoF). Do NOT add
+  // seated lean again — that double-6DoF caused jumpy vision + extra cost.
+  float pivotX = m[12], pivotY = m[13], pivotZ = m[14];
+
+  float eyeOffX = 0.f, eyeOffY = 0.f, eyeOffZ = 0.f;
+  if (haveE2h) {
+    const float ipdScale = GetStereoScale();
+    float ex, ey, ez;
+    ovrToGta(e2h.m[0][3] * ipdScale, e2h.m[1][3] * ipdScale, e2h.m[2][3] * ipdScale, &ex, &ey,
+             &ez);
+    eyeOffX = rx * ex + fx * ey + ux * ez;
+    eyeOffY = ry * ex + fy * ey + uy * ez;
+    eyeOffZ = rz * ex + fz * ey + uz * ez;
+    if (!std::isfinite(eyeOffX) || !std::isfinite(eyeOffY) || !std::isfinite(eyeOffZ) ||
+        std::fabs(eyeOffX) > 0.5f || std::fabs(eyeOffY) > 0.5f || std::fabs(eyeOffZ) > 0.5f) {
+      eyeOffX = eyeOffY = eyeOffZ = 0.f;
+      haveE2h = false;
+    }
+  }
+
   m[0] = rx;
   m[1] = ry;
   m[2] = rz;
@@ -2230,17 +2277,23 @@ void Mode74ApplyHmdLookLocal(float* m) {
   m[8] = ux;
   m[9] = uy;
   m[10] = uz;
-  static uint32_t s_hmdLookN = 0;
-  const uint32_t n = ++s_hmdLookN;
+  m[12] = pivotX + eyeOffX;
+  m[13] = pivotY + eyeOffY;
+  m[14] = pivotZ + eyeOffZ;
+
+  static uint32_t s_hmdEyeN = 0;
+  const uint32_t n = ++s_hmdEyeN;
   if (n == 1)
-    Log("HmdLook: ACTIVE Mode74 (SetVSConstF src-copy HMD orient; never writes view+0x80; "
-        "F9 recenter)");
+    Log("HmdLook: ACTIVE Mode74 (src-copy HMD orient + cached EyeToHead; NO Mode74 "
+        "seated-6DoF; frozen pose/dual; never view+0x80; F9 recenter)");
   if (n <= 3 || (n % 600) == 0) {
     const float yawDeg = std::atan2(fx, fy) * (180.f / 3.14159265f);
     const float pitchDeg = std::asin((std::max)(-1.f, (std::min)(1.f, fz))) * (180.f / 3.14159265f);
-    Log("HmdLook: Mode74 yaw=%.1f pitch=%.1f n=%u (turn head — view should follow)", yawDeg,
-        pitchDeg, n);
+    Log("HmdLook: Mode74 eye=%s yaw=%.1f pitch=%.1f e2h=%d eyeOff=(%.4f,%.4f,%.4f) n=%u "
+        "(frozenPose; no seated6DoF here)",
+        rightEye ? "R" : "L", yawDeg, pitchDeg, haveE2h ? 1 : 0, eyeOffX, eyeOffY, eyeOffZ, n);
   }
+  return haveE2h;
 }
 
 const float* Mode72SelectSrc(const float* src, uint32_t startReg, uint32_t count) {
@@ -2284,24 +2337,33 @@ const float* Mode72SelectSrc(const float* src, uint32_t startReg, uint32_t count
   }
   for (int i = 0; i < 16; ++i)
     g_mode72LocalMat[i] = m[i];
-  // Mode74: HMD look on local copy BEFORE IPD translate (safe; no live view write).
+  // Mode74: HMD orient + cached EyeToHead on local copy (no Mode74 seated-6DoF —
+  // CamMatrix owns lean). When EyeToHead applied, skip crude ±half IPD.
+  // Never writes live view+0x80.
+  bool mode74EyeOk = false;
   if (mode74)
-    Mode74ApplyHmdLookLocal(g_mode72LocalMat);
-  float half = 0.5f * GetStereoSepMeters() * GetStereoScale();
-  if (half < 0.05f)
-    half = 0.05f;
-  if (half > kMode71MaxHalfSep)
-    half = kMode71MaxHalfSep;
-  if (half < 0.f)
-    half = 0.f;
-  const float sign = (GetStereoEye() == StereoEye::Right) ? 1.f : -1.f;
-  const float rlen = std::sqrt(g_mode72LocalMat[0] * g_mode72LocalMat[0] +
-                               g_mode72LocalMat[1] * g_mode72LocalMat[1] +
-                               g_mode72LocalMat[2] * g_mode72LocalMat[2]);
-  const float inv = (rlen > 1e-3f) ? (1.f / rlen) : 0.f;
-  g_mode72LocalMat[12] = m[12] + sign * half * g_mode72LocalMat[0] * inv;
-  g_mode72LocalMat[13] = m[13] + sign * half * g_mode72LocalMat[1] * inv;
-  g_mode72LocalMat[14] = m[14] + sign * half * g_mode72LocalMat[2] * inv;
+    mode74EyeOk = Mode74ApplyHmdEyeLocal(g_mode72LocalMat);
+  if (!mode74EyeOk) {
+    float half = 0.5f * GetStereoSepMeters() * GetStereoScale();
+    if (half < 0.05f)
+      half = 0.05f;
+    if (half > kMode71MaxHalfSep)
+      half = kMode71MaxHalfSep;
+    if (half < 0.f)
+      half = 0.f;
+    const float sign = (GetStereoEye() == StereoEye::Right) ? 1.f : -1.f;
+    const float rlen = std::sqrt(g_mode72LocalMat[0] * g_mode72LocalMat[0] +
+                                 g_mode72LocalMat[1] * g_mode72LocalMat[1] +
+                                 g_mode72LocalMat[2] * g_mode72LocalMat[2]);
+    const float inv = (rlen > 1e-3f) ? (1.f / rlen) : 0.f;
+    // Mode74 may have already written seated pivot into local[12..14]; use that.
+    const float bx = mode74 ? g_mode72LocalMat[12] : m[12];
+    const float by = mode74 ? g_mode72LocalMat[13] : m[13];
+    const float bz = mode74 ? g_mode72LocalMat[14] : m[14];
+    g_mode72LocalMat[12] = bx + sign * half * g_mode72LocalMat[0] * inv;
+    g_mode72LocalMat[13] = by + sign * half * g_mode72LocalMat[1] * inv;
+    g_mode72LocalMat[14] = bz + sign * half * g_mode72LocalMat[2] * inv;
+  }
   ++g_mode72Injects;
   return g_mode72LocalMat;
 }
@@ -6974,14 +7036,15 @@ bool InstallStereoRenderHooks() {
         g_haveL = g_haveR = false;
         const bool okHook = Mode72InstallHook();
         Log("StereoRender: mode 74 GATED SAME-FRAME EVERY-FRAME (Mode72 until in-world gate; "
-            "then BuildRootA×2 every frame 1/%u + VSConst src-COPY + HMD look; need %u live ES; "
-            "STICKY open — no miss→temporal; never writes view+0x80; inject only while "
-            "g_inDual) ok=%d fovSite=%d vsHook=%d dualEnabled=%d",
+            "then BuildRootA×2 every frame 1/%u + VSConst src-COPY + HMD+cachedEyeToHead; need %u "
+            "live ES; STICKY open; frozen pose/dual; NO Mode74 seated-6DoF; never view+0x80; "
+            "inject only while g_inDual) ok=%d fovSite=%d vsHook=%d dualEnabled=%d",
             kMode74DualEveryN, kMode74GateNeedLiveEs, g_ok.load() ? 1 : 0, fovOk ? 1 : 0,
             okHook ? 1 : 0, g_mode74DualEnabled.load() ? 1 : 0);
         Log("StereoRender: how-to — stereo=74; load INTO WORLD; sticky SAME-FRAME dual + "
-            "HmdLook ACTIVE; turn head; kill=45");
-        Log("HmdLook: ENABLED Mode74 path (src-copy HMD orient + CamMatrix; F9 recenter)");
+            "HmdLook ACTIVE (orient+e2h; CamMatrix owns 6DoF); kill=45");
+        Log("HmdLook: ENABLED Mode74 path (src-copy HMD orient + cached EyeToHead; "
+            "frozen pose; no Mode74 seated-6DoF; F9 recenter)");
         Log("StereoRender: kill-switch - stereo=72 or 45");
       } else if (mode == StereoMode::HeadOwnedCamSpike) {
         Log("StereoRender: mode 45 HEAD-OWNED CAM SPIKE (Mode44 RT lock + post-CCam "

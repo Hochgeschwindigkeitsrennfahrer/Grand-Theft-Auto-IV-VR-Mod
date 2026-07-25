@@ -1,6 +1,67 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-## Deployed 2026-07-25 ~06:48 — Mode 74 **noflicker + HMD look** (test now)
+## Deployed 2026-07-25 ~07:08 — Mode 74 **stable** (flicker/perf/jump fix) — TEST IN MORNING
+
+**Headset feedback on `20260725-0654-mode74-hmd6dof`:** warp slightly better (not priority); **FPS almost halved**; vision **jumpy**; **~1Hz flicker** also in fallback `20260725-0648-mode74-hmdlook`.
+
+### Flicker root cause (log + code)
+
+Sticky gate already fixed fused↔separated from miss-close (0 CLOSE after OPEN on hmd6dof log). Remaining ~1Hz/jumpy came from **double HMD path**:
+1. CamMatrix already applies HMD look + seated 6DoF + IPD.
+2. Mode74 `ApplyHmdEyeLocal` **re-applied seated 6DoF** + EyeToHead on every VS inject, and sometimes called `GetEyeToHeadTransform` live.
+3. L/R dual could see **different pose samples** mid-frame → yaw/IPD fight (log showed L/R yaw diverge within one dual).
+
+### What changed (one stability behavior set)
+
+- **Frozen pose** once per dual (`BeginFrameHmdPoseSample`) — L and R share one sample.
+- **EyeToHead cached** once (refresh on F9) — never `VRSystem` in inject / CopyMat hot path.
+- **Mode74 drops seated 6DoF** (CamMatrix keeps cheap seated lean).
+- **Mode74 owns IPD/e2h** on VS src-copy; CamMatrix skips IPD while stereo=74 (no double sep).
+- Light EMA on pose orientation to kill single-sample spikes.
+- Sticky every-frame dual + inject-only-in-`g_inDual` + never view+0x80 unchanged.
+
+**Play now:** stereo **`74`**. Kill **`45`**. Soft **`72`**.  
+**Build:** `ASI_BUILD_ID 20260725-0708-mode74-stable`
+
+**Fallback still:** tag `fallback-mode74-hmdlook-20260725` @ `1476229` if this regresses.
+
+**You test (morning):**
+1. SteamVR on → start GTA IV → load **into the world**.
+2. Confirm log: `ASI_BUILD_ID 20260725-0708-mode74-stable`, gate OPEN, `stickyOpen=1`, **0** further CLOSE, `HmdLook: ACTIVE` with `no seated6DoF here`.
+3. Is **~1Hz flicker gone**? Is view less jumpy? Is FPS closer to pre-6DoF?
+4. Turn head — look OK? F9 = recenter.
+5. Bad → stereo file **`45`**, or restore fallback tag above.
+
+**Honesty / limits:** every-frame dual still costs ~2× render (FPS cannot match mono). No per-eye VS projection inject yet (Mode15 dead; PublishProj `0x31BA0` / `this+0x308` is next RE lead). Kill = **45**.
+
+---
+
+## Prior deployed 2026-07-25 ~06:54 — Mode 74 **HMD×EyeToHead + seated 6DoF** (REGRESSED)
+
+**User:** current build best so far → **git fallback saved**; still **"game world warps as you move your head"** → this build. **Headset later:** half FPS, jumpy, flicker → superseded by **stable** above.
+
+### Fallback (do not lose)
+
+- **Commit:** `1476229` — *Save Mode74 sticky stereo + HMD look as headset fallback.*
+- **Tag:** `fallback-mode74-hmdlook-20260725` (build `20260725-0648-mode74-hmdlook`)
+- Restore: `git checkout fallback-mode74-hmdlook-20260725` then rebuild/deploy that tree if this build regresses.
+
+### Warp hypothesis
+
+Head **rotation** on the SetVSConstF src-copy without matching **per-eye EyeToHead** (and without seated position) → wrong stereo pivot / shear while SteamVR timewarps. Asymmetric **HMD projection** still missing (Mode **15** `D3DTS_PROJECTION` tested dead; no known VS proj slot for Mode74 inject) — that remains the main residual FOV-warp risk.
+
+### What changed (one primary behavior)
+
+Mode74 src-copy now applies **HMD pose × `GetEyeToHeadTransform`** + **seated 6DoF** delta (F9 clears baseline via `HmdPoseOnRecenter`). When EyeToHead applies, **skip crude ±half IPD** (no double separation). Still: sticky gate, every-frame dual, inject-only-in-`g_inDual`, never write view+0x80, exception→45.
+
+**Play was:** stereo **`74`**. Kill **`45`**. Soft **`72`**.  
+**Build:** `ASI_BUILD_ID 20260725-0654-mode74-hmd6dof`
+
+**Honesty / limits:** double 6DoF + live e2h hurt FPS/jump. Superseded by stable build. Kill = **45**.
+
+---
+
+## Prior deployed 2026-07-25 ~06:48 — Mode 74 **noflicker + HMD look** (fallback)
 
 **User report (build `20260725-0635-mode74-every`):** no freeze, but **"jumps between a fused picture and two separated pictures"** (alternating).
 
@@ -28,14 +89,8 @@ Miss detector was a **false positive** during dual: EndScene can outpace BuildRo
 
 **Change:** Mode74 SetVSConstF **src-copy** now stamps **HMD orientation** onto the local matrix before IPD translate (never writes live view+0x80). CamMatrix late refresh log tagged `HmdLook: Mode74…`. Clear enable lines: `HmdLook: ENABLED` / `HmdLook: ACTIVE`.
 
-**Play now:** stereo **`74`**. Kill **`45`**. Soft **`72`**.  
-**Build:** `ASI_BUILD_ID 20260725-0648-mode74-hmdlook` (noflicker sticky + HMD look). Prior intermediate: `20260725-0644-mode74-noflicker`.
-
-**You test:**
-1. SteamVR on → start GTA IV → load **into the world** (not just menu).
-2. Watch headset: stereo should stay **stable** (no jump fused↔separated).
-3. **Turn your head** — view should follow. F9 = recenter.
-4. If freeze / wrong: set `gtaiv_dxvk_vr.stereo` next to the EXE to **`45`**, save, restart game.
+**Play was:** stereo **`74`**. Kill **`45`**. Soft **`72`**.  
+**Build:** `ASI_BUILD_ID 20260725-0648-mode74-hmdlook` — saved as git fallback above. Superseded by **hmd6dof** section.
 
 **Honesty / limits:** still matrix IPD stereo (not asymmetric HMD projection). HMD look is orientation on the VS upload + CamMatrix — not full 6DoF room-scale. Sticky gate means dual stays on after open (mission-load empty-world risk theoretically higher than miss-close; every-frame dual already accepted). Kill = **45**.
 

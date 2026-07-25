@@ -4,6 +4,34 @@ Read with `docs/CURRENT-STATE.md`, **`docs/RE_OFFSETS.md`**, **`docs/MAPPED_RVA_
 
 **Mapped RVA rule:** CE `.text` **file_offset + 0xC00**. Older session notes below still say `0x30300` / `0x3187C` etc. as historical — live targets are **`0x30F00` / `0x32470`**.
 
+## Session note 2026-07-25 ~07:08 — Mode74 stable (flicker/perf/jump)
+
+**Headset on hmd6dof:** half FPS, jumpy, ~1Hz flicker (also in hmdlook fallback). Sticky gate OK (0 CLOSE) — not that flicker.
+
+**Root:** double HMD path (CamMatrix 6DoF+IPD + Mode74 seated-6DoF+live e2h) + mid-dual pose resample.
+
+**Shipped:** frozen pose/dual; EyeToHead cache-only; Mode74 no seated-6DoF; Mode74 owns IPD (CamMatrix skips while 74); light pose EMA. Sticky every-frame dual kept.  
+buildid: **`20260725-0708-mode74-stable`** · stereo **`74`** · kill **`45`**.
+
+**Morning test:** flicker gone? less jump? FPS closer to pre-6DoF? Log `no seated6DoF here`.
+
+**Next (needs headset or careful COUNT):** per-eye proj — PublishProj mapped **`0x31BA0`** writes tangents at **`this+0x308`**; Mode15 D3DTS_PROJECTION dead; do **not** reopen dual seam. Optional: Submit `GetEyeSubmitBounds` only if canvas path still nullptr-by-design.
+
+---
+
+## Session note 2026-07-25 ~06:54 — Mode74 HMD×EyeToHead (warp) — REGRESSED
+
+**User:** best-so-far saved as fallback; world still **warps on head move**.
+
+**Fallback:** commit **`1476229`** / tag **`fallback-mode74-hmdlook-20260725`** (`20260725-0648-mode74-hmdlook`).
+
+**Hypothesis:** HMD rotation on src-copy without **EyeToHead** (+ seated) → shear; asymmetric proj still missing (Mode15 dead).
+
+**Shipped then:** Mode74 src-copy = HMD pose × `GetEyeToHeadTransform` + seated 6DoF — **headset: half FPS / jumpy / flicker** → superseded by **stable** above.  
+buildid was: **`20260725-0654-mode74-hmd6dof`**.
+
+---
+
 ## Session note 2026-07-25 ~06:48 — Mode74 fused↔separated flicker FIX + HMD look
 
 **User:** every-frame Mode74 no freeze, but fused↔separated alternating.
@@ -15,11 +43,11 @@ buildid: **`20260725-0644-mode74-noflicker`** · stereo **`74`** · kill **`45`*
 Agent: 0 further CLOSE, `stickyOpen=1`, `liveStreak` 1000+, `StereoDiff≠0`.
 
 **Part B shipped:** Mode74 HMD orient on SetVSConstF **src-copy** (never view+0x80) + `HmdLook: ACTIVE/ENABLED` logs.  
-buildid: **`20260725-0648-mode74-hmdlook`** · stereo **`74`** · kill **`45`**.
+buildid: **`20260725-0648-mode74-hmdlook`** · stereo **`74`** · kill **`45`** — **git fallback** above.
 
 **User test:** load world → stable stereo (no jump) → turn head (view follows) → F9 recenter. Kill file **`45`**.
 
-**Next after headset confirm:** tune HMD look / IPD, or projection asymmetry (Mode 15 known dead — need different lever). Do **not** reopen dual seam unless freeze returns.
+**Next:** warp fix → see ~06:54 note. Do **not** reopen dual seam unless freeze returns.
 
 ---
 
