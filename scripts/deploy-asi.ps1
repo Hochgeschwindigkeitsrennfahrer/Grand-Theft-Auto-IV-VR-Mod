@@ -33,10 +33,8 @@ Write-Host "Deployed gtaiv_dxvk_vr.asi -> $GameDir"
 Write-Host "Log: $(Join-Path $GameDir 'gtaiv_dxvk_vr.log')"
 
 if ($Launch) {
-  Write-Host "Launching GTA IV..."
-  $args = @{ NoPause = $true }
-  if ($DirectExe) { $args.DirectExe = $true }
-  & "$PSScriptRoot\restart-gtaiv.ps1" @args
+  Write-Host "Launching GTA IV (DirectExe default — no Steam Cancel+Play)..."
+  & "$PSScriptRoot\restart-gtaiv.ps1" -NoPause
 } else {
   Write-Host "Checklist: SteamVR running, DXVK 3.0.2 d3d9.dll - or use -Launch / build-deploy-run.ps1"
 }

@@ -4,6 +4,62 @@ Read with `docs/CURRENT-STATE.md`, **`docs/RE_OFFSETS.md`**, **`docs/MAPPED_RVA_
 
 **Mapped RVA rule:** CE `.text` **file_offset + 0xC00**. Older session notes below still say `0x30300` / `0x3187C` etc. as historical — live targets are **`0x30F00` / `0x32470`**.
 
+## Session note 2026-07-25 ~15:47 — Mode74 contentinj (presence, dual OFF)
+
+**Goal:** true-er 3D without every-frame BuildRootA×2.
+
+**Root (crashsafe):** 1 inject/ES + CamMatrix `ipd=0` while Mode74 “owned” IPD via VS — weak parallax.
+
+**Shipped:** DualViewBudget=12 multi-inject; forced ±half on src-copy when dualEn=0; near-cam contentHit armed; CamMatrix IPD on when dualEn=0; never view+0x80 / dual×2 off.  
+buildid: **`20260725-154721-mode74-contentinj`** · stereo **`74`** · kill **`45`**.  
+Agent: `eyeSep=5.0cm` injects↑; CamMatrix `ipd≠0`; `dualEn=0`; `contentInj=0` (ptr hits).
+
+**Headset:** lean near car/wall. Still flat → hook upload fn **`0x2A1E10`** prologue next (prefer over sparse dual).
+
+---
+
+## Session note 2026-07-25 ~15:18 — Launch DirectExe + Mode74 dualsep
+
+**Part A (HIGH):** Steam `-applaunch` → LAUNCHING Cancel+Play. **Fixed:** `restart-gtaiv.ps1` defaults to **GTAIV.exe DirectExe** (cwd=game dir). Verified GTAIV in ~1s. One-click: Desktop **GTA IV Quick Restart** / `restart-gtaiv.bat`. Fallback `-SteamLaunch`.
+
+**Part B:** Still-monitor after CamIPD. Root: dual VIEW inject **eyeSep=0** (skipped sep); inject budget never reset while gate OPEN (injects stuck ~90); build-thread SetVSConstF → 45.
+
+**Shipped:** dual src-copy ±half when inject fires; CamMatrix→D3DTS_VIEW per eye; EndScene budget reset + VS c0 from CamMatrix; never view+0x80.  
+buildid: **`20260725-1518-mode74-dualsep`** · stereo **`74`** · kill **`45`**.  
+Agent: injects climb with ES; L/R VIEW push differ; 0 EXCEPTION; launch OK.
+
+**Headset:** lean near car/wall. Still monitor → capture after replay upload / `0x2A1E10` draw-thread seam. Not more IPD alone.
+
+---
+
+## Session note 2026-07-25 ~14:25 — Mode74 CamIPD dual (presence)
+
+**User:** PubProj smooth but **"still flat"** — need IN the game.
+
+**Audit:** PubProj HOOK L/R ox OK; StereoDiff≠0; **Mode72 VIEW inject silent in dual** (`contentInj=0`); CamMatrix had **ipd=0 during dual** because Mode74 skipped it for VS-owned sep.
+
+**Shipped:** CamMatrix applies IPD while `StereoInDualPass()`; outside dual Mode74 VS still owns e2h. PubProj HOLD +0x180 for eye walk kept.  
+buildid: **`20260725-1425-mode74-camipd`** · stereo **`74`** · kill **`45`**.  
+Superseded by dualsep above for inject/budget/launch.
+
+---
+
+## Session note 2026-07-25 ~13:57 — Mode74 PubProj (superseded — smooth/flat)
+
+**User:** EyeProj still flat — need to be **IN** the game (not monitor-in-face).
+
+**Shipped then:** MinHook **PublishProj `0x31BA0`** → `+0x308`. Smooth PASS; presence FAIL → CamIPD above.  
+buildid was: **`20260725-1404-mode74-pubproj`**.
+
+---
+
+## Session note 2026-07-25 ~13:52 — Mode74 EyeProj (superseded — still flat)
+
+`GetProjectionRaw` → `+0x180` + c4 push. Armed in log; headset still flat.  
+buildid was: **`20260725-1352-mode74-eyeproj`**.
+
+---
+
 ## Session note 2026-07-25 ~07:08 — Mode74 stable (flicker/perf/jump)
 
 **Headset on hmd6dof:** half FPS, jumpy, ~1Hz flicker (also in hmdlook fallback). Sticky gate OK (0 CLOSE) — not that flicker.
@@ -13,9 +69,7 @@ Read with `docs/CURRENT-STATE.md`, **`docs/RE_OFFSETS.md`**, **`docs/MAPPED_RVA_
 **Shipped:** frozen pose/dual; EyeToHead cache-only; Mode74 no seated-6DoF; Mode74 owns IPD (CamMatrix skips while 74); light pose EMA. Sticky every-frame dual kept.  
 buildid: **`20260725-0708-mode74-stable`** · stereo **`74`** · kill **`45`**.
 
-**Morning test:** flicker gone? less jump? FPS closer to pre-6DoF? Log `no seated6DoF here`.
-
-**Next (needs headset or careful COUNT):** per-eye proj — PublishProj mapped **`0x31BA0`** writes tangents at **`this+0x308`**; Mode15 D3DTS_PROJECTION dead; do **not** reopen dual seam. Optional: Submit `GetEyeSubmitBounds` only if canvas path still nullptr-by-design.
+**Superseded for 3D feel by EyeProj above.** Do **not** reopen dual seam.
 
 ---
 

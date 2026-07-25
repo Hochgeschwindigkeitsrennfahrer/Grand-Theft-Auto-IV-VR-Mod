@@ -15,6 +15,9 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
 // True while same-frame L/R dual pass is running (projection inject gate).
 bool StereoInDualPass();
 
+// Mode74: true only when gtaiv_dxvk_vr.dual opt-in is on (BuildRootA×2 allowed).
+bool StereoMode74DualEnabled();
+
 // Broader than dual: Left natural PhaseA..Draw + Right dual (mode 7/8).
 bool StereoProjWindowActive();
 

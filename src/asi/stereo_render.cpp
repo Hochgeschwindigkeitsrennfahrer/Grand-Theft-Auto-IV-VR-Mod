@@ -497,6 +497,44 @@ std::atomic<uint32_t> g_mode72Skip{0};
 std::atomic<uint32_t> g_mode72RejectMat{0};
 std::atomic<uint32_t> g_mode72Budget{0};
 float g_mode72LocalMat[16]{};
+// Mode74 per-eye HMD projection (src-copy / device VS patch). Never writes view+0x80.
+float g_mode74LocalProj[16]{};
+float g_mode74CachedProjL[16]{};
+float g_mode74CachedProjR[16]{};
+std::atomic<bool> g_mode74ProjCacheOk{false};
+std::atomic<uint32_t> g_mode74ProjInjects{0};
+std::atomic<uint32_t> g_mode74ProjDevicePatches{0};
+std::atomic<uint32_t> g_mode74ProjMiss{0};
+std::atomic<uint32_t> g_mode74ProjDiscoverN{0};
+// PublishProj mapped 0x31BA0 — builds frustum block at view+0x308 from +0x180.
+constexpr uint32_t kMode74PublishProjRva = 0x31BA0;
+static const uint8_t kMode74PublishProjPrologue[] = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0x81,
+                                                     0xEC, 0x88, 0x00, 0x00, 0x00};
+using Mode74PublishProj_t = void(__fastcall*)(void* self, void* edx);
+Mode74PublishProj_t g_origPublishProj = nullptr;
+void* g_mode74PublishProjHookAddr = nullptr;
+std::atomic<bool> g_mode74PublishProjArmed{false};
+std::atomic<uint32_t> g_mode74PublishProjCalls{0};
+std::atomic<uint32_t> g_mode74PublishProjInjects{0};
+std::atomic<uint32_t> g_mode74PubC0Writes{0};
+// Live [0x17F583C] is often 0 during BuildRootA dual → Mode72 inject stalls (flat).
+// Cache last known view (from live activeView or PubProj self) for src==view+0x80 match.
+std::atomic<uint32_t> g_mode74CachedView{0};
+std::atomic<uint32_t> g_mode74CachedViewHits{0};
+std::atomic<uint32_t> g_mode74CachedViewInjects{0};
+std::atomic<uint32_t> g_mode74ContentInjects{0};
+// Per-eye-walk budget for content-matched view injects (avoid old ~300/frame hang).
+std::atomic<uint32_t> g_mode74DualViewBudget{0};
+constexpr uint32_t kMode74DualViewBudgetPerEye = 12;
+// Hold HMD +0x180 for whole eye walk (HOOK used to restore before draws that re-read it).
+struct Mode74HeldPub180 {
+  void* self = nullptr;
+  float p180[16]{};
+  bool held = false;
+};
+constexpr int kMode74MaxHeldPub = 8;
+Mode74HeldPub180 g_mode74HeldPub[kMode74MaxHeldPub]{};
+int g_mode74HeldPubN = 0;
 std::atomic<bool> g_mode73DualDead{false};
 std::atomic<uint32_t> g_mode73DualN{0};
 
@@ -504,10 +542,23 @@ std::atomic<uint32_t> g_mode73DualN{0};
 // After gate OPEN: dual every Nth BuildRootA. Old continuous hang (dual #1–#5) was with
 // inject-every-upload whenever gate OPEN; now inject only while g_inDual — try EveryN=1.
 // Exception permanently disables dual (→45).
-// Sticky OPEN: do NOT re-close on inject-miss (2026-07-25 headset: miss close→Mode72
-// temporal eye-flip felt like fused↔separated flicker; ~55 CLOSE/OPEN in one session).
-constexpr uint32_t kMode74GateNeedLiveEs = 90;   // ~3s @30fps consecutive live inject ES
-constexpr uint32_t kMode74DualEveryN = 1;        // every BuildRootA after gate = same-frame dual (1/1)
+//
+// Gate policy (2026-07-25 crash-safe):
+// - softskip build proved LOAD PAUSE/SOFT SKIP never fired during apt→city (pause=0,
+//   0 SOFT SKIP lines) while every-frame BuildRootA×2 kept climbing → hard death.
+// - DEFAULT: DualEnabled=OFF → Mode72 temporal + CamMatrix/D3DTS/PubProj presence only.
+//   Opt-in: create gtaiv_dxvk_vr.dual with "1" (still uses hardened thresholds below).
+// - If opt-in: OPEN needs 300 live ES; dual at most 1/4; aggressive hitch/teleport/miss
+//   force long mono cool-down; dualThisEs does NOT count as live for miss (was the bug).
+constexpr uint32_t kMode74GateNeedLiveEs = 300;  // ~10s @30fps before any dual (opt-in only)
+constexpr uint32_t kMode74DualEveryN = 4;        // at most 1/4 BuildRootA dual when opt-in
+constexpr uint32_t kMode74UnloadNeedEs = 8;      // short null-view streak → pause
+constexpr uint32_t kMode74LoadPauseEs = 600;     // ~20s mono cool-down after load detect
+constexpr uint32_t kMode74MissCloseEs = 15;      // inject-miss while OPEN → pause (was 120)
+constexpr float kMode74TeleportMeters = 8.f;    // smaller interior/exterior jump
+constexpr DWORD kMode74HitchMs = 80;             // EndScene gap → hard load-pause (was 250)
+constexpr DWORD kMode74SoftSkipMs = 40;          // any slow frame → skip dual
+constexpr uint32_t kMode74SoftSkipToPause = 8;   // few soft skips → hard load-pause
 std::atomic<bool> g_mode74GateOpen{false};
 std::atomic<bool> g_mode74DualDead{false};
 std::atomic<uint32_t> g_mode74DualN{0};
@@ -515,9 +566,13 @@ std::atomic<uint32_t> g_mode74LiveStreak{0};
 std::atomic<uint32_t> g_mode74MissStreak{0};
 std::atomic<uint32_t> g_mode74BuildTick{0};
 std::atomic<bool> g_mode74DidDualThisFrame{false};
+std::atomic<uint32_t> g_mode74LoadPauseRemain{0};
+std::atomic<uint32_t> g_mode74WorldWeakStreak{0};
+std::atomic<DWORD> g_mode74LastEsMs{0};
+std::atomic<uint32_t> g_mode74SoftSkipStreak{0};
 uint32_t g_mode74LastInjects = 0;
-// Runtime kill for dual after gate (defaults ON). Exception sets DualDead permanently.
-std::atomic<bool> g_mode74DualEnabled{true};
+// Crash-safe default OFF (no BuildRootA×2). Opt-in via gtaiv_dxvk_vr.dual=1.
+std::atomic<bool> g_mode74DualEnabled{false};
 
 std::atomic<uint32_t> g_mode41VsRetHits{0};
 std::atomic<uint32_t> g_mode41Es{0};
@@ -1355,6 +1410,361 @@ bool RunBuildDualViewShiftGuarded(void* self, void* edx) {
   }
 }
 
+bool Mode72ReadActiveView(uint32_t* outActive);
+uint32_t Mode74ResolveViewForInject(bool* usedCache);
+void Mode74BeginEyePubHold();
+void Mode74RestoreHeldPub180();
+bool Mode74HoldPub180(void* self, const float* backup180);
+void Mode74BeginLoadPause(const char* reason);
+bool Mode71MatSaneForInject(const float m[16]);
+bool Mode72TryCopySrc(const float* src, float out[16]);
+bool Mode74ApplyHmdEyeLocal(float* m);
+bool Mode74LooksLikeProjection(const float* m);
+
+// Row-major 4×4: out = A * B (same convention as game MatMul 0x307F0).
+void Mode74Mat4Mul(float out[16], const float a[16], const float b[16]) {
+  float tmp[16]{};
+  for (int r = 0; r < 4; ++r) {
+    for (int c = 0; c < 4; ++c) {
+      tmp[r * 4 + c] = a[r * 4 + 0] * b[0 * 4 + c] + a[r * 4 + 1] * b[1 * 4 + c] +
+                       a[r * 4 + 2] * b[2 * 4 + c] + a[r * 4 + 3] * b[3 * 4 + c];
+    }
+  }
+  for (int i = 0; i < 16; ++i)
+    out[i] = tmp[i];
+}
+
+// Cache per-eye HMD projection once per dual (L≠R asymmetric; shared near/far defaults).
+// Optional template from activeView+0x180 (PublishSync proj slot / PublishProj input).
+void Mode74CacheEyeProjections() {
+  g_mode74ProjCacheOk.store(false);
+  float tmpl[16]{};
+  const float* tmplPtr = nullptr;
+  uint32_t active = 0;
+  if (Mode72ReadActiveView(&active) && active) {
+    __try {
+      const auto* p =
+          reinterpret_cast<const float*>(static_cast<uintptr_t>(active) + 0x180);
+      for (int i = 0; i < 16; ++i)
+        tmpl[i] = p[i];
+      tmplPtr = tmpl;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+      tmplPtr = nullptr;
+    }
+  }
+  const bool okL = BuildHmdEyeProjection(vr::Eye_Left, g_mode74CachedProjL, tmplPtr);
+  const bool okR = BuildHmdEyeProjection(vr::Eye_Right, g_mode74CachedProjR, tmplPtr);
+  g_mode74ProjCacheOk.store(okL && okR);
+  static uint32_t s_projCacheLog = 0;
+  if ((++s_projCacheLog) <= 3 || (s_projCacheLog % 600) == 0) {
+    float l = 0.f, r = 0.f, t = 0.f, b = 0.f;
+    GetEyeRawProjection(vr::Eye_Left, &l, &r, &t, &b);
+    Log("EyeProj: cache ok=%d tmpl=%d Lraw=(%.3f,%.3f,%.3f,%.3f) Lsx=%.3f ox=%.3f "
+        "(asymmetric HMD; never view+0x80)",
+        (okL && okR) ? 1 : 0, tmplPtr ? 1 : 0, l, r, t, b, g_mode74CachedProjL[0],
+        g_mode74CachedProjL[8]);
+  }
+}
+
+bool Mode74GetCachedEyeProj(float out[16]) {
+  if (!g_mode74ProjCacheOk.load() || !out)
+    return false;
+  const float* src =
+      (GetStereoEye() == StereoEye::Right) ? g_mode74CachedProjR : g_mode74CachedProjL;
+  for (int i = 0; i < 16; ++i)
+    out[i] = src[i];
+  return true;
+}
+
+struct Mode74ProjBackup {
+  float p180[16]{};
+  float pC0[16]{};
+  float p308[24]{};  // 6×4 frustum publish block
+  uint32_t viewAddr = 0;
+  bool have180 = false;
+  bool haveC0 = false;
+  bool have308 = false;
+};
+
+// Build ±half eye-offset LOCAL copy of a view matrix (never writes live +0x80).
+void Mode74OffsetViewLocal(float viewEye[16], bool rightEye) {
+  float half = 0.5f * GetStereoSepMeters() * GetStereoScale();
+  if (half < 0.05f)
+    half = 0.05f;
+  if (half > kMode71MaxHalfSep)
+    half = kMode71MaxHalfSep;
+  const float sign = rightEye ? 1.f : -1.f;
+  const float rlen = std::sqrt(viewEye[0] * viewEye[0] + viewEye[1] * viewEye[1] +
+                               viewEye[2] * viewEye[2]);
+  const float inv = (rlen > 1e-3f) ? (1.f / rlen) : 0.f;
+  viewEye[12] += sign * half * viewEye[0] * inv;
+  viewEye[13] += sign * half * viewEye[1] * inv;
+  viewEye[14] += sign * half * viewEye[2] * inv;
+}
+
+void Mode74PushDeviceViewSrcCopy(const float viewEye[16]) {
+  if (!g_device || !viewEye || !Mode71MatSaneForInject(viewEye))
+    return;
+  // Prefer D3DTS_VIEW (safe from build thread). Raw SetVSConstF from BuildRootA
+  // faulted Mode74 → 45 on 20260725-1505.
+  __try {
+    g_device->SetTransform(D3DTS_VIEW, reinterpret_cast<const D3DMATRIX*>(viewEye));
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    static uint32_t s_xfExc = 0;
+    if ((++s_xfExc) <= 4)
+      Log("Mode74: D3DTS_VIEW push EXCEPTION n=%u (ignored; dual continues)", s_xfExc);
+    return;
+  }
+  static uint32_t s_pushN = 0;
+  const uint32_t pn = ++s_pushN;
+  if (pn <= 4 || (pn % 300) == 0) {
+    Log("Mode74: device VIEW push #%u eye=%s t=(%.2f,%.2f,%.2f) "
+        "(CamMatrix→D3DTS_VIEW; never view+0x80; never build-thread SetVSConstF)",
+        pn, (GetStereoEye() == StereoEye::Right) ? "R" : "L", viewEye[12], viewEye[13],
+        viewEye[14]);
+  }
+}
+
+// During dual: push CamMatrix L/R view (already IPD-offset) into device VS c0.
+// PubProj selves rarely pass nearCam (lights/UI / view-space mats) — this is the seam.
+bool Mode74PushLiveCamEyeView() {
+  float v16[16]{};
+  if (!BuildLiveViewMatrix16(v16))
+    return false;
+  Mode74PushDeviceViewSrcCopy(v16);
+  return true;
+}
+
+// Per-eye walk: HMD proj → +0x180, VP → +0xC0 (=P * eye-offset view copy).
+// Never touches view+0x80 (Mode71 freeze path). Restore after BuildRootA.
+bool Mode74WritePubProjSlots(Mode74ProjBackup* bak) {
+  if (!bak || !g_mode74ProjCacheOk.load())
+    return false;
+  bool usedCache = false;
+  uint32_t active = Mode74ResolveViewForInject(&usedCache);
+  if (!active) {
+    static uint32_t s_noActive = 0;
+    if ((++s_noActive) <= 4 || (s_noActive % 600) == 0)
+      Log("PubProj: WRITE miss no-view (live+cache) n=%u", s_noActive);
+    return false;
+  }
+  bak->viewAddr = active;
+  __try {
+    auto* base = reinterpret_cast<float*>(static_cast<uintptr_t>(active));
+    auto* p180 = base + (0x180 / 4);
+    auto* pC0 = base + (0xC0 / 4);
+    auto* p80 = base + (0x80 / 4);
+    auto* p308 = base + (0x308 / 4);
+
+    for (int i = 0; i < 16; ++i)
+      bak->p180[i] = p180[i];
+    bak->have180 = true;
+    for (int i = 0; i < 16; ++i)
+      bak->pC0[i] = pC0[i];
+    bak->haveC0 = true;
+    for (int i = 0; i < 24; ++i)
+      bak->p308[i] = p308[i];
+    bak->have308 = true;
+
+    float proj[16]{};
+    const vr::EVREye eye =
+        (GetStereoEye() == StereoEye::Right) ? vr::Eye_Right : vr::Eye_Left;
+    // Prefer game template when it looks like proj; else fresh HMD matrix.
+    const float* tmpl = Mode74LooksLikeProjection(bak->p180) ? bak->p180 : nullptr;
+    if (!BuildHmdEyeProjection(eye, proj, tmpl)) {
+      static uint32_t s_buildFail = 0;
+      if ((++s_buildFail) <= 4 || (s_buildFail % 600) == 0)
+        Log("PubProj: WRITE miss BuildHmdEyeProjection fail n=%u", s_buildFail);
+      return false;
+    }
+    for (int i = 0; i < 16; ++i)
+      p180[i] = proj[i];
+
+    // Eye-offset LOCAL copy of view (+0x80) for VP — never write live view+0x80.
+    float viewEye[16]{};
+    for (int i = 0; i < 16; ++i)
+      viewEye[i] = p80[i];
+    Mode74OffsetViewLocal(viewEye, eye == vr::Eye_Right);
+    float half = 0.5f * GetStereoSepMeters() * GetStereoScale();
+    if (half < 0.05f)
+      half = 0.05f;
+
+    // PublishSync: [this+0xC0] = MatMul([this+0x180], viewEye) = P * ViewEye.
+    Mode74Mat4Mul(pC0, proj, viewEye);
+    const uint32_t nC0 = ++g_mode74PubC0Writes;
+
+    Mode74PushDeviceViewSrcCopy(viewEye);
+
+    bool ranProj = false;
+    if (g_origPublishProj) {
+      g_origPublishProj(reinterpret_cast<void*>(static_cast<uintptr_t>(active)), nullptr);
+      ranProj = true;
+      ++g_mode74PublishProjInjects;
+    }
+
+    const uint32_t n = ++g_mode74ProjInjects;
+    if (n <= 4 || (n % 300) == 0)
+      Log("PubProj: WRITE eye=%s +0x180 sx=%.3f ox=%.3f +0xC0=#%u viewSep=%.1fcm "
+          "cache=%d callProj=%d view=0x%X (VP from eye-offset view copy; never view+0x80)",
+          (eye == vr::Eye_Right) ? "R" : "L", proj[0], proj[8], nC0, half * 100.f,
+          usedCache ? 1 : 0, ranProj ? 1 : 0, active);
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    static uint32_t s_exc = 0;
+    if ((++s_exc) <= 4 || (s_exc % 600) == 0)
+      Log("PubProj: WRITE miss EXCEPTION n=%u view was set", s_exc);
+    return false;
+  }
+}
+
+void Mode74RestorePubProjSlots(const Mode74ProjBackup& bak) {
+  uint32_t active = bak.viewAddr;
+  if (!active) {
+    bool usedCache = false;
+    active = Mode74ResolveViewForInject(&usedCache);
+  }
+  if (!active)
+    return;
+  __try {
+    auto* base = reinterpret_cast<float*>(static_cast<uintptr_t>(active));
+    if (bak.have180) {
+      auto* p180 = base + (0x180 / 4);
+      for (int i = 0; i < 16; ++i)
+        p180[i] = bak.p180[i];
+    }
+    if (bak.haveC0) {
+      auto* pC0 = base + (0xC0 / 4);
+      for (int i = 0; i < 16; ++i)
+        pC0[i] = bak.pC0[i];
+    }
+    if (bak.have308) {
+      auto* p308 = base + (0x308 / 4);
+      for (int i = 0; i < 24; ++i)
+        p308[i] = bak.p308[i];
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+}
+
+bool Mode74ViewNearLiveCam(const float* vm) {
+  if (!vm || !Mode71MatSaneForInject(vm))
+    return false;
+  float cx = 0.f, cy = 0.f, cz = 0.f;
+  if (!GetLastStereoCamPos(&cx, &cy, &cz))
+    return true;  // no cam yet — accept first sane
+  // World-matrix style (Rage cam): translation ≈ eye position.
+  float dx = vm[12] - cx, dy = vm[13] - cy, dz = vm[14] - cz;
+  if ((dx * dx + dy * dy + dz * dz) < (40.f * 40.f))
+    return true;
+  // View-matrix style (D3D): eye = -R^T * t
+  const float ex = -(vm[0] * vm[12] + vm[4] * vm[13] + vm[8] * vm[14]);
+  const float ey = -(vm[1] * vm[12] + vm[5] * vm[13] + vm[9] * vm[14]);
+  const float ez = -(vm[2] * vm[12] + vm[6] * vm[13] + vm[10] * vm[14]);
+  dx = ex - cx;
+  dy = ey - cy;
+  dz = ez - cz;
+  return (dx * dx + dy * dy + dz * dz) < (40.f * 40.f);
+}
+
+bool Mode74TryReadViewMat80(void* self, float out[16]) {
+  if (!self || !out)
+    return false;
+  __try {
+    const auto* p80 =
+        reinterpret_cast<const float*>(reinterpret_cast<uintptr_t>(self) + 0x80);
+    for (int i = 0; i < 16; ++i)
+      out[i] = p80[i];
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+// Natural PublishProj during dual: stamp HMD +0x180 → rebuild +0x308, HOLD +0x180
+// until end of eye BuildRootA (restore-too-early left mono frustum readers flat).
+// Also cache `self` as the drawn view when live activeView global is 0.
+void __fastcall HookMode74PublishProj(void* self, void* edx) {
+  ++g_mode74PublishProjCalls;
+  if (!g_origPublishProj)
+    return;
+  const bool dual =
+      GetStereoMode() == StereoMode::SameFrameVsConstGatedDual && g_inDual.load() &&
+      g_mode74ProjCacheOk.load() && self;
+  if (!dual) {
+    g_origPublishProj(self, edx);
+    return;
+  }
+  __try {
+    const uint32_t selfU = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(self));
+    // Only cache PubProj self when its view mat is near the live stereo cam
+    // (many PublishProj selves are lights/UI — last-wins poisoned the inject match).
+    float vm[16]{};
+    const bool haveVm = Mode74TryReadViewMat80(self, vm);
+    const bool nearCam = haveVm && Mode74ViewNearLiveCam(vm);
+    if (selfU && nearCam)
+      g_mode74CachedView.store(selfU);
+
+    auto* p180 = reinterpret_cast<float*>(reinterpret_cast<uintptr_t>(self) + 0x180);
+    float backup[16]{};
+    for (int i = 0; i < 16; ++i)
+      backup[i] = p180[i];
+    float proj[16]{};
+    const vr::EVREye eye =
+        (GetStereoEye() == StereoEye::Right) ? vr::Eye_Right : vr::Eye_Left;
+    const float* tmpl = Mode74LooksLikeProjection(backup) ? backup : nullptr;
+    if (!BuildHmdEyeProjection(eye, proj, tmpl)) {
+      g_origPublishProj(self, edx);
+      return;
+    }
+    Mode74HoldPub180(self, backup);
+    for (int i = 0; i < 16; ++i)
+      p180[i] = proj[i];
+    // Near-cam only: eye-offset view src-copy → +0xC0 + device VS. Never +0x80.
+    if (nearCam) {
+      float viewEye[16]{};
+      for (int i = 0; i < 16; ++i)
+        viewEye[i] = vm[i];
+      Mode74OffsetViewLocal(viewEye, eye == vr::Eye_Right);
+      __try {
+        auto* pC0 = reinterpret_cast<float*>(reinterpret_cast<uintptr_t>(self) + 0xC0);
+        Mode74Mat4Mul(pC0, proj, viewEye);
+        ++g_mode74PubC0Writes;
+      } __except (EXCEPTION_EXECUTE_HANDLER) {
+      }
+      Mode74PushDeviceViewSrcCopy(viewEye);
+    }
+    g_origPublishProj(self, edx);
+    // Do NOT restore +0x180 here — Mode74RestoreHeldPub180 after BuildRootA.
+    const uint32_t n = ++g_mode74PublishProjInjects;
+    if (n <= 4 || (n % 300) == 0)
+      Log("PubProj: HOOK eye=%s sx=%.3f ox=%.3f n=%u nearCam=%d "
+          "(0x31BA0 → +0x308; HOLD +0x180; cacheView=0x%X; never view+0x80)",
+          (eye == vr::Eye_Right) ? "R" : "L", proj[0], proj[8], n, nearCam ? 1 : 0, selfU);
+    return;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+  }
+  g_origPublishProj(self, edx);
+}
+
+bool Mode74InstallPublishProjHook();  // defined near Mode72InstallHook
+
+bool Mode74LooksLikeProjection(const float* m) {
+  if (!m)
+    return false;
+  if (!(m[0] > 0.1f && m[0] < 8.f && m[5] > 0.1f && m[5] < 8.f))
+    return false;
+  if (std::fabs(m[15]) > 0.08f)
+    return false;
+  if (std::fabs(m[11]) < 0.85f || std::fabs(m[11]) > 1.15f)
+    return false;
+  // Reject view-like (unit right + large translation).
+  const float rlen = std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+  const float t2 = m[12] * m[12] + m[13] * m[13] + m[14] * m[14];
+  if (rlen > 0.85f && rlen < 1.15f && t2 > 1.f)
+    return false;
+  return true;
+}
+
 // Mode 73/74: same-frame BuildRootA twice. Eye L/R via SetStereoEye → CamMatrix IPD +
 // Mode72 SetVSConstF src-copy. Never mutates live view+0x80 or manager cam globals.
 bool RunMode73SameFrameDualGuarded(void* self, void* edx) {
@@ -1362,15 +1772,29 @@ bool RunMode73SameFrameDualGuarded(void* self, void* edx) {
     // Freeze HMD pose once for both eyes — mid-dual WaitGetPoses updates caused
     // L≠R yaw / jumpy vision when Mode74 stamped live pose per inject.
     BeginFrameHmdPoseSample();
+    Mode74CacheEyeProjections();
+
     SetStereoEye(StereoEye::Left);
     RefreshLiveCamForStereoEye();
+    Mode74BeginEyePubHold();
+    Mode74ProjBackup bakL{};
+    Mode74WritePubProjSlots(&bakL);
+    Mode74PushLiveCamEyeView();  // CamMatrix L view → device VS (src-copy)
     g_origRoot[1](self, edx);
+    Mode74RestoreHeldPub180();
+    Mode74RestorePubProjSlots(bakL);
     if (g_device && g_texL && CopyBbToEyeCanvas(g_device, g_texL, vr::Eye_Left))
       g_haveL = true;
 
     SetStereoEye(StereoEye::Right);
     RefreshLiveCamForStereoEye();
+    Mode74BeginEyePubHold();
+    Mode74ProjBackup bakR{};
+    Mode74WritePubProjSlots(&bakR);
+    Mode74PushLiveCamEyeView();  // CamMatrix R view → device VS (src-copy)
     g_origRoot[1](self, edx);
+    Mode74RestoreHeldPub180();
+    Mode74RestorePubProjSlots(bakR);
     if (g_device && g_texR && CopyBbToEyeCanvas(g_device, g_texR, vr::Eye_Right))
       g_haveR = true;
 
@@ -1385,7 +1809,7 @@ bool RunMode73SameFrameDualGuarded(void* self, void* edx) {
 bool Mode74ShouldDual() {
   return GetStereoMode() == StereoMode::SameFrameVsConstGatedDual &&
          g_mode74DualEnabled.load() && g_mode74GateOpen.load() && !g_mode74DualDead.load() &&
-         g_mode72Armed.load() && !g_mode72Dead.load();
+         g_mode74LoadPauseRemain.load() == 0 && g_mode72Armed.load() && !g_mode72Dead.load();
 }
 
 void __fastcall HookRoot1(void* self, void* edx) {
@@ -1489,6 +1913,24 @@ void __fastcall HookRoot1(void* self, void* edx) {
     const bool dualSlot =
         (kMode74DualEveryN <= 1) || ((tick % kMode74DualEveryN) == 1);
     if (dualSlot) {
+      // Soft skip under frame stress: mono BuildRootA but HOLD last L/R canvases
+      // (DidDualThisFrame=true → EndScene skips temporal eye-flip → no 1Hz flicker).
+      // Hard crash often happens mid-dual during streaming before EndScene hitch fires.
+      const DWORD lastEsMs = g_mode74LastEsMs.load();
+      if (lastEsMs >= kMode74SoftSkipMs) {
+        g_mode74DidDualThisFrame.store(true);
+        g_origRoot[1](self, edx);
+        const uint32_t soft = g_mode74SoftSkipStreak.fetch_add(1) + 1;
+        if (soft <= 4 || (soft % 60) == 0)
+          Log("Mode74: SOFT SKIP dual (lastEs=%ums≥%u; hold L/R; gate OPEN; streak=%u)",
+              lastEsMs, kMode74SoftSkipMs, soft);
+        if (soft >= kMode74SoftSkipToPause) {
+          Mode74BeginLoadPause("soft-skip streak (streaming stress)");
+          g_mode74SoftSkipStreak.store(0);
+        }
+        return;
+      }
+      g_mode74SoftSkipStreak.store(0);
       g_mode74DidDualThisFrame.store(true);
       g_inDual.store(true);
       const bool ok = RunMode73SameFrameDualGuarded(self, edx);
@@ -1506,9 +1948,13 @@ void __fastcall HookRoot1(void* self, void* edx) {
       const uint32_t n = ++g_mode74DualN;
       if (n <= 6 || (n % 120) == 0)
         Log("Mode74: SAME-FRAME dual #%u haveL=%d haveR=%d injects=%u sep=%.0fcm "
-            "(gate=OPEN every-frame 1/%u BuildRootA×2 + VSConst src-copy)",
+            "pubProj=%u c0=%u hookCalls=%u cacheInj=%u contentInj=%u "
+            "(gate=OPEN every-frame 1/%u BuildRootA×2 + content VIEW inject + PubProj HOLD)",
             n, g_haveL ? 1 : 0, g_haveR ? 1 : 0, g_mode72Injects.load(),
-            GetStereoSepMeters() * 100.f, kMode74DualEveryN);
+            GetStereoSepMeters() * 100.f, g_mode74PublishProjInjects.load(),
+            g_mode74PubC0Writes.load(), g_mode74PublishProjCalls.load(),
+            g_mode74CachedViewInjects.load(), g_mode74ContentInjects.load(),
+            kMode74DualEveryN);
       if (g_haveL && g_haveR && (n == 5 || (n % 300) == 0))
         CompareEyeCanvases(g_device);
       return;
@@ -2171,6 +2617,70 @@ bool Mode72ReadActiveView(uint32_t* outActive) {
   }
 }
 
+// Live activeView, else cached (Mode74 dual when global is cleared mid-build).
+uint32_t Mode74ResolveViewForInject(bool* usedCache) {
+  if (usedCache)
+    *usedCache = false;
+  uint32_t live = 0;
+  if (Mode72ReadActiveView(&live) && live) {
+    g_mode74CachedView.store(live);
+    return live;
+  }
+  const uint32_t cached = g_mode74CachedView.load();
+  if (cached) {
+    if (usedCache)
+      *usedCache = true;
+    ++g_mode74CachedViewHits;
+    return cached;
+  }
+  return 0;
+}
+
+void Mode74BeginEyePubHold() {
+  // Drop any leaked holds without restore (new eye / new dual) — walk end restores.
+  g_mode74HeldPubN = 0;
+  for (int i = 0; i < kMode74MaxHeldPub; ++i) {
+    g_mode74HeldPub[i].self = nullptr;
+    g_mode74HeldPub[i].held = false;
+  }
+  // Fresh content-inject budget for this eye BuildRootA.
+  g_mode74DualViewBudget.store(kMode74DualViewBudgetPerEye);
+}
+
+void Mode74RestoreHeldPub180() {
+  for (int i = 0; i < g_mode74HeldPubN; ++i) {
+    auto& h = g_mode74HeldPub[i];
+    if (!h.held || !h.self)
+      continue;
+    __try {
+      auto* p180 = reinterpret_cast<float*>(reinterpret_cast<uintptr_t>(h.self) + 0x180);
+      for (int j = 0; j < 16; ++j)
+        p180[j] = h.p180[j];
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    h.held = false;
+    h.self = nullptr;
+  }
+  g_mode74HeldPubN = 0;
+}
+
+bool Mode74HoldPub180(void* self, const float* backup180) {
+  if (!self || !backup180)
+    return false;
+  for (int i = 0; i < g_mode74HeldPubN; ++i) {
+    if (g_mode74HeldPub[i].self == self)
+      return true;  // already holding original mono for this view
+  }
+  if (g_mode74HeldPubN >= kMode74MaxHeldPub)
+    return false;
+  auto& h = g_mode74HeldPub[g_mode74HeldPubN++];
+  h.self = self;
+  for (int i = 0; i < 16; ++i)
+    h.p180[i] = backup180[i];
+  h.held = true;
+  return true;
+}
+
 void Mode72CallOrig(void* device, uint32_t startReg, const float* src, uint32_t count) {
   __try {
     g_origMode72SetVS(device, startReg, src, count);
@@ -2187,7 +2697,7 @@ void Mode72CallOrig(void* device, uint32_t startReg, const float* src, uint32_t 
 //     re-apply lean here; double 6DoF was the jumpy/perf regress).
 //   - EyeToHead from CACHE only (never VRSystem in inject hot path).
 //   - When e2h ok, apply eye translation and skip crude ±IPD (no double sep).
-// Projection VS slots still unknown / Mode15 dead — follow-up.
+//   - Per-eye HMD projection via separate src-copy / device VS patch (EyeProj).
 // Returns true when EyeToHead was applied (caller must NOT also add crude ±IPD).
 bool Mode74ApplyHmdEyeLocal(float* m) {
   vr::HmdMatrix34_t h{};
@@ -2305,43 +2815,148 @@ const float* Mode72SelectSrc(const float* src, uint32_t startReg, uint32_t count
     ++g_mode72Skip;
     return src;
   }
+
+  // Mode74 dual: also catch projection / alternate-reg uploads (not only view+0x80 @c0).
+  // PublishSync builds P at +0x180 and VP at +0xC0; some paths may upload those.
+  const bool dualOpen = mode73 || (mode74 && g_inDual.load());
+  if (mode74 && dualOpen && src && count == 16) {
+    bool usedCache = false;
+    uint32_t active = Mode74ResolveViewForInject(&usedCache);
+    const bool haveActive = active != 0;
+    const uintptr_t srcU = reinterpret_cast<uintptr_t>(src);
+    int off = -1;
+    if (haveActive) {
+      const intptr_t d =
+          static_cast<intptr_t>(srcU) - static_cast<intptr_t>(active);
+      if (d >= 0 && d <= 0x400)
+        off = static_cast<int>(d);
+    }
+    const bool looksProj = Mode74LooksLikeProjection(src);
+    // Require real proj signature OR known PublishSync proj slot — do not fire on bare reg.
+    const bool slotProj = looksProj || (off == 0x180);
+    const uint32_t disc = g_mode74ProjDiscoverN.fetch_add(1) + 1;
+    if (disc <= 24 || (disc % 400) == 0) {
+      const char* offTag = "?";
+      if (off == 0x80)
+        offTag = "+0x80";
+      else if (off == 0xC0)
+        offTag = "+0xC0";
+      else if (off == 0x100)
+        offTag = "+0x100";
+      else if (off == 0x180)
+        offTag = "+0x180";
+      else if (off == 0x1C0)
+        offTag = "+0x1C0";
+      else if (off == 0x308)
+        offTag = "+0x308";
+      else if (off >= 0)
+        offTag = "other";
+      Log("EyeProj: see reg=%u off=%s looksProj=%d dual=1 n=%u", startReg, offTag,
+          looksProj ? 1 : 0, disc);
+    }
+    if (slotProj && Mode74GetCachedEyeProj(g_mode74LocalProj)) {
+      // Prefer adapting the live upload as template (game near/far) when it looks like proj.
+      if (looksProj)
+        BuildHmdEyeProjection(
+            (GetStereoEye() == StereoEye::Right) ? vr::Eye_Right : vr::Eye_Left,
+            g_mode74LocalProj, src);
+      ++g_mode74ProjInjects;
+      const uint32_t n = g_mode74ProjInjects.load();
+      if (n <= 4 || (n % 300) == 0)
+        Log("EyeProj: INJECT src-copy #%u eye=%s reg=%u off=%d sx=%.3f ox=%.3f "
+            "(asymmetric; never view+0x80)",
+            n, (GetStereoEye() == StereoEye::Right) ? "R" : "L", startReg, off,
+            g_mode74LocalProj[0], g_mode74LocalProj[8]);
+      return g_mode74LocalProj;
+    }
+    if (slotProj)
+      ++g_mode74ProjMiss;
+  }
+
   if (count != 16 || startReg != 0 || !src) {
     ++g_mode72Skip;
     return src;
   }
+  bool usedCache = false;
   uint32_t active = 0;
-  if (!Mode72ReadActiveView(&active) || !active) {
+  // Mode74: always resolve live+cache (activeView often 0 mid-draw). Do not early-out —
+  // contentHit covers 0x2A1E10 MatMul stack uploads that are not activeView+0x80.
+  if (mode74)
+    active = Mode74ResolveViewForInject(&usedCache);
+  else if (!Mode72ReadActiveView(&active) || !active) {
     ++g_mode72Skip;
     return src;
   }
-  const auto* expect = reinterpret_cast<const float*>(static_cast<uintptr_t>(active) + 0x80);
-  if (src != expect) {
-    ++g_mode72Skip;
-    return src;
-  }
+
   float m[16]{};
-  if (!Mode72TryCopySrc(src, m) || !Mode71MatSaneForInject(m)) {
+  const bool copied = Mode72TryCopySrc(src, m);
+  const bool sane = copied && Mode71MatSaneForInject(m);
+  bool pointerHit = false;
+  if (active) {
+    const auto* expect =
+        reinterpret_cast<const float*>(static_cast<uintptr_t>(active) + 0x80);
+    pointerHit = (src == expect);
+  }
+
+  // Mode74 presence (dual OR crash-safe temporal): if activeView+0x80 pointer miss,
+  // inject any sane near-cam view upload (0x2A1E10 stack / alternate bases). Cap via
+  // DualViewBudget so we never inject-every (~300/frame hang). Never write view+0x80.
+  bool contentHit = false;
+  if (mode74 && !pointerHit && sane) {
+    if (Mode74ViewNearLiveCam(m)) {
+      uint32_t budget = g_mode74DualViewBudget.load();
+      if (budget > 0 && g_mode74DualViewBudget.compare_exchange_strong(budget, budget - 1)) {
+        contentHit = true;
+        const uint32_t base =
+            static_cast<uint32_t>(reinterpret_cast<uintptr_t>(src) - 0x80);
+        if (base)
+          g_mode74CachedView.store(base);
+      }
+    }
+  }
+
+  if (!pointerHit && !contentHit) {
+    ++g_mode72Skip;
+    return src;
+  }
+  if (!sane) {
     ++g_mode72RejectMat;
     return src;
   }
-  // Mode 72 / Mode74 non-dual frames: 1 inject/ES (temporal).
-  // Mode 73 / Mode74 only while g_inDual: inject every matching upload in both walks.
-  // (Gate OPEN alone must NOT unlock inject-every — that bursted ~300/frame and hung.)
-  const bool dualOpen = mode73 || (mode74 && g_inDual.load());
+  // Mode 72 classic: 1 inject/ES.
+  // Mode74: DualViewBudget gates content; pointer hits also take that budget so the
+  // first non-world +0x80 upload cannot starve the real 0x2A1E10 draw upload.
+  // Mode 73 / Mode74 g_inDual: inject every match (budget refreshed per eye walk).
   if (!dualOpen) {
-    uint32_t budget = g_mode72Budget.load();
-    if (budget == 0 || !g_mode72Budget.compare_exchange_strong(budget, 0)) {
-      ++g_mode72Skip;
-      return src;
+    if (mode74) {
+      if (!contentHit) {
+        uint32_t budget = g_mode74DualViewBudget.load();
+        if (budget == 0 ||
+            !g_mode74DualViewBudget.compare_exchange_strong(budget, budget - 1)) {
+          ++g_mode72Skip;
+          return src;
+        }
+      }
+    } else {
+      uint32_t budget = g_mode72Budget.load();
+      if (budget == 0 || !g_mode72Budget.compare_exchange_strong(budget, 0)) {
+        ++g_mode72Skip;
+        return src;
+      }
     }
   }
   for (int i = 0; i < 16; ++i)
     g_mode72LocalMat[i] = m[i];
-  // Mode74: HMD orient + cached EyeToHead on local copy (no Mode74 seated-6DoF —
-  // CamMatrix owns lean). When EyeToHead applied, skip crude ±half IPD.
-  // Never writes live view+0x80.
+  // Mode74 crash-safe temporal (dualEn=0): CamMatrix already owns HMD look + seated
+  // 6DoF on CCam — do NOT rewrite basis via ApplyHmdEyeLocal (would fight bake /
+  // break D3D-style view uploads from 0x2A1E10). Inject owns ±half IPD only.
+  // Mode74 dual: same crude ±half (VS path silent historically).
+  // Mode74 + dual opt-in but gate CLOSED temporal with dualEn=1: keep ApplyHmdEyeLocal
+  // for sticky-every era look+e2h on pointer hits only when dual was enabled path.
   bool mode74EyeOk = false;
-  if (mode74)
+  if (mode74 && (dualOpen || contentHit || !g_mode74DualEnabled.load()))
+    mode74EyeOk = false;  // fall through → crude ±half IPD on src-copy
+  else if (mode74)
     mode74EyeOk = Mode74ApplyHmdEyeLocal(g_mode72LocalMat);
   if (!mode74EyeOk) {
     float half = 0.5f * GetStereoSepMeters() * GetStereoScale();
@@ -2365,7 +2980,57 @@ const float* Mode72SelectSrc(const float* src, uint32_t startReg, uint32_t count
     g_mode72LocalMat[14] = bz + sign * half * g_mode72LocalMat[2] * inv;
   }
   ++g_mode72Injects;
+  if (usedCache && pointerHit)
+    ++g_mode74CachedViewInjects;
+  if (contentHit)
+    ++g_mode74ContentInjects;
+  const uint32_t nInj = g_mode72Injects.load();
+  if (mode74 && (nInj <= 8 || (nInj % 200) == 0)) {
+    const float dx = g_mode72LocalMat[12] - m[12];
+    const float dy = g_mode72LocalMat[13] - m[13];
+    const float dz = g_mode72LocalMat[14] - m[14];
+    const float sep = std::sqrt(dx * dx + dy * dy + dz * dz);
+    Log("Mode74: VIEW inject #%u eye=%s ptr=%d cache=%d content=%d view=0x%X "
+        "eyeSep=%.1fcm dual=%d (src-copy near-cam/0x2A1E10; never view+0x80)",
+        nInj, (GetStereoEye() == StereoEye::Right) ? "R" : "L", pointerHit ? 1 : 0,
+        (usedCache && pointerHit) ? 1 : 0, contentHit ? 1 : 0, active, sep * 100.f,
+        dualOpen ? 1 : 0);
+  }
   return g_mode72LocalMat;
+}
+
+// After a Mode74 view inject: if device VS regs still hold a game projection, replace
+// with cached HMD eye proj (src-copy style on the constant bank — never view+0x80).
+void Mode74PatchDeviceProjIfPresent(void* device) {
+  if (!device || !g_mode74ProjCacheOk.load() || !g_inDual.load())
+    return;
+  auto* dev = reinterpret_cast<IDirect3DDevice9*>(device);
+  float hmd[16]{};
+  if (!Mode74GetCachedEyeProj(hmd))
+    return;
+  int patched = 0;
+  for (UINT base = 0; base <= 32; base += 4) {
+    float block[16]{};
+    if (FAILED(dev->GetVertexShaderConstantF(base, block, 4)))
+      continue;
+    if (!Mode74LooksLikeProjection(block))
+      continue;
+    float adapted[16]{};
+    if (!BuildHmdEyeProjection(
+            (GetStereoEye() == StereoEye::Right) ? vr::Eye_Right : vr::Eye_Left, adapted,
+            block))
+      continue;
+    if (FAILED(dev->SetVertexShaderConstantF(base, adapted, 4)))
+      continue;
+    ++patched;
+  }
+  if (patched > 0) {
+    const uint32_t n = g_mode74ProjDevicePatches.fetch_add(static_cast<uint32_t>(patched)) +
+                       static_cast<uint32_t>(patched);
+    if (n <= 4 || (n % 300) == 0)
+      Log("EyeProj: device VS patch +%d (total~%u) eye=%s (Get/Set const; never view+0x80)",
+          patched, n, (GetStereoEye() == StereoEye::Right) ? "R" : "L");
+  }
 }
 
 void __stdcall HookMode72SetVSConstF(void* device, uint32_t startReg, const float* src,
@@ -2381,6 +3046,12 @@ void __stdcall HookMode72SetVSConstF(void* device, uint32_t startReg, const floa
   }
   const float* useSrc = Mode72SelectSrc(src, startReg, count);
   Mode72CallOrig(device, startReg, useSrc, count);
+  // After view upload in Mode74 dual: if device VS regs still hold a game projection,
+  // replace it. Speculative c4 push removed (EyeProj still flat — not the real slot).
+  if (sm == StereoMode::SameFrameVsConstGatedDual && g_inDual.load() &&
+      useSrc == g_mode72LocalMat) {
+    Mode74PatchDeviceProjIfPresent(device);
+  }
 }
 
 bool Mode72InstallHook();
@@ -5757,10 +6428,55 @@ bool Mode72InstallHook() {
   g_mode72Skip.store(0);
   g_mode72RejectMat.store(0);
   g_mode72Budget.store(1);
+  g_mode74ProjInjects.store(0);
+  g_mode74ProjDevicePatches.store(0);
+  g_mode74ProjMiss.store(0);
+  g_mode74ProjDiscoverN.store(0);
+  g_mode74ProjCacheOk.store(false);
   Log("Mode72: INJECT armed exeRva=0x%X (SetVSConstF src-COPY; never writes view+0x80; "
       "1/ES; unit-right; motion-guard OFF; halfSep floor 5cm for visibility; "
       "SameFrameSeamGate=CLOSED — still TEMPORAL not true dual)",
       siteRva);
+  return true;
+}
+
+bool Mode74InstallPublishProjHook() {
+  if (g_mode74PublishProjArmed.load())
+    return true;
+  if (Mode34ForbiddenRva(kMode74PublishProjRva)) {
+    Log("PubProj: REJECT exeRva=0x%X forbidden", kMode74PublishProjRva);
+    return false;
+  }
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  const uintptr_t start = base + kMode74PublishProjRva;
+  if (std::memcmp(reinterpret_cast<const void*>(start), kMode74PublishProjPrologue,
+                  sizeof(kMode74PublishProjPrologue)) != 0) {
+    Log("PubProj: REJECT exeRva=0x%X prologue mismatch (need COUNT/RE first)",
+        kMode74PublishProjRva);
+    return false;
+  }
+  if (g_mode74PublishProjHookAddr) {
+    MH_DisableHook(g_mode74PublishProjHookAddr);
+    MH_RemoveHook(g_mode74PublishProjHookAddr);
+    g_mode74PublishProjHookAddr = nullptr;
+    g_origPublishProj = nullptr;
+  }
+  if (MH_CreateHook(reinterpret_cast<void*>(start),
+                    reinterpret_cast<void*>(&HookMode74PublishProj),
+                    reinterpret_cast<void**>(&g_origPublishProj)) != MH_OK ||
+      MH_EnableHook(reinterpret_cast<void*>(start)) != MH_OK) {
+    g_origPublishProj = nullptr;
+    Log("PubProj: MH_CreateHook failed exeRva=0x%X", kMode74PublishProjRva);
+    return false;
+  }
+  g_mode74PublishProjHookAddr = reinterpret_cast<void*>(start);
+  g_mode74PublishProjArmed.store(true);
+  g_mode74PublishProjCalls.store(0);
+  g_mode74PublishProjInjects.store(0);
+  g_mode74PubC0Writes.store(0);
+  Log("PubProj: ARMED exeRva=0x%X (11 E8; after PublishSync; dual HOLD +0x180 for eye walk "
+      "→ +0x308; cache view for VS inject when activeView=0; never view+0x80)",
+      kMode74PublishProjRva);
   return true;
 }
 
@@ -5789,21 +6505,180 @@ void Mode72OnEndScene(IDirect3DDevice9* device) {
         GetStereoSepMeters() * 100.f, GetStereoScale(), static_cast<int>(GetStereoEye()));
 }
 
+void Mode74BeginLoadPause(const char* reason) {
+  g_mode74LoadPauseRemain.store(kMode74LoadPauseEs);
+  g_mode74LiveStreak.store(0);
+  g_mode74MissStreak.store(0);
+  g_mode74WorldWeakStreak.store(0);
+  g_mode74SoftSkipStreak.store(0);
+  if (g_mode74GateOpen.exchange(false)) {
+    Log("Mode74: LOAD PAUSE — gate CLOSED / DUAL OFF (%s); mono BuildRootA + Mode72 for "
+        "%u ES; reopen needs %u live (hysteresis; no 1Hz flicker); kill=45",
+        reason, kMode74LoadPauseEs, kMode74GateNeedLiveEs);
+  } else {
+    Log("Mode74: LOAD PAUSE / DUAL OFF (%s); mono for %u ES (gate was already CLOSED)",
+        reason, kMode74LoadPauseEs);
+  }
+}
+
+bool Mode74ReadDualOptInFile() {
+  char path[MAX_PATH]{};
+  HMODULE self = nullptr;
+  GetModuleHandleExA(
+      GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+      reinterpret_cast<LPCSTR>(&Mode74ReadDualOptInFile), &self);
+  if (!GetModuleFileNameA(self, path, MAX_PATH))
+    return false;
+  char* slash = strrchr(path, '\\');
+  if (!slash)
+    slash = strrchr(path, '/');
+  if (slash)
+    *(slash + 1) = '\0';
+  else
+    path[0] = '\0';
+  strcat_s(path, "gtaiv_dxvk_vr.dual");
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "rb") != 0 || !f)
+    return false;
+  char buf[8]{};
+  const size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+  fclose(f);
+  return n > 0 && buf[0] == '1';
+}
+
 void Mode74UpdateStreamingGate() {
+  static float s_prevX = 0.f, s_prevY = 0.f, s_prevZ = 0.f;
+  static bool s_havePrevCam = false;
+  static DWORD s_prevTick = 0;
+
   const uint32_t inj = g_mode72Injects.load();
-  // Dual frames count as live even when Mode72 inject count stalls (CamMatrix IPD
-  // can supply L≠R while SetVSConstF injects do not climb every EndScene).
   const bool dualThisEs = g_mode74DidDualThisFrame.load();
-  const bool liveThisEs = (inj > g_mode74LastInjects) || dualThisEs;
+  const bool injectLive = inj > g_mode74LastInjects;
+  // CRITICAL: while gate OPEN, dual must NOT count as live for miss — softskip failed
+  // because dual reset miss every frame and dualN kept climbing through streaming.
+  // Dual may still help *reopen* after pause when injects stall but CamMatrix is alive.
+  const bool gateWasOpen = g_mode74GateOpen.load();
+  const bool liveThisEs = injectLive || (!gateWasOpen && dualThisEs);
   g_mode74LastInjects = inj;
+
+  const DWORD now = GetTickCount();
+  float cx = 0.f, cy = 0.f, cz = 0.f;
+  const bool haveCam = GetLastStereoCamPos(&cx, &cy, &cz);
 
   if (g_mode74DualDead.load() || !g_mode74DualEnabled.load()) {
     if (g_mode74GateOpen.exchange(false))
-      Log("Mode74: streaming gate CLOSED (dual permanently dead)");
+      Log("Mode74: DUAL OFF — streaming gate CLOSED (dual disabled / dead)");
     g_mode74LiveStreak.store(0);
     g_mode74MissStreak.store(0);
+    g_mode74LoadPauseRemain.store(0);
+    g_mode74WorldWeakStreak.store(0);
+    if (haveCam) {
+      s_prevX = cx;
+      s_prevY = cy;
+      s_prevZ = cz;
+      s_havePrevCam = true;
+    }
+    s_prevTick = now;
     return;
   }
+
+  // Cool-down: forced mono until remain hits 0, then need full live streak to reopen.
+  const uint32_t pause = g_mode74LoadPauseRemain.load();
+  if (pause > 0) {
+    g_mode74LoadPauseRemain.store(pause - 1);
+    g_mode74LiveStreak.store(0);
+    g_mode74GateOpen.store(false);
+    if (pause <= 3 || (pause % 60) == 0)
+      Log("Mode74: load-pause remain=%u ES (mono BuildRootA + Mode72; dual OFF)", pause - 1);
+    if (haveCam) {
+      s_prevX = cx;
+      s_prevY = cy;
+      s_prevZ = cz;
+      s_havePrevCam = true;
+    }
+    s_prevTick = now;
+    return;
+  }
+
+  // Load detectors only while dual is (or was this frame) active — avoid menu hitch
+  // false-positives before first OPEN. Softskip failed: 250ms hitch never hit during
+  // streaming; also pause on any frame ≥ SoftSkipMs while dualArmed.
+  const bool dualArmed = g_mode74GateOpen.load() || dualThisEs;
+  if (dualArmed) {
+    if (s_prevTick != 0) {
+      const DWORD gap = now - s_prevTick;
+      if (gap >= kMode74HitchMs) {
+        Mode74BeginLoadPause("EndScene hitch / streaming load");
+        if (haveCam) {
+          s_prevX = cx;
+          s_prevY = cy;
+          s_prevZ = cz;
+          s_havePrevCam = true;
+        }
+        s_prevTick = now;
+        return;
+      }
+      if (gap >= kMode74SoftSkipMs) {
+        // Count toward soft-skip→pause even if BuildRootA path did not soft-skip.
+        const uint32_t soft = g_mode74SoftSkipStreak.fetch_add(1) + 1;
+        if (soft >= kMode74SoftSkipToPause) {
+          Mode74BeginLoadPause("slow-frame streak (streaming stress)");
+          if (haveCam) {
+            s_prevX = cx;
+            s_prevY = cy;
+            s_prevZ = cz;
+            s_havePrevCam = true;
+          }
+          s_prevTick = now;
+          return;
+        }
+      } else {
+        g_mode74SoftSkipStreak.store(0);
+      }
+    }
+    if (haveCam && s_havePrevCam) {
+      const float dx = cx - s_prevX;
+      const float dy = cy - s_prevY;
+      const float dz = cz - s_prevZ;
+      const float d2 = dx * dx + dy * dy + dz * dz;
+      const float lim = kMode74TeleportMeters * kMode74TeleportMeters;
+      if (d2 > lim) {
+        Mode74BeginLoadPause("cam teleport / interior-exterior");
+        s_prevX = cx;
+        s_prevY = cy;
+        s_prevZ = cz;
+        s_prevTick = now;
+        return;
+      }
+    }
+    float probe[16]{};
+    if (!BuildLiveViewMatrix16(probe)) {
+      const uint32_t weak = g_mode74WorldWeakStreak.fetch_add(1) + 1;
+      if (weak >= kMode74UnloadNeedEs) {
+        Mode74BeginLoadPause("world cam missing (unload/stream)");
+        if (haveCam) {
+          s_prevX = cx;
+          s_prevY = cy;
+          s_prevZ = cz;
+          s_havePrevCam = true;
+        }
+        s_prevTick = now;
+        return;
+      }
+    } else {
+      g_mode74WorldWeakStreak.store(0);
+    }
+  } else {
+    g_mode74WorldWeakStreak.store(0);
+  }
+
+  if (haveCam) {
+    s_prevX = cx;
+    s_prevY = cy;
+    s_prevZ = cz;
+    s_havePrevCam = true;
+  }
+  s_prevTick = now;
 
   if (liveThisEs) {
     g_mode74MissStreak.store(0);
@@ -5811,16 +6686,19 @@ void Mode74UpdateStreamingGate() {
     if (!g_mode74GateOpen.load() && streak >= kMode74GateNeedLiveEs) {
       g_mode74GateOpen.store(true);
       g_mode74BuildTick.store(0);
-      Log("Mode74: streaming gate OPEN after %u live EndScenes (activeView+t²≥10; "
-          "every-frame BuildRootA×2 dual 1/%u; STICKY open — no miss re-close; kill=45)",
-          streak, kMode74DualEveryN);
+      Log("Mode74: streaming gate OPEN after %u live EndScenes (opt-in dual BuildRootA×2 "
+          "1/%u; HYSTERESIS — load-pause on teleport/hitch/unload/miss%u; kill=45)",
+          streak, kMode74DualEveryN, kMode74MissCloseEs);
     }
   } else {
     g_mode74LiveStreak.store(0);
     const uint32_t miss = g_mode74MissStreak.fetch_add(1) + 1;
-    // Sticky OPEN: never fall back to Mode72 temporal mid-session. Miss-of-inject
-    // was a false positive during every-frame dual (EndScene can outpace BuildRootA;
-    // inject counter stalls while same-frame L≠R still works) → CLOSE/OPEN flicker.
+    // Hysteresis CLOSE: only after long miss while OPEN (not every stall — that was
+    // the fused↔separated 1Hz flicker). Then cool-down before reopen.
+    if (g_mode74GateOpen.load() && miss >= kMode74MissCloseEs) {
+      Mode74BeginLoadPause("inject miss streak (likely load/streaming)");
+      return;
+    }
     if (!g_mode74GateOpen.load() && (miss <= 3 || (miss % 120) == 0)) {
       Log("Mode74: gate still CLOSED miss=%u (need %u live ES before dual)", miss,
           kMode74GateNeedLiveEs);
@@ -5829,6 +6707,12 @@ void Mode74UpdateStreamingGate() {
 }
 
 void Mode74OnEndScene(IDirect3DDevice9* device) {
+  static DWORD s_prevEsTick = 0;
+  const DWORD nowEs = GetTickCount();
+  if (s_prevEsTick != 0)
+    g_mode74LastEsMs.store(nowEs - s_prevEsTick);
+  s_prevEsTick = nowEs;
+
   if (g_mode72Dead.load()) {
     Mode34ClearProbe("Mode74/72 dead");
     if (g_mode72HookAddr) {
@@ -5847,9 +6731,11 @@ void Mode74OnEndScene(IDirect3DDevice9* device) {
   Mode74UpdateStreamingGate();
 
   // Dual frames that ran BuildRootA×2 skip temporal capture; else Mode72 temporal
-  // ONLY while gate CLOSED. When gate OPEN, never temporal eye-flip (flicker root).
-  const bool dualCaptured = Mode74ShouldDual() && g_mode74DidDualThisFrame.exchange(false);
-  const bool gateOpen = g_mode74GateOpen.load() && !g_mode74DualDead.load();
+  // ONLY while gate CLOSED / load-paused. When gate OPEN, never temporal eye-flip.
+  // Keep dualCaptured even if load-pause just closed the gate this EndScene.
+  const bool dualCaptured = g_mode74DidDualThisFrame.exchange(false);
+  const bool gateOpen = g_mode74GateOpen.load() && !g_mode74DualDead.load() &&
+                        g_mode74LoadPauseRemain.load() == 0;
   if (dualCaptured || gateOpen) {
     // Captures happened in HookRoot1 dual (or hold last same-frame pair).
     IDirect3DSurface9* bb = nullptr;
@@ -5861,21 +6747,40 @@ void Mode74OnEndScene(IDirect3DDevice9* device) {
       ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
       EnsureEyeRts(device, rtW, rtH);
     }
+    // CRITICAL: still refresh Mode72 inject budget while gate OPEN.
+    // Old bug: budget only reset on CLOSED path → injects froze at ~90 after gate
+    // (dual BuildRootA has no view@c0 uploads; EndScene injects were starved).
+    g_mode72Budget.store(1);
+    // EndScene thread is safe for VS const writes (build-thread SetVSConstF → 45).
+    float v16[16]{};
+    if (BuildLiveViewMatrix16(v16)) {
+      __try {
+        device->SetVertexShaderConstantF(0, v16, 4);
+      } __except (EXCEPTION_EXECUTE_HANDLER) {
+      }
+    }
   } else {
     // Gate CLOSED → Mode72 temporal path (streaming-safe before in-world).
     TemporalCapturePairHold(device);
     g_mode72Budget.store(1);
   }
+  // Refresh content/pointer inject budget every ES (dual OR crash-safe temporal).
+  // Without this, DualViewBudget stays 0 after first eye walk / never arms when dualEn=0.
+  g_mode74DualViewBudget.store(kMode74DualViewBudgetPerEye);
 
   static uint32_t s_es = 0;
   ++s_es;
   if (s_es <= 6 || (s_es % 120) == 0)
-    Log("Mode74: es#%u gate=%s dualN=%u liveStreak=%u miss=%u injects=%u "
-        "sep=%.0fcm every=1/%u stickyOpen=1 (CLOSED=Mode72; OPEN=every-frame SAME-FRAME; "
-        "kill=45)",
+    Log("Mode74: es#%u gate=%s dualN=%u liveStreak=%u miss=%u pause=%u injects=%u "
+        "contentInj=%u cacheInj=%u pubProj=%u c0=%u hookCalls=%u sep=%.0fcm every=1/%u "
+        "dualEn=%d (dualEn=0 → near-cam SetVSConstF ±IPD; OPEN=SAME-FRAME; kill=45)",
         s_es, g_mode74GateOpen.load() ? "OPEN" : "CLOSED", g_mode74DualN.load(),
-        g_mode74LiveStreak.load(), g_mode74MissStreak.load(), g_mode72Injects.load(),
-        GetStereoSepMeters() * 100.f, kMode74DualEveryN);
+        g_mode74LiveStreak.load(), g_mode74MissStreak.load(),
+        g_mode74LoadPauseRemain.load(), g_mode72Injects.load(),
+        g_mode74ContentInjects.load(), g_mode74CachedViewInjects.load(),
+        g_mode74PublishProjInjects.load(), g_mode74PubC0Writes.load(),
+        g_mode74PublishProjCalls.load(), GetStereoSepMeters() * 100.f, kMode74DualEveryN,
+        g_mode74DualEnabled.load() ? 1 : 0);
 }
 
 bool Mode65ReadDeviceVtable(uint32_t* outDevice, uint32_t* outVt, uint32_t* out178,
@@ -7026,25 +7931,48 @@ bool InstallStereoRenderHooks() {
         g_mode72Dead.store(false);
         g_mode74GateOpen.store(false);
         g_mode74DualDead.store(false);
-        g_mode74DualEnabled.store(true);
+        // Crash-safe: BuildRootA×2 OFF unless gtaiv_dxvk_vr.dual contains "1".
+        const bool dualOptIn = Mode74ReadDualOptInFile();
+        g_mode74DualEnabled.store(dualOptIn);
         g_mode74DualN.store(0);
         g_mode74LiveStreak.store(0);
         g_mode74MissStreak.store(0);
+        g_mode74LoadPauseRemain.store(0);
+        g_mode74WorldWeakStreak.store(0);
+        g_mode74SoftSkipStreak.store(0);
+        g_mode74LastEsMs.store(0);
         g_mode74BuildTick.store(0);
         g_mode74DidDualThisFrame.store(false);
         g_mode74LastInjects = 0;
+        g_mode74DualViewBudget.store(kMode74DualViewBudgetPerEye);
+        g_mode74ContentInjects.store(0);
+        g_mode74CachedViewInjects.store(0);
         g_haveL = g_haveR = false;
         const bool okHook = Mode72InstallHook();
-        Log("StereoRender: mode 74 GATED SAME-FRAME EVERY-FRAME (Mode72 until in-world gate; "
-            "then BuildRootA×2 every frame 1/%u + VSConst src-COPY + HMD+cachedEyeToHead; need %u "
-            "live ES; STICKY open; frozen pose/dual; NO Mode74 seated-6DoF; never view+0x80; "
-            "inject only while g_inDual) ok=%d fovSite=%d vsHook=%d dualEnabled=%d",
-            kMode74DualEveryN, kMode74GateNeedLiveEs, g_ok.load() ? 1 : 0, fovOk ? 1 : 0,
-            okHook ? 1 : 0, g_mode74DualEnabled.load() ? 1 : 0);
-        Log("StereoRender: how-to — stereo=74; load INTO WORLD; sticky SAME-FRAME dual + "
-            "HmdLook ACTIVE (orient+e2h; CamMatrix owns 6DoF); kill=45");
-        Log("HmdLook: ENABLED Mode74 path (src-copy HMD orient + cached EyeToHead; "
-            "frozen pose; no Mode74 seated-6DoF; F9 recenter)");
+        const bool okPub = Mode74InstallPublishProjHook();
+        if (!dualOptIn) {
+          Log("Mode74: DUAL OFF (crash-safe) — no BuildRootA×2; near-cam SetVSConstF "
+              "src-COPY ±IPD (0x2A1E10/content path) + CamMatrix HMD look; PubProj idle; "
+              "kill=45");
+          Log("Mode74: to opt-in dual later: put 1 in gtaiv_dxvk_vr.dual (need %u live ES, "
+              "dual 1/%u, aggressive load-pause)",
+              kMode74GateNeedLiveEs, kMode74DualEveryN);
+        } else {
+          Log("Mode74: DUAL OPT-IN (gtaiv_dxvk_vr.dual=1) — gated BuildRootA×2 1/%u after "
+              "%u live ES; softskip+load-pause hardened",
+              kMode74DualEveryN, kMode74GateNeedLiveEs);
+        }
+        Log("StereoRender: mode 74 PRESENCE (dualEn=%d; near-cam VSConst ±IPD; CamMatrix "
+            "HMD; PubProj when dual; never view+0x80) ok=%d fovSite=%d vsHook=%d "
+            "pubProj=%d",
+            g_mode74DualEnabled.load() ? 1 : 0, g_ok.load() ? 1 : 0, fovOk ? 1 : 0,
+            okHook ? 1 : 0, okPub ? 1 : 0);
+        Log("StereoRender: how-to — stereo=74; exit apt MUST survive (dual OFF); street "
+            "lean = contentInj↑ + eyeSep≠0; kill=45");
+        Log("HmdLook: ENABLED CamMatrix (crash-safe); Mode74 inject = ±IPD only on "
+            "near-cam uploads (no double 6DoF; F9 recenter)");
+        Log("PubProj: ENABLED Mode74 (armed; active only during dual eye walks; never "
+            "view+0x80)");
         Log("StereoRender: kill-switch - stereo=72 or 45");
       } else if (mode == StereoMode::HeadOwnedCamSpike) {
         Log("StereoRender: mode 45 HEAD-OWNED CAM SPIKE (Mode44 RT lock + post-CCam "
@@ -7633,6 +8561,10 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
 
 bool StereoInDualPass() {
   return g_inDual.load();
+}
+
+bool StereoMode74DualEnabled() {
+  return g_mode74DualEnabled.load();
 }
 
 bool StereoProjWindowActive() {

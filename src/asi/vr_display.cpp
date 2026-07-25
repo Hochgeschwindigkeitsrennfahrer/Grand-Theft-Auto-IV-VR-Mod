@@ -356,6 +356,53 @@ bool GetEyeRawProjection(vr::EVREye eye, float* left, float* right, float* top, 
   return true;
 }
 
+bool BuildHmdEyeProjection(vr::EVREye eye, float* out16, const float* template16, float zn,
+                           float zf) {
+  if (!out16)
+    return false;
+  float l = 0.f, r = 0.f, t = 0.f, b = 0.f;
+  if (!GetEyeRawProjection(eye, &l, &r, &t, &b) || !(r > l) || !(b > t))
+    return false;
+  if (!(zn > 1e-4f) || !(zf > zn + 1e-3f)) {
+    zn = 0.15f;
+    zf = 2500.f;
+  }
+
+  const float invRL = 1.f / (r - l);
+  const float invTB = 1.f / (b - t);
+  const float sx = 2.f * invRL;
+  const float sy = 2.f * invTB;
+  const float ox = (r + l) * invRL;
+  const float oy = (t + b) * invTB;
+
+  // Prefer adapting a game projection template (keeps Rage near/far + layout).
+  if (template16 && template16[0] > 0.1f && template16[0] < 8.f && template16[5] > 0.1f &&
+      template16[5] < 8.f && std::fabs(template16[15]) < 0.08f &&
+      std::fabs(template16[11]) > 0.85f && std::fabs(template16[11]) < 1.15f) {
+    for (int i = 0; i < 16; ++i)
+      out16[i] = template16[i];
+    out16[0] = sx;
+    out16[5] = sy;
+    // Off-axis terms — this is what matrix-IPD alone cannot provide.
+    out16[8] = ox;
+    out16[9] = oy;
+    return std::isfinite(out16[0]) && std::isfinite(out16[5]) && std::isfinite(out16[8]) &&
+           std::isfinite(out16[9]);
+  }
+
+  // Fresh D3D-style row-major perspective (camera looks −Z, +Y up).
+  std::memset(out16, 0, 16 * sizeof(float));
+  out16[0] = sx;
+  out16[5] = sy;
+  out16[8] = ox;
+  out16[9] = oy;
+  out16[10] = zf / (zn - zf);
+  out16[11] = -1.f;
+  out16[14] = (zf * zn) / (zn - zf);
+  out16[15] = 0.f;
+  return std::isfinite(out16[0]) && std::isfinite(out16[10]) && std::isfinite(out16[14]);
+}
+
 void LatchGameFovForPair() {
   g_pairLatchH.store(g_gameTanH.load());
   g_pairLatchV.store(g_gameTanV.load());

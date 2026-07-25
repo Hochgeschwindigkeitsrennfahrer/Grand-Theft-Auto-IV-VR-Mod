@@ -1,6 +1,96 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-## Deployed 2026-07-25 ~07:08 — Mode 74 **stable** (flicker/perf/jump fix) — TEST IN MORNING
+## Deployed 2026-07-25 ~15:47 — Mode74 **contentinj** (presence, dual still OFF) — TEST NOW
+
+### Seam hooked
+
+**SetVSConstF `0x220D0` (Mode72)** — Mode74 crash-safe temporal now:
+
+1. **Multi inject/ES** via `DualViewBudget=12` (was 1) — covers more `activeView+0x80` uploads per frame.
+2. **Forced ±half IPD** on src-copy when `dualEn=0` (no `ApplyHmdEyeLocal` basis rewrite fight).
+3. **Near-cam contentHit** also armed (for `0x2A1E10` stack uploads) — live still mostly `ptr=1` / `contentInj=0`.
+4. **CamMatrix IPD back ON** when `dualEn=0` (was skipped while "Mode74 owns IPD").
+5. **Never** `BuildRootA×2`, never write live `view+0x80`.
+
+### Agent verify (live)
+
+- `ASI_BUILD_ID 20260725-154721-mode74-contentinj`
+- `Mode74: DUAL OFF` · `dualEn=0` · `dualN=0` · gate `CLOSED`
+- `VIEW inject #… eyeSep=5.0cm` climbing (~11/ES); L/R alternate
+- `CamMatrix: … ipd=(±0.0156,±0.0427,…)` ≠ 0
+- `contentInj=0` (pointer path owns hits); 0 EXCEPTION; GTAIV alive
+
+**Play now:** stereo **`74`**. Kill **`45`**. Soft **`72`**.  
+**Launch:** DirectExe (game left running).
+
+**You test (short English):**
+1. Headset on — game should already be up (or Desktop **GTA IV Quick Restart**).
+2. Exit Roman's apartment → city — **MUST NOT crash**.
+3. Street by a car/wall: lean L/R — **3D or still flat?**
+4. Crash → put **`45`** in `gtaiv_dxvk_vr.stereo`, Quick Restart.
+
+**Next if still flat:** true prologue hook on upload fn **`0x2A1E10`** (or sparse dual 1/8 only after long stable in-world). Kill = **45**.
+
+---
+
+## Prior deployed 2026-07-25 ~15:00 — Mode74 **crashsafe** (BuildRootA×2 OFF)
+
+Crash-safe dual-off baseline. Presence weak (1 inject/ES, CamMatrix `ipd=0`). Superseded by **contentinj** above. Build was `20260725-150014-mode74-crashsafe`. Kill = **45**.
+
+---
+
+## Prior deployed 2026-07-25 ~14:44 — Mode74 **softskip** — FAILED (crash)
+
+Load-pause/hysteresis/soft-skip **did not fire** (0 LOAD PAUSE / 0 SOFT SKIP). Dual stayed every-frame through streaming. Superseded by **crashsafe** above.
+
+---
+
+## Prior deployed 2026-07-25 ~15:18 — Mode74 **dualsep** (superseded — crash)
+
+Presence: dual VIEW ±half IPD + D3DTS_VIEW + EndScene budget/c0. Smooth better; still not true VR. **Crashed** apartment→city (sticky dual during streaming). Superseded by **softskip** above.
+
+---
+
+## Prior deployed 2026-07-25 ~14:25 — Mode 74 **CamIPD dual** — still monitor
+
+**User after PubProj:** **"All smooth but still flat dude"** — need IN the game, not cardboard.
+
+### Why still flat (parallax audit)
+
+| Check | Evidence |
+|-------|----------|
+| PubProj HOOK | PASS — L/R `ox=±0.07`, `pubProj` 100k+, `HOLD +0x180` |
+| StereoDiff / haveL/R | PASS — absdiff ≠0, Submit L=1 R=1 |
+| Mode72 VIEW inject during dual | **FAIL** — `injects` stall (~90→stuck), `contentInj=0` (BuildRootA dual does not feed view@c0 uploads) |
+| CamMatrix IPD during dual (before) | **FAIL** — Mode74 skipped CamMatrix IPD (“VS owns it”) → `ipd=(0,0,0)` while dual → **no translational parallax** |
+| IPD file mid-session | F8 left `ipd=1` briefly (restored to **6**) — not the root |
+
+**Verdict:** PubProj asymmetry alone = slight L≠R without depth. Smooth OK. Presence needs eye separation on the **drawn camera** — CamMatrix during dual.
+
+### What changed (one primary behavior)
+
+**During Mode74 `StereoInDualPass()`, CamMatrix applies IPD again** (was skipped so Mode74 VS could own sep — but VS inject is silent in dual). Outside dual, Mode74 VS still owns e2h (no double). Also kept from probe builds: PubProj **HOLD +0x180** until eye BuildRootA ends (not restore mid-hook).
+
+**Play was:** stereo **`74`**. Kill **`45`**. Soft **`72`**.  
+**Build:** `ASI_BUILD_ID 20260725-1425-mode74-camipd` — superseded by **dualsep** above.
+
+**Honesty / next if still flat:** VS view inject during dual still mostly dead (`contentInj=0`) — if CamMatrix IPD does not reach the bake path, next is find **who uploads the drawn view** on the replay thread (or per-eye CCam FOV `0x706F7C` only if frustum still wrong). Do **not** crank IPD as sole fix. Kill = **45**.
+
+---
+
+## Prior deployed 2026-07-25 ~14:04 — Mode 74 **PubProj** (smooth PASS / presence FAIL)
+
+PublishProj `0x31BA0` → `+0x308` with HMD `ox=±0.07`. Smooth dual OK; headset still monitor. Superseded by **CamIPD dual** above. Build was `20260725-1404-mode74-pubproj`.
+
+---
+
+## Prior deployed 2026-07-25 ~13:52 — Mode 74 **EyeProj** (still flat / monitor)
+
+Per-eye `GetProjectionRaw` → write `+0x180` + push proj @c4. Log armed / writes climbed; headset still monitor-in-face. Superseded by **PubProj** above. Build was `20260725-1352-mode74-eyeproj`.
+
+---
+
+## Prior deployed 2026-07-25 ~07:08 — Mode 74 **stable** (flicker/perf/jump fix)
 
 **Headset feedback on `20260725-0654-mode74-hmd6dof`:** warp slightly better (not priority); **FPS almost halved**; vision **jumpy**; **~1Hz flicker** also in fallback `20260725-0648-mode74-hmdlook`.
 
@@ -20,19 +110,12 @@ Sticky gate already fixed fused↔separated from miss-close (0 CLOSE after OPEN 
 - Light EMA on pose orientation to kill single-sample spikes.
 - Sticky every-frame dual + inject-only-in-`g_inDual` + never view+0x80 unchanged.
 
-**Play now:** stereo **`74`**. Kill **`45`**. Soft **`72`**.  
+**Play was:** stereo **`74`**. Kill **`45`**. Soft **`72`**.  
 **Build:** `ASI_BUILD_ID 20260725-0708-mode74-stable`
 
 **Fallback still:** tag `fallback-mode74-hmdlook-20260725` @ `1476229` if this regresses.
 
-**You test (morning):**
-1. SteamVR on → start GTA IV → load **into the world**.
-2. Confirm log: `ASI_BUILD_ID 20260725-0708-mode74-stable`, gate OPEN, `stickyOpen=1`, **0** further CLOSE, `HmdLook: ACTIVE` with `no seated6DoF here`.
-3. Is **~1Hz flicker gone**? Is view less jumpy? Is FPS closer to pre-6DoF?
-4. Turn head — look OK? F9 = recenter.
-5. Bad → stereo file **`45`**, or restore fallback tag above.
-
-**Honesty / limits:** every-frame dual still costs ~2× render (FPS cannot match mono). No per-eye VS projection inject yet (Mode15 dead; PublishProj `0x31BA0` / `this+0x308` is next RE lead). Kill = **45**.
+**Honesty / limits:** every-frame dual still costs ~2× render. Superseded by EyeProj section above for 3D feel. Kill = **45**.
 
 ---
 

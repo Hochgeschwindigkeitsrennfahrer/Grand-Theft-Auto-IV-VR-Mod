@@ -5,6 +5,7 @@
 #include "ped_hide.h"
 #include "stereo_config.h"
 #include "stereo_eye.h"
+#include "stereo_render.h"
 #include "vr_display.h"
 #include "vr_move.h"
 
@@ -268,11 +269,15 @@ void ApplyHmdToCam(Matrix44* mat) {
   // Stereo eye origin — L4D2VR GetViewOriginLeft/Right:
   //   origin + forward*(-eyeZ*scale) + right*(±IPD*ipdScale*scale/2)
   // Cover FOV + TextureBounds (Submit) handle fusion; IPD alone is not enough.
-  // Mode74: Mode74 SetVSConstF owns EyeToHead/IPD on the VS upload — skip
-  // CamMatrix IPD to avoid double separation (flicker / hyper-stereo).
+  // Mode74 dualEn=0 (crash-safe): CamMatrix supplies IPD on CCam bake AND
+  // SetVSConstF src-copy adds ±half (stronger presence; dual×2 stays off).
+  // Mode74 dualEn=1 temporal: VS owns e2h/IPD on inject — skip here.
+  // Mode74 during same-frame dual: CamMatrix MUST supply IPD (VS often silent).
   float ipdX = 0.f, ipdY = 0.f, ipdZ = 0.f;
   const bool rightEye = (GetStereoEye() == StereoEye::Right);
-  const bool mode74OwnsIpd = GetStereoMode() == StereoMode::SameFrameVsConstGatedDual;
+  const bool mode74 = GetStereoMode() == StereoMode::SameFrameVsConstGatedDual;
+  const bool mode74OwnsIpd =
+      mode74 && !StereoInDualPass() && StereoMode74DualEnabled();
   if (GetStereoMode() >= StereoMode::DualIpd && !mode74OwnsIpd) {
     float hrx, hry, hrz;
     OvrToGta(h.m[0][0], h.m[1][0], h.m[2][0], &hrx, &hry, &hrz);
@@ -326,9 +331,9 @@ void ApplyHmdToCam(Matrix44* mat) {
   const uint32_t n = ++g_applyCount;
   if (n <= 5 || (n % 300) == 0) {
     Log("CamMatrix: FP lock #%u %s pos=(%.3f,%.3f,%.3f) ipd=(%.4f,%.4f,%.4f) sep=%.0fcm "
-        "eyeFwd=%.0fcm",
+        "eyeFwd=%.0fcm dual=%d",
         n, rightEye ? "R" : "L", eye.x, eye.y, eye.z, ipdX, ipdY, ipdZ,
-        GetStereoSepMeters() * 100.f, eyeFwd * 100.f);
+        GetStereoSepMeters() * 100.f, eyeFwd * 100.f, StereoInDualPass() ? 1 : 0);
   }
 }
 

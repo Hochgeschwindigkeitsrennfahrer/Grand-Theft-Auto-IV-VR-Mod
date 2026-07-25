@@ -1,7 +1,8 @@
 ﻿# Build ASI -> verify artifact -> kill GTA -> deploy -> start -> wait for NEW ASI log.
 param(
   [string] $GameDir = "C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV",
-  [switch] $DirectExe,
+  [switch] $DirectExe,   # kept for callers; DirectExe is restart default
+  [switch] $SteamLaunch, # opt-in old Steam -applaunch (often sticks on LAUNCHING)
   [switch] $SkipBuild,
   [switch] $NoStart
 )
@@ -54,7 +55,8 @@ if (-not (Wait-FileUnlocked $destAsi 45)) {
   Write-Host "WARN: dest ASI still locked; deploy may fail"
 }
 
-$buildId = Get-Date -Format "yyyyMMdd-HHmmss"
+$tag = if ($env:ASI_BUILD_TAG) { $env:ASI_BUILD_TAG } else { "mode74-crashsafe" }
+$buildId = (Get-Date -Format "yyyyMMdd-HHmmss") + "-" + $tag
 Set-Content -LiteralPath $buildIdPath -Value $buildId -NoNewline -Encoding Ascii
 Write-Host "=== deploy-asi (buildId=$buildId) ==="
 & "$PSScriptRoot\deploy-asi.ps1" -GameDir $GameDir
@@ -79,10 +81,12 @@ if ($NoStart) {
   exit 0
 }
 
-Write-Host "=== start GTA IV (only after deploy verified; auto-close SteamVR dashboard) ==="
+Write-Host "=== start GTA IV DirectExe (only after deploy verified; auto-close SteamVR dashboard) ==="
 $restartArgs = @{ NoPause = $true }
-if ($DirectExe) { $restartArgs.DirectExe = $true }
-# restart-gtaiv kills any leftover GTAIV, starts the game, then closes dashboard.
+# DirectExe is restart-gtaiv default (avoids Steam LAUNCHING Cancel+Play).
+# Pass -SteamLaunch to restart-gtaiv.ps1 manually only if DirectExe fails.
+if ($SteamLaunch) { $restartArgs.SteamLaunch = $true }
+# restart-gtaiv kills any leftover GTAIV, starts GTAIV.exe, then closes dashboard.
 & "$PSScriptRoot\restart-gtaiv.ps1" @restartArgs
 
 Write-Host "Waiting for NEW ASI session (ASI loaded + buildId=$buildId)..."

@@ -82,8 +82,10 @@ Nuclear fallback: Steam → Verify files → then redeploy ASI/DXVK/FusionFix.
 ### Start after RGLess
 
 ```powershell
-.\scripts\restart-gtaiv.ps1 -DirectExe
+.\scripts\restart-gtaiv.ps1 -NoPause
 ```
+
+(DirectExe is the default for everyone now — RGLess just removes the Rockstar login step.)
 
 **Downgrade 1.0.8.0:** **not** for this VR project (CE AOBs).
 
@@ -91,6 +93,12 @@ Nuclear fallback: Steam → Verify files → then redeploy ASI/DXVK/FusionFix.
 
 ## Recommendation for you (VR dev loop)
 
-1. Level A (launcher warm).  
-2. RGLess with `install-rgless.ps1` + later `restore-rgless.ps1`.  
-3. No downgrade.
+1. **Always restart with DirectExe** (default now):
+   - Desktop/taskbar: **GTA IV Quick Restart**, or
+   - Double-click `scripts\restart-gtaiv.bat`, or
+   - `.\scripts\restart-gtaiv.ps1 -NoPause`
+2. Do **not** use Steam Play / `-applaunch` for restarts — that is what left Steam on **LAUNCHING**.
+3. Keep Steam + SteamVR already running; script only kills GTAIV/PlayGTAIV.
+4. Optional: RGLess (`install-rgless.ps1`) if Rockstar login still blocks DirectExe.
+5. Fallback only: `.\scripts\restart-gtaiv.ps1 -SteamLaunch -NoPause`
+6. No downgrade.

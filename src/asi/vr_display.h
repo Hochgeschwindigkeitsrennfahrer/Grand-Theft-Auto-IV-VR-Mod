@@ -39,6 +39,12 @@ bool GetNativeFovInsetBounds(vr::EVREye eye, vr::VRTextureBounds_t* out);
 // left/top are negative, right/bottom positive.
 bool GetEyeRawProjection(vr::EVREye eye, float* left, float* right, float* top, float* bottom);
 
+// Build / adapt a D3D-style row-major projection for one HMD eye (asymmetric frustum).
+// If template16 is non-null and looks like a projection, keep its Z row (near/far) and
+// only replace FOV / off-axis terms from GetProjectionRaw. Otherwise use zn/zf defaults.
+bool BuildHmdEyeProjection(vr::EVREye eye, float* out16, const float* template16 = nullptr,
+                           float zn = 0.15f, float zf = 2500.f);
+
 // Game half-FOV tangents (horizontal/vertical). Sources, in priority order:
 // pair latch (Mode 37), CCam publish (Mode 36/37), gtaiv_dxvk_vr.fov override,
 // D3D probe, 70° fallback. Canvas zoom DISABLED — claimed-FOV warp on head move.

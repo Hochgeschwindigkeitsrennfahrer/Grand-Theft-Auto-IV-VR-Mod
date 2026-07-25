@@ -1,5 +1,6 @@
 @echo off
 cd /d "%~dp0"
+REM One-click restart: kills GTA then starts GTAIV.exe directly (no Steam Cancel+Play).
 REM Always -NoPause: window closes by itself. For a pinable icon use:
 REM   powershell -File "%~dp0install-restart-shortcut.ps1"
 powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%~dp0restart-gtaiv.ps1" -NoPause %*

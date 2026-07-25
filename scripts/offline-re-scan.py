@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Offline PE scan for GTA IV CE (GTAIV.exe). Read-only; no game launch."""
+"""Offline PE scan for GTA IV CE (GTAIV.exe). Read-only; no game launch.
+
+CRITICAL (2026-07-25): CE .text VirtualAddress=0x1000, PointerToRawData=0x400 →
+mapped RVA = file_offset + 0xC00. Never treat raw file offsets as loaded RVAs.
+Mode 66 live REJECT at '0x30300' was this bug (PublishSync is mapped 0x30F00).
+"""
 from __future__ import annotations
 
 import struct
@@ -8,6 +13,47 @@ from pathlib import Path
 
 EXE = Path(r"C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV\GTAIV.exe")
 IMAGE_BASE = 0x400000
+
+# --- PE section helpers ---
+
+Section = tuple[int, int, int, int]  # va, vsz, raw, rsz
+_SECTIONS: list[Section] = []
+
+
+def load_sections(data: bytes) -> list[Section]:
+    e_lfanew = struct.unpack_from("<I", data, 0x3C)[0]
+    num = struct.unpack_from("<H", data, e_lfanew + 6)[0]
+    opt = struct.unpack_from("<H", data, e_lfanew + 20)[0]
+    sec = e_lfanew + 24 + opt
+    sections: list[Section] = []
+    for i in range(num):
+        o = sec + i * 40
+        vsz, va, rsz, raw = struct.unpack_from("<IIII", data, o + 8)
+        sections.append((va, vsz, raw, rsz))
+    return sections
+
+
+def file_off_to_rva(off: int) -> int | None:
+    for va, vsz, raw, rsz in _SECTIONS:
+        if raw <= off < raw + rsz:
+            return va + (off - raw)
+    return None
+
+
+def rva_to_file_off(rva: int) -> int | None:
+    for va, vsz, raw, rsz in _SECTIONS:
+        if va <= rva < va + max(vsz, rsz):
+            return raw + (rva - va)
+    return None
+
+
+def bytes_at_rva(data: bytes, rva: int, n: int = 16) -> str:
+    off = rva_to_file_off(rva)
+    if off is None:
+        return "MISS"
+    chunk = data[off : off + n]
+    return " ".join(f"{b:02X}" for b in chunk)
+
 
 # --- x86 helpers (linear disasm for RE notes; not a full decoder) ---
 
@@ -334,22 +380,29 @@ def bytes_at(data: bytes, off: int, n: int = 16) -> str:
 
 
 def find_fn_start(data: bytes, addr_in_fn: int, max_back: int = 0x800) -> int | None:
+    """Prefer frame prologues (55 8B EC) over mid 56 57 8B F9 — 0x308C0 vs false 0x308C9."""
     lo = max(0, addr_in_fn - max_back)
+    best_frame: int | None = None
+    best_other: int | None = None
     for i in range(addr_in_fn, lo, -1):
         if i + 3 >= len(data):
             continue
         b0, b1, b2, b3 = data[i], data[i + 1], data[i + 2], data[i + 3]
         if b0 == 0x55 and b1 == 0x8B and b2 == 0xEC:
-            return i
-        if b0 == 0x56 and b1 == 0x57 and b2 == 0x8B and b3 == 0xF9:
-            return i
-        if b0 == 0x53 and b1 == 0x55 and b2 == 0x56 and b3 == 0x57:
-            return i
-        if b0 == 0x83 and b1 == 0xEC:
-            return i
-        if b0 == 0x56 and b1 == 0x8B and b2 == 0xF1:
-            return i
-    return None
+            best_frame = i
+            break  # nearest frame prologue wins
+        if best_other is None:
+            if b0 == 0x56 and b1 == 0x57 and b2 == 0x8B and b3 == 0xF9:
+                best_other = i
+            elif b0 == 0x53 and b1 == 0x55 and b2 == 0x56 and b3 == 0x57:
+                best_other = i
+            elif b0 == 0x83 and b1 == 0xEC:
+                best_other = i
+            elif b0 == 0x56 and b1 == 0x8B and b2 == 0xF1:
+                best_other = i
+    if best_frame is not None:
+        return best_frame
+    return best_other
 
 
 def scan_movss_disp(data: bytes, disp: int, image_size: int, limit: int = 12) -> list[int]:
@@ -470,12 +523,12 @@ def scan_active_view_global(data: bytes, image_size: int) -> None:
         fn = find_fn_start(data, off)
         fn_s = f"0x{fn:X}" if fn else "?"
         print(f"    WRITE 0x{off:X}  {kind}  enclosing~{fn_s}")
-    key_reads = [0x2FFD0, 0x30349, 0x30841, 0x3006F]
-    print("  key compare/set sites:")
+    # Mapped key sites (+0xC00 from old file-off notes)
+    key_reads = [0x30BD0, 0x30BF8, 0x30C6F, 0x30F49, 0x3143F]
+    print("  key compare/set sites (mapped):")
     for key in key_reads:
-        fn = find_fn_start(data, key)
-        fn_s = f"0x{fn:X}" if fn else "?"
-        print(f"    0x{key:X}  enclosing~{fn_s}")
+        fo = rva_to_file_off(key)
+        print(f"    mapped 0x{key:X} file={hex(fo) if fo else '?'}  {bytes_at_rva(data, key, 8)}")
     print()
 
 
@@ -540,61 +593,93 @@ def scan_global_device_singleton(data: bytes, image_size: int) -> None:
             max_slot = max(max_slot, disp)
     print(f"  max FF/2 disp32 vtable slot: 0x{max_slot:X} (entry ~{max_slot // 4})")
     for off, reg, disp in vt_hits:
-        if off in (0x3010D, 0x30120):
-            print(f"    0x{off:X} call [{reg}+0x{disp:X}]  ; ReplayDispatch owner")
+        site_rva = file_off_to_rva(off) if file_off_to_rva(off) is not None else off
+        if site_rva in (0x30D0D, 0x30D20) or off in (0x3010D, 0x30120):
+            print(f"    mapped~0x{site_rva:X} file=0x{off:X} call [{reg}+0x{disp:X}]  ; ReplayDispatch")
     print()
 
 
 def print_sameframe_deep_scan(data: bytes, image_size: int) -> None:
-    print("=== SameFrameSeamGate deep scan (0x3187C + 0x3010D) ===")
-    fn318 = 0x3187C
-    print(f"  ViewConst 0x{fn318:X}: {bytes_at(data, fn318, 16)}")
-    e8_in = scan_e8_from_fn(data, fn318, 0x400, image_size)
-    print(f"  E8 callees from 0x{fn318:X} body: {len(e8_in)}")
-    for off, dst in e8_in[:12]:
-        print(f"    0x{off:X} -> 0x{dst:X}")
-    e8_to = scan_e8_to(data, fn318, image_size, 32)
-    print(f"  Static E8 -> 0x{fn318:X}: {len(e8_to)} sites")
+    """Deep scan using MAPPED RVAs (file_offset + 0xC00). Prefer offline-seam-mapped.py."""
+    print("=== SameFrameSeamGate deep scan (MAPPED RVAs) ===")
+
+    def at(rva: int, n: int = 16) -> str:
+        return bytes_at_rva(data, rva, n)
+
+    def e8_to(tgt: int):
+        # Scan via file offs but report mapped site RVAs
+        hits = []
+        for fo in range(min(image_size, len(data)) - 5):
+            if data[fo] != 0xE8:
+                continue
+            site = file_off_to_rva(fo)
+            if site is None:
+                continue
+            rel = struct.unpack_from("<i", data, fo + 1)[0]
+            if site + 5 + rel == tgt:
+                hits.append(site)
+        return hits
+
+    fn_vc = 0x32470
+    print(f"  ViewConst TRUE 0x{fn_vc:X}: {at(fn_vc, 16)}")
+    print(f"  ViewConst MID  0x3247C: {at(0x3247C, 16)}")
     print()
 
-    print_capstone_fn(data, fn318, 0x400, image_size, "View-const fn 0x3187C (to ret)")
-
-    print("=== 0x3010D owner fn 0x300D0 (NOT 0x2FBF0) ===")
-    for off in scan_ff90_178(data, 0x2F000, 0x32000):
-        fn = find_fn_start(data, off)
-        fn_s = f"0x{fn:X}" if fn else "?"
-        print(f"  call [eax+0x178] @ 0x{off:X} enclosing~{fn_s}")
-    print_capstone_fn(data, 0x300D0, 0x70, image_size, "Replay dispatch owner 0x300D0")
-    print_capstone_fn(data, 0x2FBF0, 0x50, image_size, "Matrix mul helper 0x2FBF0 (callee from 0x3187C)")
-    print_capstone_fn(data, 0x308C9, 0x180, image_size, "View-matrix writer 0x308C9 (Mode41 ret 0x30D13)")
-    print_capstone_fn(data, 0x30300, 0x70, image_size, "Publish sync 0x30300 (12 E8 callers; may call 0x300D0)")
-    hits303 = scan_e8_to(data, 0x30300, min(image_size, len(data)), 64)
-    print(f"  All static E8 -> 0x30300 ({len(hits303)} sites):")
-    for off, _ in hits303:
-        fn = find_fn_start(data, off)
-        fn_s = f"0x{fn:X}" if fn else "?"
-        print(f"    call@0x{off:X} enclosing~{fn_s}")
-    print()
-    print_capstone_fn(data, 0x30FA0, 0x120, image_size, "Publish proj 0x30FA0 (tail from 0x3187C)")
-    print_capstone_fn(data, 0x30A60, 0x140, image_size, "Publish VP block 0x30A60 (entry via call 0x30C10)")
+    print_capstone_fn_mapped(data, 0x30CD0, 0x70, "ReplayDispatch 0x30CD0")
+    print_capstone_fn_mapped(data, 0x30F00, 0x70, "PublishSync 0x30F00")
+    print_capstone_fn_mapped(data, 0x314C0, 0x80, "ViewMatWriter 0x314C0")
+    print_capstone_fn_mapped(data, 0x32470, 0x80, "ViewConst TRUE 0x32470")
+    print_capstone_fn_mapped(data, 0x307F0, 0x50, "MatMul 0x307F0")
+    print_capstone_fn_mapped(data, 0x30BF0, 0x80, "SetActiveView 0x30BF0")
 
     targets = [
-        (0x3187C, "ViewConst"),
-        (0x308C9, "ViewMatWriter"),
-        (0x300D0, "ReplayDispatch"),
-        (0x30300, "PublishSync"),
-        (0x30FA0, "PublishProj"),
-        (0x30C10, "PublishVP"),
-        (0x2FBF0, "MatMul"),
+        (0x32470, "ViewConstTRUE"),
+        (0x314C0, "ViewMatWriter"),
+        (0x30CD0, "ReplayDispatch"),
+        (0x30F00, "PublishSync"),
+        (0x307F0, "MatMul"),
+        (0x30BF0, "SetActiveView"),
     ]
-    print("=== Static E8 caller counts (same-frame family) ===")
+    print("=== Static E8 caller counts (mapped) ===")
     for tgt, name in targets:
-        hits = scan_e8_to(data, tgt, min(image_size, len(data)), 64)
+        hits = e8_to(tgt)
         print(f"  -> {name} 0x{tgt:X}: {len(hits)} direct E8")
-        for off, _ in hits[:4]:
-            fn = find_fn_start(data, off)
-            fn_s = f"0x{fn:X}" if fn else "?"
-            print(f"      call@0x{off:X} enclosing~{fn_s}")
+        for site in hits[:4]:
+            print(f"      call@0x{site:X}")
+    print()
+
+
+def print_capstone_fn_mapped(data: bytes, start_rva: int, max_bytes: int, title: str) -> None:
+    fo = rva_to_file_off(start_rva)
+    if fo is None:
+        print(f"=== {title} @ mapped 0x{start_rva:X} MISS ===\n")
+        return
+    try:
+        from capstone import Cs, CS_ARCH_X86, CS_MODE_32
+    except ImportError:
+        print(f"=== {title} @ mapped 0x{start_rva:X} ===")
+        print(f"  prologue: {bytes_at_rva(data, start_rva, 16)}")
+        print("  (install capstone for full disasm)")
+        print()
+        return
+    md = Cs(CS_ARCH_X86, CS_MODE_32)
+    print(f"=== {title} @ mapped 0x{start_rva:X} (file 0x{fo:X}) ===")
+    print(f"  prologue: {bytes_at_rva(data, start_rva, 16)}")
+    n = 0
+    for insn in md.disasm(data[fo : fo + max_bytes], IMAGE_BASE + start_rva):
+        rva_off = insn.address - IMAGE_BASE
+        mark = ""
+        if rva_off == 0x30D0D:
+            mark = "  ; call [eax+0x178]"
+        if rva_off == 0x30F53:
+            mark = "  ; call ReplayDispatch"
+        print(f"  0x{rva_off:06X}: {insn.mnemonic} {insn.op_str}{mark}")
+        n += 1
+        if insn.mnemonic == "ret":
+            break
+        if n > 80:
+            print("  ... truncated")
+            break
     print()
 
 
@@ -609,13 +694,36 @@ def print_disasm_section(title: str, data: bytes, rva_off: int, span: int, image
 
 
 def main() -> int:
+    global _SECTIONS
     if not EXE.is_file():
         print(f"MISSING: {EXE}")
         return 1
 
     data = EXE.read_bytes()
     _, image_size, _ = parse_pe(data)
+    _SECTIONS = load_sections(data)
+    text = _SECTIONS[0] if _SECTIONS else (0, 0, 0, 0)
     print(f"GTAIV.exe size={len(data)} image_size=0x{image_size:X} base=0x{IMAGE_BASE:X}")
+    print(f".text VA=0x{text[0]:X} Raw=0x{text[2]:X}  mappedRVA = fileOff + 0x{text[0]-text[2]:X}")
+    print("WARNING: older RE notes used file offsets as RVAs — add +0xC00 for .text/.rdata")
+    print()
+
+    print("=== Corrected mapped RVAs (Mode 64/66/67 + VsRet) ===")
+    for mapped, name, expect in [
+        (0x30F00, "PublishSync", "55 8B EC 83 E4 F8 51 56 8B F1"),
+        (0x314C0, "ViewMatWriter", "55 8B EC 83 E4 F8 83 EC 10"),
+        (0x32470, "ViewConst TRUE", "55 8B EC 83 E4 F0 81 EC"),
+        (0x3247C, "ViewConst MID", "56 57 8B F9 8D 44 24 70"),
+        (0x30CD0, "ReplayDispatch", "83 3D 18 D9 7E 01"),
+        (0x307F0, "MatMul", "55 8B EC"),
+        (0x30D0D, "call [eax+0x178]", "FF 90 78 01 00 00"),
+        (0x2D33E, "VsRet", "85 C0 75 14"),
+        (0x2CD80, "VS wrapper", "55 8B EC 83 E4 F8 81 EC"),
+        (0x706F7C, "FovSite CALL", "E8"),
+    ]:
+        off = rva_to_file_off(mapped)
+        b = bytes_at_rva(data, mapped, 12)
+        print(f"  mapped 0x{mapped:X}  fileOff 0x{off:X}  {name:18s}  {b}")
     print()
 
     known = {
@@ -809,50 +917,34 @@ def main() -> int:
                     print(f"    {line.strip()}")
     print()
 
-    print("=== 0x309D0 region indirect calls ===")
-    for off in range(0x30CE0, 0x30D30):
-        if off + 2 <= len(data) and data[off] == 0xFF:
-            modrm = data[off + 1]
+    print("=== Mapped replay region indirect calls (0x30CE0–0x30D30) ===")
+    for rva_off in range(0x30CE0, 0x30D30):
+        fo = rva_to_file_off(rva_off)
+        if fo is None or fo + 2 > len(data):
+            continue
+        if data[fo] == 0xFF:
+            modrm = data[fo + 1]
             op = (modrm >> 3) & 7
             if op in (2, 4):
-                print(f"    FF/{modrm:02X} @0x{off:X}: {bytes_at(data, off, 8)}")
+                print(f"    FF/{modrm:02X} @mapped 0x{rva_off:X}: {bytes_at_rva(data, rva_off, 8)}")
     print()
 
-    print("=== Corrected indirect replay dispatch (static PE) ===")
-    off = 0x3010D
-    fn = find_fn_start(data, off)
-    fn_s = f"0x{fn:X}" if fn is not None else "?"
-    print(f"  0x3010D: {bytes_at(data, off, 8)}  enclosing~{fn_s}  (call [eax+0x178])")
-    print("  NOTE: owner is ~0x300D0; 0x2FBF0 is mat-mul callee from 0x3187C")
-    print("  NOTE: Mode41/42 stack ret 0x30D13 is mid-SSE in fn 0x308C9 — not a call site")
-    vc = 0x3187C
-    print(f"  View-const candidate 0x{vc:X}: {bytes_at(data, vc, 16)}")
-    for ret in [0x3199A, 0x319A4]:
-        fn2 = find_fn_start(data, ret)
-        if fn2:
-            print(f"    ret 0x{ret:X} -> enclosing~0x{fn2:X}")
+    print("=== Corrected indirect replay dispatch (MAPPED) ===")
+    off = 0x30D0D
+    fo = rva_to_file_off(off)
+    print(f"  mapped 0x30D0D: {bytes_at_rva(data, off, 8)}  (call [eax+0x178]; owner 0x30CD0)")
+    print("  NOTE: MatMul is 0x307F0 (old file-off 0x2FBF0); NOT owner of slot178")
+    print("  NOTE: Mode42 OWNER-EDGE ret is 0x30D13 (after call); mid-SSE 0x3259A/A4 is NOT a seam")
+    print(f"  ViewConst TRUE 0x32470: {bytes_at_rva(data, 0x32470, 16)}")
+    print(f"  ViewConst MID  0x3247C: {bytes_at_rva(data, 0x3247C, 16)}")
     print()
 
     print_sameframe_deep_scan(data, image_size)
 
-    print("=== View activation 0x2FFF0 (SetActiveView — [0x17F583C] writer) ===")
-    print_capstone_fn(data, 0x2FFF0, 0xC0, image_size, "View activation 0x2FFF0")
-    hits2f = scan_e8_to(data, 0x2FFF0, min(image_size, len(data)), 64)
-    print(f"  Static E8 -> 0x2FFF0: {len(hits2f)} sites")
-    for off, _ in hits2f:
-        fn = find_fn_start(data, off)
-        fn_s = f"0x{fn:X}" if fn else "?"
-        print(f"    call@0x{off:X} enclosing~{fn_s}")
-    e8_out = scan_e8_from_fn(data, 0x2FFF0, 0xC0, image_size)
-    print(f"  E8 callees from 0x2FFF0: {len(e8_out)}")
-    for off, dst in e8_out:
-        print(f"    0x{off:X} -> 0x{dst:X}")
-    fn303 = {find_fn_start(data, o) for o, _ in scan_e8_to(data, 0x30300, image_size, 64)}
-    fn2f = {find_fn_start(data, o) for o, _ in hits2f}
-    fn303.discard(None)
-    fn2f.discard(None)
-    shared = fn303 & fn2f
-    print(f"  Shared enclosing fns with 0x30300 callers: {[hex(x) for x in sorted(shared)]}")
+    print("=== View activation mapped 0x30BF0 (SetActiveView) ===")
+    print_capstone_fn_mapped(data, 0x30BF0, 0xC0, "SetActiveView 0x30BF0")
+    # Prefer offline-seam-mapped.py for full E8 graphs (file-off scan_e8_to is legacy).
+    print("  (full E8 caller lists: py scripts/offline-seam-mapped.py)")
     print()
 
     scan_active_view_global(data, image_size)

@@ -1,4 +1,5 @@
 ' Silent GTA IV quick restart — no console, no "Enter to close".
+' Starts GTAIV.exe directly (default) — no Steam Cancel+Play dance.
 ' Pin the Desktop/Start-Menu shortcut (created by install-restart-shortcut.ps1),
 ' not this .vbs alone. Target is wscript.exe (pinable) + GTAIV icon.
 Option Explicit

@@ -28,7 +28,7 @@ function New-RestartShortcut([string]$lnkPath) {
   $s.WorkingDirectory = $scripts
   $s.WindowStyle = 7  # Minimized (wscript itself is silent)
   $s.IconLocation = $icon
-  $s.Description = "GTA IV Quick Restart (kill + Steam relaunch, no console)"
+  $s.Description = "GTA IV Quick Restart (kill + DirectExe GTAIV.exe, no Cancel+Play)"
   $s.Save()
   Write-Host "OK: $lnkPath"
 }

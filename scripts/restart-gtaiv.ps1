@@ -1,13 +1,25 @@
-﻿# Quick restart after GTA IV crash.
-# Default: kill game/crash processes → Steam-launch → auto-close SteamVR dashboard
-# once GTAIV is up (IsDashboardVisible toggle). ASI also closes dashboard after
-# VR_Init if still open. See docs/STARTUP_SPEED.md for offline / RGLess / DirectExe.
+﻿# GTA IV Quick Restart — reliable start (no Steam Cancel+Play dance).
+#
+# DEFAULT: kill game processes → start GTAIV.exe DIRECTLY (working dir = game dir)
+# while Steam stays running. Verified on this CE machine: GTAIV appears in ~1s.
+#
+# Steam -applaunch / steam://rungameid often leave Steam stuck on LAUNCHING
+# (PlayGTAIV + Rockstar pipeline). Use -SteamLaunch only if DirectExe fails.
+#
+# ONE-CLICK for you:
+#   Desktop / taskbar: "GTA IV Quick Restart" (run install-restart-shortcut.ps1 once)
+#   Or double-click:  scripts\restart-gtaiv.bat
+#   Or PowerShell:    .\scripts\restart-gtaiv.ps1 -NoPause
+#
+# Agent / deploy: prefer this script (or build-deploy-run.ps1) — DirectExe is default.
+# See docs/STARTUP_SPEED.md for RGLess / offline notes.
 param(
   [switch]$NoStart,
   [switch]$NoPause,
   [switch]$NoCloseDashboard,  # skip dashboard toggle after game is up
   [switch]$KillRockstarStack,  # opt-in: also kill Launcher (can stick Steam on LAUNCHING)
-  [switch]$DirectExe  # start GTAIV.exe directly (needs RGLess / offline auth; skips steam -applaunch)
+  [switch]$SteamLaunch,  # old path: steam.exe -applaunch 12210 (often sticks on LAUNCHING)
+  [switch]$DirectExe  # kept for callers; DirectExe is now the DEFAULT (no-op unless -SteamLaunch)
 )
 
 $ErrorActionPreference = "Continue"
@@ -28,6 +40,18 @@ function Stop-NamedProcesses([string[]]$names) {
   }
 }
 
+function Wait-ProcessesGone([string[]]$names, [int]$seconds = 15) {
+  for ($i = 0; $i -lt $seconds; $i++) {
+    $left = @()
+    foreach ($name in $names) {
+      $left += @(Get-Process -Name $name -ErrorAction SilentlyContinue)
+    }
+    if ($left.Count -eq 0) { return $true }
+    Start-Sleep -Milliseconds 500
+  }
+  return $false
+}
+
 function Invoke-DashboardToggle {
   try {
     Start-Process -FilePath "cmd.exe" -ArgumentList @(
@@ -36,7 +60,7 @@ function Invoke-DashboardToggle {
   } catch {}
 }
 
-Write-Host "=== GTA IV Quick Restart ==="
+Write-Host "=== GTA IV Quick Restart (DirectExe default) ==="
 
 # Safe set: clears crash dialog + game without breaking Steam/Rockstar auth pipeline
 $killAlways = @(
@@ -48,6 +72,11 @@ $killAlways = @(
 
 Write-Host "Stopping GTA / crash dialog..."
 Stop-NamedProcesses $killAlways
+if (-not (Wait-ProcessesGone $killAlways 20)) {
+  Write-Host "WARN: some game processes still alive — force kill again..."
+  Stop-NamedProcesses $killAlways
+  Start-Sleep -Seconds 1
+}
 
 if ($KillRockstarStack) {
   Write-Host "Stopping Rockstar stack (-KillRockstarStack)..."
@@ -59,6 +88,7 @@ if ($KillRockstarStack) {
   # Intentionally NOT killing RockstarService / SocialClubHelper - Steam stays on LAUNCHING if those die mid-start.
 }
 
+# Brief settle so Steam drops "running" bit (does not require killing Steam).
 Write-Host "Waiting 2s for Steam to clear 'running' state..."
 Start-Sleep -Seconds 2
 
@@ -68,23 +98,36 @@ if ($NoStart) {
   exit 0
 }
 
-if ($DirectExe) {
-  if (-not (Test-Path $gtaExe)) {
-    Write-Host "ERROR: GTAIV.exe missing: $gtaExe"
-    if (-not $NoPause) { Read-Host "Enter to close" | Out-Null }
-    exit 1
-  }
-  Write-Host "Starting DIRECT: $gtaExe"
-  Write-Host "(Without RGLess/offline auth the launcher may still appear - see docs/STARTUP_SPEED.md)"
-  Start-Process -FilePath $gtaExe -WorkingDirectory $gameDir
-} else {
+$useSteam = [bool]$SteamLaunch
+if ($useSteam) {
   if (-not (Test-Path $steamExe)) {
     Write-Host "ERROR: steam.exe not found: $steamExe"
     if (-not $NoPause) { Read-Host "Enter to close" | Out-Null }
     exit 1
   }
-  Write-Host "Starting: $steamExe -applaunch $steamAppId"
+  Write-Host "Starting STEAM: $steamExe -applaunch $steamAppId"
+  Write-Host "(If stuck on LAUNCHING: Cancel, wait 5s, re-run WITHOUT -SteamLaunch)"
   Start-Process -FilePath $steamExe -ArgumentList @("-applaunch", "$steamAppId")
+} else {
+  if (-not (Test-Path $gtaExe)) {
+    Write-Host "ERROR: GTAIV.exe missing: $gtaExe"
+    if (-not $NoPause) { Read-Host "Enter to close" | Out-Null }
+    exit 1
+  }
+  # Ensure Steam is up (CE steam_api often wants it) but do NOT use -applaunch.
+  $steamProc = Get-Process -Name "steam" -ErrorAction SilentlyContinue
+  if (-not $steamProc) {
+    if (Test-Path $steamExe) {
+      Write-Host "Steam not running — starting Steam (no applaunch)..."
+      Start-Process -FilePath $steamExe
+      Start-Sleep -Seconds 5
+    } else {
+      Write-Host "WARN: Steam not found — launching GTAIV.exe anyway"
+    }
+  }
+  Write-Host "Starting DIRECT: $gtaExe"
+  Write-Host "WorkingDirectory: $gameDir"
+  Start-Process -FilePath $gtaExe -WorkingDirectory $gameDir
 }
 
 Write-Host "Waiting for game process (up to 45s)..."
@@ -97,11 +140,24 @@ for ($i = 0; $i -lt 45; $i++) {
     $ready = $true
     break
   }
+  # PlayGTAIV alone = Steam path still bootstrapping — keep waiting
+  $play = Get-Process -Name "PlayGTAIV" -ErrorAction SilentlyContinue
+  if ($play -and ($i % 5) -eq 4) {
+    Write-Host ("... PlayGTAIV still up (pid {0}) — waiting for GTAIV.exe" -f $play.Id)
+  }
 }
 
 if (-not $ready) {
-  Write-Host "GTAIV not seen yet. If Steam stuck on LAUNCHING: Cancel, wait 5s, click Play once."
-  Write-Host "Do NOT use -KillRockstarStack unless cleaning a crash dialog."
+  Write-Host "GTAIV not seen yet."
+  if ($useSteam) {
+    Write-Host "Steam LAUNCHING stuck? Cancel in Steam, wait 5s, then:"
+    Write-Host "  .\scripts\restart-gtaiv.ps1 -NoPause"
+    Write-Host "(DirectExe is default — no Cancel+Play needed on this machine.)"
+  } else {
+    Write-Host "DirectExe failed. Is Rockstar login blocking? Try once:"
+    Write-Host "  .\scripts\restart-gtaiv.ps1 -SteamLaunch -NoPause"
+    Write-Host "Or see docs/STARTUP_SPEED.md (RGLess / offline)."
+  }
 }
 
 if ($ready -and -not $NoCloseDashboard) {
