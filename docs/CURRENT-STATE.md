@@ -86,8 +86,8 @@
 | 19:07 | Build `mode88-dualms-qpc` | GetTickCount dualMs always 0; QPC shows apartment dual ~0.1ms |
 | 19:09 | Build `mode88-pose-ms` | WaitGetPoses ~11ms avg; stalls 20–33ms appear |
 | 19:10 | Build `mode88-final90` | Quieter pose log; defaults 88/1440/2 locked |
-| 19:10–19:27 | Final digest to 90 min | Game left running; no PC shutdown |
-| — | Commits through final90 | No push |
+| 19:10–19:27 | Final digest to 90 min | Mid-digest GTA exited ~84m (log froze); restarted for wake |
+| — | Commits through `96e5f18` | No push; PC left ON; ntfy sent |
 
 **You test (short English):**
 1. Headset on — Mode **88** (already set).
