@@ -46,17 +46,20 @@
 
 **Skip 74**. **Never** live `view+0x80`. Kill=**45**. Remap 71→45, 73→72.
 
-**Build:** `ASI_BUILD_ID 20260726-190230-mode88-reset-coop`  
+**Build:** `ASI_BUILD_ID 20260726-191037-mode88-final90`  
 **Play:** stereo **`88`** + eyert **`1440`** + dualn **`2`** already in game dir.  
-(Prior final: `20260726-183112-mode88-default-final` — same Mode88 policy; reset-coop adds DEVICELOST skip-Submit + post-Reset RT clear.)
+(Session builds: default-final → reset-coop → quiet-pubproj → dualms-qpc → pose-ms → **final90**.)
 
 **Agent log proof (this session):**
 - `StereoMode: 88` · Mode88 HITCHCUT + EyeProj · okDraw=1
 - `Hooked Reset` · `DeviceReset: BEFORE/OK` on boot (graphics-options freeze path armed)
-- `EyeRt: 1440×1440` · DualN every 2 · StretchRect POINT
-- `FOVPROOF` · fill≈**100%h / 62%v** letterbox
+- `EyeRt: 1440×1440` · DualN every 2 · StretchRect POINT · copy ≈0.00ms
+- `FOVPROOF` · fill≈**100%h / 62%v** letterbox (honest Mode80 geometry)
 - Dual + `hold=1` · StereoDiff≫0 (~5–9k)
-- AppFPS es/s ≈**90** apartment / menu; sustained digests also saw **~32–40** when load rises (HitchHist mostly ≤16ms)
+- AppFPS es/s ≈**90** apartment / menu; HitchHist mostly `0-16`
+- Sustained digests also saw **~32–40** es/s when load rises (still HitchHist mostly ≤16ms)
+- DrawScene dual QPC: apartment **~0.0–0.1ms** (not hitch source there)
+- WaitGetPoses: apartment avg **~11ms** (90Hz); occasional **≥20–33ms** compositor stalls logged
 - Mode89 A/B: fill≈**108%h / 67%v** soft68; StereoDiff≈7–8k
 - dualn=`3` A/B: lighter dual, more HOLD (mtime reload live)
 - Digests: `docs/_re_scratch/mode88_25min_digest.txt`, `mode88_final_digest.txt`
@@ -79,8 +82,12 @@
 | 18:46 | GTA/SteamVR exited mid-digest | Log froze at dual#34320; restart SteamVR+GTA |
 | 19:01 | Restart proof | Mode88 FOVPROOF + 90 es/s; HitchHist clean |
 | 19:02 | Build `mode88-reset-coop` | TestCoop skip-Submit on LOST/NOTRESET; Reset clears RTs twice |
-| 19:02+ | Final digest to 90 min | dualn=2 restored as default; game left running |
-| — | Commits `66ca013`… + reset-coop | No push |
+| 19:04 | Build `mode88-quiet-pubproj` | PubProj/es log intervals ×4–8 on Mode88/89 |
+| 19:07 | Build `mode88-dualms-qpc` | GetTickCount dualMs always 0; QPC shows apartment dual ~0.1ms |
+| 19:09 | Build `mode88-pose-ms` | WaitGetPoses ~11ms avg; stalls 20–33ms appear |
+| 19:10 | Build `mode88-final90` | Quieter pose log; defaults 88/1440/2 locked |
+| 19:10–19:27 | Final digest to 90 min | Game left running; no PC shutdown |
+| — | Commits through final90 | No push |
 
 **You test (short English):**
 1. Headset on — Mode **88** (already set).

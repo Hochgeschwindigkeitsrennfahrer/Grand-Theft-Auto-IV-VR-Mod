@@ -6,8 +6,8 @@ Read with `docs/CURRENT-STATE.md`, **`docs/RE_OFFSETS.md`**, **`docs/MAPPED_RVA_
 
 ## Session note 2026-07-26 — Mode **88** DEFAULT (nap marathon)
 
-**Shipped:** EyeProj ON + DrawScene dual every-N HOLD + eyert 1440 + Reset-safe RTs + buffered logs + DEVICELOST Submit skip.  
-**Build:** `20260726-190230-mode88-reset-coop` · stereo **`88`** · eyert **`1440`** · dualn **`2`** · kill **`45`**.
+**Shipped:** EyeProj ON + DrawScene dual every-N HOLD + eyert 1440 + Reset-safe RTs + buffered/quieter logs + DEVICELOST Submit skip + QPC dualMs + WaitGetPoses stall probe.  
+**Build:** `20260726-191037-mode88-final90` · stereo **`88`** · eyert **`1440`** · dualn **`2`** · kill **`45`**.
 
 **Next (one thing per session):**
 1. Headset street walk on **88** — hitch vs Mode87? EyeProj feel? Bars OK?
@@ -15,6 +15,7 @@ Read with `docs/CURRENT-STATE.md`, **`docs/RE_OFFSETS.md`**, **`docs/MAPPED_RVA_
 3. Optional A/B: stereo **`89`** (soft68 bars) if bars annoy more than hitch.
 4. Optional: dualn=`3` if streets still hitchy.
 5. Cull sync / sidewalk holes if they return with EyeProj ON.
+6. Street: watch `WaitGetPoses: ms≥20` vs dualMs under load (apartment dual ~0.1ms; pose avg ~11ms).
 
 **Never:** Mode86 default; Mode83 fill-zoom; live `view+0x80`; SteamVR RT takeover as default.
 

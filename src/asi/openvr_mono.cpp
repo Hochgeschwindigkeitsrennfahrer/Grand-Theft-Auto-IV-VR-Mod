@@ -223,8 +223,24 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
     vr::VRCompositor()->CompositorBringToFront();
 
   vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount]{};
+  static LARGE_INTEGER s_poseQpf{};
+  if (s_poseQpf.QuadPart == 0)
+    QueryPerformanceFrequency(&s_poseQpf);
+  LARGE_INTEGER poseT0{}, poseT1{};
+  QueryPerformanceCounter(&poseT0);
   const vr::EVRCompositorError poseErr =
       vr::VRCompositor()->WaitGetPoses(poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
+  QueryPerformanceCounter(&poseT1);
+  const double poseMs =
+      (s_poseQpf.QuadPart > 0)
+          ? (1000.0 * static_cast<double>(poseT1.QuadPart - poseT0.QuadPart) /
+             static_cast<double>(s_poseQpf.QuadPart))
+          : 0.0;
+  static uint32_t s_poseLog = 0;
+  // Quiet after first samples; always log compositor stalls (≥20ms).
+  if ((++s_poseLog) <= 4 || (s_poseLog % 600) == 0 || poseMs >= 20.0)
+    Log("WaitGetPoses: ms=%.1f err=%d (street hitch probe; ≥20ms = compositor stall)", poseMs,
+        static_cast<int>(poseErr));
   if (poseErr == vr::VRCompositorError_DoNotHaveFocus) {
     vr::VRCompositor()->CompositorBringToFront();
     // One more async dashboard close if still open (max 2 total; no OpenVR
