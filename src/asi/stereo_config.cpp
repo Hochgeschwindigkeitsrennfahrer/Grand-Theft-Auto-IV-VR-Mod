@@ -642,6 +642,18 @@ bool WantsDualEveryOther(StereoMode mode) {
 // Mode88: dual cadence N (2=every other). File gtaiv_dxvk_vr.dualn; clamp 2..4.
 uint32_t GetDualEveryN() {
   static std::atomic<int> s_n{-1};
+  static FILETIME s_ft{};
+  char path[MAX_PATH]{};
+  if (GetAsiDir(path, MAX_PATH)) {
+    strcat_s(path, "gtaiv_dxvk_vr.dualn");
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (GetFileAttributesExA(path, GetFileExInfoStandard, &fad)) {
+      if (s_n.load() > 0 && (fad.ftLastWriteTime.dwLowDateTime != s_ft.dwLowDateTime ||
+                             fad.ftLastWriteTime.dwHighDateTime != s_ft.dwHighDateTime))
+        s_n.store(-1);
+      s_ft = fad.ftLastWriteTime;
+    }
+  }
   int n = s_n.load();
   if (n > 0)
     return static_cast<uint32_t>(n);

@@ -46,7 +46,7 @@
 
 **Skip 74**. **Never** live `view+0x80`. Kill=**45**. Remap 71→45, 73→72.
 
-**Build:** `ASI_BUILD_ID 20260726-181933-mode88-eyert-mtime` (then ColorFill skip build follows)  
+**Build:** `ASI_BUILD_ID 20260726-183112-mode88-default-final`  
 **Play:** stereo **`88`** + eyert **`1440`** + dualn **`2`** already in game dir.
 
 **Agent log proof (this session):**
@@ -72,7 +72,9 @@
 | 18:14 | dualn=3 A/B | AppFPS up to ~65; more HOLD |
 | 18:15 | StretchRect POINT | AppFPS **~90** apartment; copy~0.02ms |
 | 18:17 | HitchHist | 0-16ms dominant; 51+ rare after load |
-| — | Checkpoint commit `66ca013` | No push |
+| 18:20–18:30 | 10-min sustained | AppFPS ~37–40 under load; HitchHist still mostly ≤16ms |
+| 18:31 | Mode88-default-final | SteamVR IPC blip once; after restart FOVPROOF + 90 es/s |
+| — | Commits `66ca013`, `05dff3d` | No push |
 
 **You test (short English):**
 1. Headset on — Mode **88** (already set).
