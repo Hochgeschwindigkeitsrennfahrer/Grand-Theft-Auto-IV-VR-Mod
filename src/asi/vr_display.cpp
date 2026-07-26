@@ -1,5 +1,6 @@
 #include "vr_display.h"
 #include "log.h"
+#include "stereo_config.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -37,6 +38,15 @@ float g_rawR[4]{};
 std::atomic<float> g_gameTanH{std::tan(0.5f * 70.f * 3.14159265f / 180.f)};
 std::atomic<float> g_gameTanV{std::tan(0.5f * 70.f * 3.14159265f / 180.f) * 9.f / 16.f};
 std::atomic<bool> g_loggedInset{false};
+// Mode 36: true engine FOV from CCam+0x60 (after fovadd). Blocks D3DTS_PROJECTION
+// probe from clobbering — Rage ignores Set/GetTransform projection (Mode 15 dead).
+std::atomic<bool> g_fovFromCCam{false};
+std::atomic<float> g_bbAspect{16.f / 9.f};
+std::atomic<uint32_t> g_fovPublishGen{0};
+// Mode 37: latch tangents for one L→R pair (same canvas geometry both eyes).
+std::atomic<bool> g_pairLatchOn{false};
+std::atomic<float> g_pairLatchH{0.f};
+std::atomic<float> g_pairLatchV{0.f};
 
 float FovFromProjectionRaw(float left, float right) {
   const float fovRad = std::atan(right) - std::atan(left);
@@ -84,6 +94,23 @@ void EnsureBoundsCache() {
   g_boundsReady.store(true);
 }
 
+bool GetAsiDirLocal(char* out, DWORD outLen) {
+  HMODULE self = nullptr;
+  if (!GetModuleHandleExA(
+          GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+          reinterpret_cast<LPCSTR>(&GetAsiDirLocal), &self))
+    return false;
+  if (!GetModuleFileNameA(self, out, outLen))
+    return false;
+  char* slash = strrchr(out, '\\');
+  if (!slash)
+    slash = strrchr(out, '/');
+  if (!slash)
+    return false;
+  slash[1] = 0;
+  return true;
+}
+
 // Optional gtaiv_dxvk_vr.fov next to the ASI: horizontal game FOV in degrees (30..150).
 // Lets the user calibrate world size in Mode 14 without a rebuild. Read once.
 float ReadFovOverrideDegOnce() {
@@ -93,18 +120,8 @@ float ReadFovOverrideDegOnce() {
     return s_deg.load();
 
   char path[MAX_PATH]{};
-  HMODULE self = nullptr;
-  GetModuleHandleExA(
-      GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-      reinterpret_cast<LPCSTR>(&ReadFovOverrideDegOnce), &self);
-  if (!GetModuleFileNameA(self, path, MAX_PATH))
+  if (!GetAsiDirLocal(path, MAX_PATH))
     return 0.f;
-  char* slash = strrchr(path, '\\');
-  if (!slash)
-    slash = strrchr(path, '/');
-  if (!slash)
-    return 0.f;
-  slash[1] = 0;
   strcat_s(path, "gtaiv_dxvk_vr.fov");
 
   FILE* f = nullptr;
@@ -119,6 +136,17 @@ float ReadFovOverrideDegOnce() {
     Log("VrDisplay: game FOV override %d deg horizontal (gtaiv_dxvk_vr.fov)", deg);
   }
   return s_deg.load();
+}
+
+// Canvas zoom DEAD (2026-07-24 headset): claiming wider FOV via gtaiv_dxvk_vr.zoom
+// warped the environment on every head move (same class as FusionFix FOV look-up warp).
+// Always true FOV (scale=1). File ignored; keep zoom=100 or delete for clarity.
+float ReadCanvasZoomScaleOnce() {
+  static std::atomic<bool> s_logged{false};
+  if (!s_logged.exchange(true))
+    Log("CanvasZoom: DISABLED (warp rejected) — true FOV only; file ignored "
+        "(was gtaiv_dxvk_vr.zoom; kill was 100)");
+  return 1.f;
 }
 
 // Soft inset: map game FOV into HMD cover FOV without square-crop UV (that broke fusion).
@@ -186,6 +214,61 @@ bool GetCoverFovTangents(float* tanHalfHoriz, float* tanHalfVert) {
   return g_tanHalfH > 0.05f && g_tanHalfV > 0.05f;
 }
 
+void SetBackbufferAspect(float aspectWH) {
+  if (aspectWH > 0.5f && aspectWH < 3.f)
+    g_bbAspect.store(aspectWH);
+}
+
+float GetBackbufferAspect() {
+  return g_bbAspect.load();
+}
+
+bool IsGameFovFromCCamActive() {
+  return g_fovFromCCam.load();
+}
+
+uint32_t GetGameFovPublishGeneration() {
+  return g_fovPublishGen.load();
+}
+
+void PublishGameFovFromCCamDegrees(float ccamDeg, float aspectWH) {
+  if (!(ccamDeg >= 5.f) || !(ccamDeg <= 160.f) || !std::isfinite(ccamDeg))
+    return;
+  // Mode 16 probe: CCam 45.000 → rendered vertical ≈ 58.7° (tanV≈0.562 at 16:9).
+  constexpr float kEng = 58.7f / 45.f;
+  float vDeg = ccamDeg * kEng;
+  if (vDeg > 170.f)
+    vDeg = 170.f;
+  const float tanV = std::tan(0.5f * vDeg * 3.14159265f / 180.f);
+  float aspect = aspectWH;
+  if (!(aspect > 0.5f) || !(aspect < 3.f))
+    aspect = g_bbAspect.load();
+  if (!(aspect > 0.5f) || !(aspect < 3.f))
+    aspect = 16.f / 9.f;
+  const float tanH = tanV * aspect;
+  if (!(tanH > 0.05f) || !(tanV > 0.05f) || !(tanH < 5.f) || !(tanV < 5.f))
+    return;
+
+  const float curH = g_gameTanH.load();
+  // Mode 44 owns fixed-size eye RTs, so retain the first stable true-FOV tangent
+  // through ordinary CCam noise. A real zoom/camera change still exceeds 5%.
+  const StereoMode mode = GetStereoMode();
+  const float gate = UsesRtLockFovGate(mode) ? 0.05f : 0.025f;
+  const bool changed = !(curH > 0.05f) || std::fabs(tanH - curH) > gate * curH;
+  if (!changed && g_fovFromCCam.load())
+    return;
+  g_gameTanH.store(tanH);
+  g_gameTanV.store(tanV);
+  g_fovFromCCam.store(true);
+  if (changed) {
+    const uint32_t gen = ++g_fovPublishGen;
+    if (gen <= 6 || (gen % 120) == 0)
+      Log("VrDisplay: gameTan from TRUE CCam FOV=%.1f -> tan=(%.3f,%.3f) gen=%u "
+          "(canvas uses engine FOV; not D3DTS_PROJECTION)",
+          ccamDeg, tanH, tanV, gen);
+  }
+}
+
 void UpdateGameFovFromDevice(IDirect3DDevice9* device) {
   if (!device)
     return;
@@ -200,6 +283,15 @@ void UpdateGameFovFromDevice(IDirect3DDevice9* device) {
     }
     bb->Release();
   }
+  if (bw >= 16 && bh >= 16) {
+    const float aspect = static_cast<float>(bw) / static_cast<float>(bh);
+    if (aspect > 0.5f && aspect < 3.f)
+      g_bbAspect.store(aspect);
+  }
+
+  // Mode 36: canvas FOV comes from live CCam — do NOT revert to stale projection.
+  if (g_fovFromCCam.load())
+    return;
 
   D3DMATRIX proj{};
   if (FAILED(device->GetTransform(D3DTS_PROJECTION, &proj)))
@@ -261,6 +353,16 @@ bool GetEyeRawProjection(vr::EVREye eye, float* left, float* right, float* top, 
   return true;
 }
 
+void LatchGameFovForPair() {
+  g_pairLatchH.store(g_gameTanH.load());
+  g_pairLatchV.store(g_gameTanV.load());
+  g_pairLatchOn.store(true);
+}
+
+void ClearGameFovPairLatch() {
+  g_pairLatchOn.store(false);
+}
+
 void GetGameFovTangents(float* tanHalfH, float* tanHalfV) {
   float tanH = g_gameTanH.load();
   float tanV = g_gameTanV.load();
@@ -271,10 +373,27 @@ void GetGameFovTangents(float* tanHalfH, float* tanHalfV) {
     tanH = std::tan(0.5f * ovrDeg * 3.14159265f / 180.f);
     tanV = tanH * ratio;
   }
+  // Zoom path forced to 1.0 (DISABLED) — see ReadCanvasZoomScaleOnce.
+  (void)ReadCanvasZoomScaleOnce();
   if (tanHalfH)
     *tanHalfH = tanH;
   if (tanHalfV)
     *tanHalfV = tanV;
+}
+
+// Mode 37 pair-hold: same tangents for L+R StretchRect of one promote pair.
+bool GetLatchedGameFovTangents(float* tanHalfH, float* tanHalfV) {
+  if (!g_pairLatchOn.load())
+    return false;
+  const float tanH = g_pairLatchH.load();
+  const float tanV = g_pairLatchV.load();
+  if (!(tanH > 0.05f) || !(tanV > 0.05f))
+    return false;
+  if (tanHalfH)
+    *tanHalfH = tanH;
+  if (tanHalfV)
+    *tanHalfV = tanV;
+  return true;
 }
 
 bool GetNativeFovInsetBounds(vr::EVREye eye, vr::VRTextureBounds_t* out) {

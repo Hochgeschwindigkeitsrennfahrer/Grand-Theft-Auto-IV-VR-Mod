@@ -56,7 +56,7 @@ Log file (next to the game EXE): `gtaiv_dxvk_vr.log`
 | 7 | Same-frame dual (experimental) |
 | 11 | **Do not use** (blackscreen / freeze) |
 
-Hotkeys: **F7** world scale (VRScale), **F8** eye separation, **F9** recenter.
+Hotkeys: **F6** stereo scale, **F7** world scale (VRScale), **F8** eye separation, **F9** recenter, **F10** 6DoF reset.
 
 Details: [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md), [`docs/STEREO_EYE_OFFSET.md`](docs/STEREO_EYE_OFFSET.md), [`docs/VR_MOD_PLAYBOOK.md`](docs/VR_MOD_PLAYBOOK.md).
 

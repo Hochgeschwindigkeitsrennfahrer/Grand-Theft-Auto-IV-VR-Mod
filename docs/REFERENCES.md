@@ -27,9 +27,19 @@ All important external links for this project.
 | Item | Link / location |
 |------|------------|
 | FusionFix (GTA IV CE) | https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix |
+| **FusionShaders (decompiled Rage shaders)** | https://github.com/Parallellines0451/GTAIV.EFLC.FusionShaders |
+| Halo MCC VR (same-frame / FOV lessons) | https://github.com/pancreations/Halo-MCC-VR |
 | GTA IV CE | Steam / Rockstar Launcher |
 | SteamVR | Steam library |
 | OpenVR | https://github.com/ValveSoftware/openvr |
+
+### FusionFix knobs we use for VR comfort
+
+| Setting (Graphics menu or `plugins\GTAIV.EFLC.FusionFix.cfg`) | VR use |
+|--------------------------------------------------------------|--------|
+| `MotionBlur = 0` | Off — kills stereo echo / look-smear (Halo lesson) |
+| `FieldOfView = 0..9` | Adds `n×5°` to `CCam+0x60` (FusionFix path; safer than our blind 94° write). `5` = +25° — shrinks black bars / giant-world feel |
+| `GraphicsAPI` | Keep DX9/DXVK path that loads our `d3d9.dll` (do not switch away) |
 
 ## Tools
 
@@ -41,7 +51,42 @@ All important external links for this project.
 | Vulkan SDK | https://vulkan.lunarg.com/ |
 | Meson | https://mesonbuild.com/ |
 
-## Related (optional, not a prerequisite)
+## Inspiration (local, not a dependency)
+
+| Item | Location | What we take |
+|------|----------|--------------|
+| C06alt First Person v1.3 (Oculus ini) | `inspiration/firstperson mod/` | FPX/Y/Z → `camoff`; head hide → CE SetDraw (`pedhide`) |
+| Luke Ross R.E.A.L. VR pack | `inspiration/real vr all mods/` (gitignored) | FOV=HMD, square+FOV, AER lessons, pitch/view overrides — **techniques only**, no binary redistribution |
+| Notes | `docs/INSPIRATION_NOTES.md` | Do **not** adopt FOV 111 / FusionFix FOV / canvas-zoom claimed-FOV warp |
+
+## VR rendering / flat→VR docs (web research 2026-07-24)
+
+| Topic | Link | Takeaway for us |
+|-------|------|-----------------|
+| OpenVR compositor | https://github.com/ValveSoftware/openvr/wiki/IVRCompositor_Overview | `WaitGetPoses` → render L/R → `Submit`; same-thread; serial L then R OK |
+| OpenVR Submit + AER pose | https://github.com/ValveSoftware/openvr/issues/1253 (Luke Ross) | `Submit_TextureWithPose` + per-eye `mDeviceToAbsoluteTracking`; SteamVR historically used last pose for both eyes on WMR/Oculus backends — test on G2 |
+| Luke AER / 60 fps (public Patreon) | https://www.patreon.com/posts/gaming-in-vr-at-76076877 | Legacy AER = one eye/frame + reproject other; AER v2 = optical-flow intermediates (not for us) |
+| AER v2 announcement | https://www.patreon.com/realvr/posts/aer-v2-152398605 | Paywalled; same lesson: pose-stamped AER, not canvas FOV lies |
+| Meta / Rift render loop | https://developers.meta.com/horizon/documentation/native/pc/dg-render/ | Predicted eye poses; compositor does distortion + timewarp |
+| Meta compositor / timewarp | https://developers.meta.com/horizon/documentation/spatial-sdk/os-compositor/ | Rotational timewarp; positional needs depth |
+| Asymmetric / parallel projection | https://slugcat.systems/post/25-03-18-virtual-reality-projection-shenanigans/ | Per-eye 4-tangent FOV + eye pose; parallel-projection compat mode for canted panels |
+| Parallel projection (OpenMR) | https://forum.openmr.com/t/why-do-some-games-require-parallel-projection-but-others-dont/29411 | Apps that ignore eye rotation break on canted HMDs |
+| GTA V R.E.A.L. FAQ (public) | https://github.com/LukeRoss00/gta5-real-mod | FOV match HMD; AER; pitch override; body/helmet fixes — inspiration only |
+| Halo MCC VR | https://github.com/pancreations/Halo-MCC-VR | Same-frame stereo + wide FOV priority |
+| UEVR (praydog) | https://github.com/praydog/UEVR | Native per-eye view+proj; do not fake FOV in compositor |
+| FusionFix Custom FOV | https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix `fixes.ixx` | Hook cam process CALL → `*(CCam+0x60) += n*5` — **our Mode 35 site** |
+| FusionFix FOV issue #1326 | https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix/issues/1326 | Hipfire/driving FOV instruction RVAs (classic); additive preferred |
+
+## Flat→VR presence lessons (research 2026-07-24 evening)
+
+| Approach | Kills “monitor on face”? | Breaks look-around? | Transfer to GTA IV CE |
+|----------|--------------------------|---------------------|------------------------|
+| **True engine FOV ≈ HMD** (Luke/Halo/L4D2) | Yes — fills frustum, correct scale | No if canvas/submit uses **true** tangents | Mode **35** = FusionFix CCam+0x60 site ADD |
+| Claimed canvas FOV / zoom | Fake fill | **Yes** (warp) — REJECTED | Do not re-enable |
+| FusionFix menu FOV alone | Partial | Look-up warp with our old path | Keep menu at **0**; we own ADD via `fovadd` |
+| Theater / OpenVR quad | Menus only | N/A | Later (Mode C deferred) |
+| Stretched BB / nullptr Submit | No — diplopia | Yes | Mode 14 canvas already fixed |
+| Independent VR cam vs wall collision | Presence near walls | Invasive | Deferred (`PLAN_NEXT`) |
 
 ASI + D3D11 + OpenXR (WMR): `Documents\gtaiv-openxr` — separate home guide there: `gtaiv-openxr\docs\HOME_CURSOR.md`.  
 **This repo is standalone** and does not require it.

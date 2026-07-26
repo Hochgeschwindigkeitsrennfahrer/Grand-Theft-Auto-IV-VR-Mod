@@ -14,5 +14,11 @@ void StereoProjApplyForCurrentEye(IDirect3DDevice9* device);
 
 // Mode 24: total view/viewProj constant blocks translated in right passes.
 unsigned StereoVsTranslateCount();
+// ALL SetVertexShaderConstantF calls seen (hook aliveness).
+unsigned StereoVsTotalCalls();
+// Calls seen during right passes (constant-flow diagnosis).
+unsigned StereoVsRightPassCalls();
+// Log all unique uploader return addresses with counts (find the real draw path).
+void StereoVsDumpRets();
 
 }  // namespace asi

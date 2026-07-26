@@ -18,8 +18,11 @@ bool IsCamMatrixOverrideEnabled();
 
 void PollCamHotkeys();
 
-// F9 SteamVR recenter — resets seated 6DoF baseline only.
+// F9 view recenter — ped/veh heading baselines (not 6DoF translation).
 void CamMatrixOnRecenter();
+
+// F10 — zero seated 6DoF translation origin only (WorldScale lean anchor).
+void CamMatrixOnSixDofReset();
 
 // Re-apply HMD+IPD to all tracked CopyMat matrices (stereo pass switch).
 void RefreshLiveCamForStereoEye();
@@ -35,6 +38,11 @@ void PushLiveCamToD3D(IDirect3DDevice9* device);
 
 // Row-major 4x4 D3D LH view from live Rage cam. Returns false if no cam.
 bool BuildLiveViewMatrix16(float* out16);
+
+// Mode 35/36: chain-hook FusionFix FOV recompute CALL (CCam+0x60 after cam process).
+// Mode 36 also publishes the post-ADD FOV to the angle-correct canvas.
+// Safe to call repeatedly; installs once. Returns true if AOB+hook OK.
+bool InstallFovRecomputeSiteHook();
 
 }  // namespace asi
 

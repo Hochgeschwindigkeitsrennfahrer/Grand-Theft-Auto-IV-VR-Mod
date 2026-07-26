@@ -14,6 +14,8 @@
 #include <cmath>
 #include <cstring>
 
+#include <intrin.h>  // _ReturnAddress: who uploads VS constants (real draw path)
+
 namespace asi {
 namespace {
 
@@ -116,6 +118,7 @@ using SetVSConstF_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, const
 SetVSConstF_t g_origSetVSConstF = nullptr;
 std::atomic<uint32_t> g_vsTransCount{0};
 std::atomic<uint32_t> g_vsRightCalls{0};
+std::atomic<uint32_t> g_vsCallsTotal{0};  // ALL uploads (hook aliveness / flow diagnosis)
 
 struct VsSeenReg {
   UINT reg;
@@ -140,8 +143,71 @@ void NoteVsReg(UINT reg, UINT cnt, int interp) {
       reg, cnt);
 }
 
+// The re-executed phase objects issue ZERO uploads (vsCallsR=0, 2026-07-24) —
+// the REAL draw path lives elsewhere. Log unique (returnAddress, threadId) of
+// every uploader so the next dual attempt wraps the actual submission code.
+struct VsRet {
+  void* ret;
+  uint32_t tid;
+  uint32_t count;
+};
+VsRet g_vsRets[40]{};
+int g_vsRetN = 0;
+
+void NoteVsRet(void* ret) {
+  const uint32_t tid = GetCurrentThreadId();
+  for (int i = 0; i < g_vsRetN; ++i) {
+    if (g_vsRets[i].ret == ret && g_vsRets[i].tid == tid) {
+      ++g_vsRets[i].count;
+      return;
+    }
+  }
+  if (g_vsRetN >= 40)
+    return;
+  g_vsRets[g_vsRetN++] = {ret, tid, 1};
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  Log("VsRet: NEW ret=%p exeRva=0x%X tid=%u", ret,
+      static_cast<unsigned>(reinterpret_cast<uintptr_t>(ret) - base), tid);
+
+  // Mode 27 prep: x86 FPO often makes CaptureStackBackTrace too short. Scan the
+  // stack for other return addresses inside GTAIV.exe (skip the wrapper itself).
+  static int s_parentLogged = 0;
+  if (s_parentLogged < 12) {
+    auto* sp = reinterpret_cast<uintptr_t*>(_AddressOfReturnAddress());
+    for (int i = 1; i < 48 && s_parentLogged < 12; ++i) {
+      const uintptr_t v = sp[i];
+      if (v < base + 0x1000 || v > base + 0xB00000)
+        continue;
+      const unsigned rva = static_cast<unsigned>(v - base);
+      if (rva == static_cast<unsigned>(reinterpret_cast<uintptr_t>(ret) - base))
+        continue;
+      Log("VsParent: exeRva=0x%X tid=%u slot=%d (Mode 27 candidate)", rva, tid, i);
+      ++s_parentLogged;
+    }
+  }
+}
+
 HRESULT STDMETHODCALLTYPE HookSetVSConstF(IDirect3DDevice9* self, UINT startReg,
                                           const float* data, UINT cnt) {
+  ++g_vsCallsTotal;
+  const StereoMode m = GetStereoMode();
+  if (m == StereoMode::ExecViewConstDual || m == StereoMode::BuildDualViewShift ||
+      m == StereoMode::RecordDualReplayShift || m == StereoMode::SameFrameWrapDual ||
+      m == StereoMode::SameFrameVsParentDual || m == StereoMode::SameFrameLateVsParentDual ||
+      m == StereoMode::SameFrameVsRetCallerDual)
+    NoteVsRet(_ReturnAddress());
+  if (StereoMode31WantsDiscover())
+    StereoMode31OnVsConst(_ReturnAddress());
+  // Mode 32/33/34: scan at THIS frame depth (Mode 26 NoteVsRet style). Passing SP into a
+  // helper is OK; do NOT call _AddressOfReturnAddress from a deeper callee.
+  if (StereoMode32WantsDiscover())
+    StereoMode32CollectVsParents(_ReturnAddress(), _AddressOfReturnAddress());
+  if (StereoMode33WantsDiscover())
+    StereoMode33CollectVsParents(_ReturnAddress(), _AddressOfReturnAddress());
+  if (StereoMode34WantsDiscover())
+    StereoMode34CollectVsRetCallers(_ReturnAddress(), _AddressOfReturnAddress());
+  if (StereoMode41WantsTrace())
+    StereoMode41CollectVsRetChain(_ReturnAddress(), _AddressOfReturnAddress());
   float cam[3], d[3];
   if (!data || cnt < 4 || cnt > 256 || !StereoVsGetPatchParams(cam, d))
     return g_origSetVSConstF(self, startReg, data, cnt);
@@ -153,6 +219,10 @@ HRESULT STDMETHODCALLTYPE HookSetVSConstF(IDirect3DDevice9* self, UINT startReg,
   const float dx = d[0], dy = d[1], dz = d[2];
   int patched = 0;
 
+  // ONLY patch blocks that mathematically map the build cam onto the view
+  // axis (identity-world V / VP). Speculative "every c4/c8 in a 16-reg upload"
+  // patches (2026-07-24) corrupted non-Rage layouts and froze the GPU shortly
+  // after the first MATCH — keep them out until we have a safer object path.
   for (UINT b = 0; b + 4 <= cnt; b += 4) {
     float* f = buf + b * 4;
 
@@ -270,6 +340,22 @@ void StereoProjApplyForCurrentEye(IDirect3DDevice9* device) {
 
 unsigned StereoVsTranslateCount() {
   return g_vsTransCount.load();
+}
+
+unsigned StereoVsTotalCalls() {
+  return g_vsCallsTotal.load();
+}
+
+unsigned StereoVsRightPassCalls() {
+  return g_vsRightCalls.load();
+}
+
+void StereoVsDumpRets() {
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  for (int i = 0; i < g_vsRetN; ++i)
+    Log("VsRet: dump exeRva=0x%X tid=%u count=%u",
+        static_cast<unsigned>(reinterpret_cast<uintptr_t>(g_vsRets[i].ret) - base),
+        g_vsRets[i].tid, g_vsRets[i].count);
 }
 
 void InstallStereoProjHooks(IDirect3DDevice9* device) {

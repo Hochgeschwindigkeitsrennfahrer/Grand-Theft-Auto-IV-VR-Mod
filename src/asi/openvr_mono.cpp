@@ -3,6 +3,7 @@
 #include "hmd_look.h"
 #include "hmd_pose.h"
 #include "log.h"
+#include "ped_hide.h"
 #include "stereo_config.h"
 #include "stereo_render.h"
 #include "vr_display.h"
@@ -12,6 +13,7 @@
 
 #include <d3d9.h>
 #include <windows.h>
+#include <shellapi.h>
 
 #include <atomic>
 #include <mutex>
@@ -42,6 +44,23 @@ bool DisableFilePresent() {
     slash[1] = 0;
   strcat_s(path, "gtaiv_dxvk_vr.disable");
   return GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+// Close SteamVR system dashboard if open. Uses IsDashboardVisible + toggle URL
+// (OpenVR has ShowDashboard, no Hide). ShellExecute only — never WaitGetPoses /
+// Submit here (those stay on the EndScene thread).
+void TryCloseSteamVrDashboard() {
+  static std::atomic<int> s_attempts{0};
+  if (s_attempts.load() >= 2)
+    return;
+  vr::IVROverlay* ov = vr::VROverlay();
+  if (!ov || !ov->IsDashboardVisible())
+    return;
+  const int n = ++s_attempts;
+  // Async; does not touch the compositor submit path.
+  ShellExecuteA(nullptr, "open", "vrmonitor://debugcommands/system_dashboard_toggle",
+                nullptr, nullptr, SW_HIDE);
+  Log("OpenVR: dashboard visible — requested close via system_dashboard_toggle (#%d)", n);
 }
 
 bool EnsureOpenVrUnlocked() {
@@ -83,6 +102,7 @@ bool EnsureOpenVrUnlocked() {
   }
 
   Log("OpenVR: VR_Init OK (Scene) — warmup, then WaitGetPoses+Submit on EndScene");
+  TryCloseSteamVrDashboard();
   LogVrDisplayInfo();
   g_warmupFrames = 90;
   g_vrReady = true;
@@ -197,21 +217,19 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
       vr::VRCompositor()->WaitGetPoses(poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
   if (poseErr == vr::VRCompositorError_DoNotHaveFocus) {
     vr::VRCompositor()->CompositorBringToFront();
+    // One more async dashboard close if still open (max 2 total; no OpenVR
+    // WaitGetPoses/Submit from any other thread).
+    TryCloseSteamVrDashboard();
   }
   UpdateHmdPose(poses, vr::k_unMaxTrackedDeviceCount);
 
   StereoRenderOnDevice(device);
   UpdateGameFovFromDevice(device);
 
-  bool stereoSubmitted = false;
-  {
-    const StereoMode sm = GetStereoMode();
-    if (IsTemporalStereoMode(sm) || sm == StereoMode::SameFrameDual ||
-        sm == StereoMode::GBufferRtDual || sm == StereoMode::FusionSwap ||
-        sm == StereoMode::ExecuteDual || sm == StereoMode::BuildExecDual ||
-        sm == StereoMode::D3dCamDual)
-      stereoSubmitted = StereoTrySubmitEyes(device, interop);
-  }
+  // Always ask — StereoTrySubmitEyes has the full mode + haveL/R gate. A second
+  // mode list here went stale (mode 26 captured canvases but never submitted →
+  // mono BB, 90 FPS, no fusion / no jumping).
+  const bool stereoSubmitted = StereoTrySubmitEyes(device, interop);
 
   vr::EVRCompositorError eL = vr::VRCompositorError_None;
   vr::EVRCompositorError eR = vr::VRCompositorError_None;
@@ -232,8 +250,10 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   }
 
   PollRecenterHotkey();
+  PollCamHotkeys();
   PollIpdScaleHotkey();
   PollWorldScaleHotkey();
+  PollStereoScaleHotkey();
 
   // Head tracking: mouse-look after warmup. Engine FP cam after more stable frames.
   constexpr uint32_t kLookAfter = 120;
@@ -248,6 +268,8 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
       LogVrDisplayInfo();
       ReloadStereoMode();
       InstallStereoRenderHooks();
+      // Warm PedHide resolve once on game thread after FP arm (also called from CopyMat).
+      UpdatePedHeadHide();
       Log("CamMatrix: armed after %u submits (overrides mouse-look)", kCamAfter);
     }
   }
