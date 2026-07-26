@@ -2,9 +2,12 @@
 
 **Plan date:** 2026-07-23 PT
 
-**Repository baseline:** `8fe072a` (`master`, equal to `origin/master`)
+**Repository baseline:** upstream `01f355b` (Modes 50–53), merged on the
+`codex/openxr-sidecar-integration` branch
 
-**Status:** implementation plan, not a claim that the OpenXR product path is complete
+**Status:** implementation plan, not a claim that the OpenXR product path is complete.
+An x86-to-x64 GPU mono-frame bridge now compiles, but it is not an acceptance result:
+it still needs a Quest run and lacks the fixed pose/stereo transaction described below.
 
 **Primary headset:** Meta Quest 3
 

@@ -4,7 +4,7 @@
 > separate x64 OpenXR host for Quest 3 while keeping this path as fallback. See
 > [`FULL_VR_PLAN.md`](FULL_VR_PLAN.md).
 
-The first post-v0 component is now present:
+The direct Quest prototype now contains two separate pieces:
 
 ```text
 gtaiv_xr_host.exe (x64, separate process)
@@ -13,8 +13,19 @@ gtaiv_xr_host.exe (x64, separate process)
     -> Meta OpenXR / Quest 3
 ```
 
-It currently renders only its generated stereo calibration scene. It is deliberately
-not connected to GTA pixels or hooks until that headset gate passes.
+```text
+GTAIV.exe (x86) EndScene
+    -> DXVK D3D9 shared surface
+    -> native x86 D3D11 copy + shared NT textures/fences
+    -> fixed-width shared-memory descriptor
+    -> gtaiv_xr_host.exe (x64) D3D11 copy
+    -> OpenXR eye swapchains
+```
+
+The host's generated calibration scene passed its Quest test. The new GTA bridge
+compiles but still needs its first headset result. It is intentionally a mono-frame
+transport for that test; pose publication, per-eye frame identity, and accepted
+same-frame stereo remain later gates.
 
 ## Runtime
 

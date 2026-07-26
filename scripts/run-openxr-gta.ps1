@@ -10,7 +10,6 @@ $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $HostExe = Join-Path $Root "out-openxr\gtaiv_xr_host.exe"
 $Asi = Join-Path $Root "out-asi\gtaiv_dxvk_vr.asi"
-$OpenVr = Join-Path $Root "out-asi\openvr_api.dll"
 
 if (-not $GameDir) {
   $candidates = @(
@@ -79,10 +78,6 @@ Get-Process -Name GTAIV,gtaiv_xr_host -ErrorAction SilentlyContinue |
 Start-Sleep -Milliseconds 750
 
 Copy-Item -LiteralPath $Asi -Destination (Join-Path $GameDir "gtaiv_dxvk_vr.asi") -Force
-if (Test-Path $OpenVr) {
-  # The ASI keeps the existing OpenVR fallback import, even in OpenXR mode.
-  Copy-Item -LiteralPath $OpenVr -Destination (Join-Path $GameDir "openvr_api.dll") -Force
-}
 [IO.File]::WriteAllText(
   (Join-Path $GameDir "gtaiv_dxvk_vr.backend"),
   "openxr`r`n",

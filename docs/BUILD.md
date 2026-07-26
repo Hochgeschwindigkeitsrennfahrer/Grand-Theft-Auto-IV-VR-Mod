@@ -16,6 +16,22 @@ self-test without touching the headset runtime.
 
 For the live Quest test, follow [`OPENXR_QUEST3_TEST.md`](OPENXR_QUEST3_TEST.md).
 
+## Direct GTA-to-Quest image test (no SteamVR)
+
+The x86 ASI publishes the latest GTA backbuffer through a GPU-only D3D9-to-D3D11
+bridge. The x64 host presents it through the active Meta OpenXR runtime. OpenVR is a
+delayed fallback import, so this route does not load `openvr_api.dll` or start SteamVR.
+
+```powershell
+cd D:\code\gta-iv
+.\scripts\run-openxr-gta.ps1 -GameDir "C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV" -Build
+```
+
+Close SteamVR first, start Quest Link, and stay offline/singleplayer. The script adds
+`-windowed` to the parent `commandline.txt` when needed and saves its previous copy as
+`commandline.txt.before-openxr`. This is a **mono transport test**: it shows the same
+GTA image in both eyes, not accepted stereo or HMD-driven camera motion yet.
+
 ---
 
 ## Legacy x86 DXVK notes

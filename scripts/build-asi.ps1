@@ -55,7 +55,7 @@ $libpath = "/LIBPATH:$Root\thirdparty\openvr\lib\win32"
 $cmd = @"
 call "$vcvars" x86
 cd /d "$Root"
-cl /nologo /EHsc /O2 /MD /W3 /DWIN32 /D_WINDOWS /DUNICODE /D_UNICODE $($includes -join ' ') $($src -join ' ') /link /DLL /OUT:"$outDir\gtaiv_dxvk_vr.dll" $libpath openvr_api.lib d3d9.lib d3d11.lib dxgi.lib user32.lib shell32.lib psapi.lib xinput.lib
+cl /nologo /EHsc /O2 /MD /W3 /DWIN32 /D_WINDOWS /DUNICODE /D_UNICODE $($includes -join ' ') $($src -join ' ') /link /DLL /OUT:"$outDir\gtaiv_dxvk_vr.dll" $libpath /DELAYLOAD:openvr_api.dll openvr_api.lib delayimp.lib d3d9.lib d3d11.lib dxgi.lib user32.lib shell32.lib psapi.lib xinput.lib
 if errorlevel 1 exit /b 1
 copy /Y "$outDir\gtaiv_dxvk_vr.dll" "$outDir\gtaiv_dxvk_vr.asi"
 copy /Y "$Root\thirdparty\openvr\bin\win32\openvr_api.dll" "$outDir\openvr_api.dll"

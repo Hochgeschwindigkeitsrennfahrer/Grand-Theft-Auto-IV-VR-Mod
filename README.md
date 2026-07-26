@@ -8,14 +8,17 @@ separate **x64 OpenXR host** for Quest 3 while preserving OpenVR/Reverb G2 fallb
 GTAIV.exe (32-bit, D3D9)
   → d3d9.dll              (DXVK 3.0.2 — flat / desktop OK)
   → gtaiv_dxvk_vr.asi     (x86 GTA hooks + stereo capture)
-      ├─ current: OpenVR Submit via ID3D9VkInterop → SteamVR
-      └─ target: shared pose/GPU bridge → gtaiv_xr_host.exe (x64) → OpenXR
+      ├─ fallback: OpenVR Submit via ID3D9VkInterop → SteamVR
+      └─ direct: x86 GPU bridge → gtaiv_xr_host.exe (x64) → Meta OpenXR
 ```
 
-**Status (WIP):** Mono and angle-correct temporal stereo work in SteamVR; latest code
-contains same-frame stereo Mode 24, which still needs its headset decision test. See
-`docs/CURRENT-STATE.md` and the full Quest 3 plan in `docs/FULL_VR_PLAN.md`.
-Daily-driver baseline: stereo mode **0** (~90 FPS). Kill-switch file: `gtaiv_dxvk_vr.stereo` → `0`.
+**Status (WIP):** the latest upstream camera/stereo code through Modes **50–53** is
+integrated. The direct OpenXR path now builds as an x86 GPU-frame producer plus x64
+host and does not load or call OpenVR when `backend=openxr`; SteamVR stays closed.
+It currently presents the same GTA frame to both eyes for the first direct-Quest
+test, so it is not yet full pose-driven stereo. See `docs/CURRENT-STATE.md` and the
+full Quest 3 plan in `docs/FULL_VR_PLAN.md`. Daily-driver baseline: stereo mode
+**0** (~90 FPS). Kill-switch file: `gtaiv_dxvk_vr.stereo` → `0`.
 
 The separate x64 OpenXR calibration host now builds and reaches the installed Meta
 Quest 3 runtime. Build it with `.\scripts\build-openxr-host.ps1`, then follow

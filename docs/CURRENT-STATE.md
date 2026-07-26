@@ -1,6 +1,13 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
 **As of:** 2026-07-24 ~22:18
+**Integration update (2026-07-26):** upstream `origin/master` at `01f355b` (Modes
+50–53) is merged into `codex/openxr-sidecar-integration`. The new direct Quest path
+builds as an x86 DXVK/D3D11 GPU-frame producer plus `gtaiv_xr_host.exe` x64 OpenXR
+host. In `backend=openxr` the ASI has a delayed OpenVR import and the launch script
+does not deploy `openvr_api.dll`, so SteamVR is neither started nor required. This is
+awaiting its first headset result and currently presents one GTA frame to both eyes;
+it is not yet the accepted pose-driven, same-frame stereo bridge.
 **Deployed now:** stereo **`51`** (Mode-50 always-distinct L/R + **`Submit_TextureWithPose`**
 AER) + **`fovadd=18`**, **`ipd=3`**, scale **`100`**, stereoscale **`125`**. Mode **50**
 (motion-guard OFF baseline), **53** (soft guard: 8°/6cm AER-only, 15°/12cm hard mono), and
