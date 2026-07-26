@@ -8136,7 +8136,20 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
       }
     }
     g_inDual.store(true);
+    static LARGE_INTEGER s_dualQpf{};
+    if (s_dualQpf.QuadPart == 0)
+      QueryPerformanceFrequency(&s_dualQpf);
+    LARGE_INTEGER dualT0{}, dualT1{};
+    QueryPerformanceCounter(&dualT0);
     const bool ok = RunMode77DrawSceneDualGuarded(self, edx);
+    QueryPerformanceCounter(&dualT1);
+    const double dualMsF =
+        (s_dualQpf.QuadPart > 0)
+            ? (1000.0 * static_cast<double>(dualT1.QuadPart - dualT0.QuadPart) /
+               static_cast<double>(s_dualQpf.QuadPart))
+            : 0.0;
+    const DWORD dualMs = static_cast<DWORD>(dualMsF + 0.5);
+    g_mode74LastDualMs.store(dualMs);
     g_inDual.store(false);
     if (!ok) {
       g_mode77DualDead.store(true);
@@ -8148,11 +8161,14 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
     }
     g_mode74DidDualThisFrame.store(true);  // EndScene HOLD — protect same-frame L/R
     const uint32_t n = ++g_mode77DualN;
-    if (n <= 6 || (n % 120) == 0)
+    // Mode88/89 quieter: dual cost still in AppFPS dualMs + HitchHist.
+    const uint32_t logEvery =
+        (IsHitchCutEyeProj(mode) || IsCullSyncPresence(mode)) ? 300u : 120u;
+    if (n <= 6 || (n % logEvery) == 0)
       Log("Mode77: DRAWSCENE-ONLY dual #%u haveL=%d haveR=%d injects=%u sep=%.0fcm "
-          "(Approach A; not BuildRootA×2; kill=45)",
+          "dualMs=%.1f (Approach A; not BuildRootA×2; kill=45)",
           n, g_haveL ? 1 : 0, g_haveR ? 1 : 0, g_mode72Injects.load(),
-          GetStereoSepMeters() * 100.f);
+          GetStereoSepMeters() * 100.f, dualMsF);
     if (g_haveL && g_haveR && (n == 5 || (n % 300) == 0))
       CompareEyeCanvases(g_device);
     return;
