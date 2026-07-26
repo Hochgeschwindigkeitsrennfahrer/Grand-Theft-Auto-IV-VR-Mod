@@ -274,7 +274,7 @@ int RemapLoadedStereoMode(int v) {
   }
   // Mode 73 BuildRootA×2 same-frame: stable FPS but world streaming never finishes
   // (empty world + load spinner 2026-07-25). Fall back to Mode 72 temporal.
-  // Mode 74..79 are live. Do NOT remap them.
+  // Mode 74..89 are live. Do NOT remap them.
   if (v == 73) {
     Log("StereoMode: requested 73 SAME-FRAME dual DISABLED (empty world/streaming) — using 72");
     return 72;
@@ -283,8 +283,13 @@ int RemapLoadedStereoMode(int v) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  // Two-digit modes 10..79 (45=LKG; 71→45; 72 temporal; 73→72; 74 hitchcut;
-  // 75 safer sparse dual; 76 AER; 77 DrawScene dual; 78 shader-const; 79 FOV).
+  // Two-digit modes 10..89 (45=LKG; 71→45; 72 temporal; 73→72; 74 hitchcut;
+  // 75 safer sparse dual; 76 AER; 77 DrawScene dual; 78 shader-const; 79 FOV;
+  // 80 letterbox; 81 soft LB; 82 fill; 83 fill-sweet; 84 soft LB; 85 SteamVR RT;
+  // 86 SteamVR no-EyeProj A/B; 87 EyeProj+eyert; 88 DEFAULT hitch+EyeProj;
+  // 89 cull-sync presence A/B).
+  if (n >= 2 && buf[0] == '8' && buf[1] >= '0' && buf[1] <= '9')
+    return RemapLoadedStereoMode(80 + (buf[1] - '0'));
   if (n >= 2 && buf[0] >= '1' && buf[0] <= '7' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
     if (v <= 79)
@@ -316,7 +321,7 @@ void ReloadStereoMode() {
   if (n > 0)
     v = ParseModeFile(buf, n);
   int prev = g_mode.load();
-  if (v >= 0 && v <= 79) {
+  if (v >= 0 && v <= 89) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -363,7 +368,17 @@ void ReloadStereoMode() {
                            v == static_cast<int>(StereoMode::AerPresenceExperimental) ||
                            v == static_cast<int>(StereoMode::DrawSceneOnlyDual) ||
                            v == static_cast<int>(StereoMode::ShaderConstStereo) ||
-                           v == static_cast<int>(StereoMode::FovPresenceHammer))) {
+                           v == static_cast<int>(StereoMode::FovPresenceHammer) ||
+                           v == static_cast<int>(StereoMode::FovPresenceDrawScene) ||
+                           v == static_cast<int>(StereoMode::AspectLetterboxSafe) ||
+                           v == static_cast<int>(StereoMode::AspectFillAggressive) ||
+                           v == static_cast<int>(StereoMode::AspectFillSweet) ||
+                           v == static_cast<int>(StereoMode::LetterboxWideFov) ||
+                           v == static_cast<int>(StereoMode::SteamVrRtLetterbox) ||
+                           v == static_cast<int>(StereoMode::SteamVrRtSafe) ||
+                           v == static_cast<int>(StereoMode::ConfigEyeRtLetterbox) ||
+                           v == static_cast<int>(StereoMode::HitchCutEyeProj) ||
+                           v == static_cast<int>(StereoMode::CullSyncPresence))) {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadWorldScale();
@@ -376,7 +391,7 @@ void ReloadStereoMode() {
 }
 
 void WriteStereoModeFile(int mode) {
-  if (mode < 0 || mode > 79)
+  if (mode < 0 || mode > 89)
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -435,7 +450,17 @@ bool UsesAngleCorrectCanvas(StereoMode mode) {
          mode == StereoMode::AerPresenceExperimental ||
          mode == StereoMode::DrawSceneOnlyDual ||
          mode == StereoMode::ShaderConstStereo ||
-         mode == StereoMode::FovPresenceHammer;
+         mode == StereoMode::FovPresenceHammer ||
+         mode == StereoMode::FovPresenceDrawScene ||
+         mode == StereoMode::AspectLetterboxSafe ||
+         mode == StereoMode::AspectFillAggressive ||
+         mode == StereoMode::AspectFillSweet ||
+         mode == StereoMode::LetterboxWideFov ||
+         mode == StereoMode::SteamVrRtLetterbox ||
+         mode == StereoMode::SteamVrRtSafe ||
+         mode == StereoMode::ConfigEyeRtLetterbox ||
+         mode == StereoMode::HitchCutEyeProj ||
+         mode == StereoMode::CullSyncPresence;
 }
 
 bool IsHeadOwnedCamFamily(StereoMode mode) {
@@ -458,7 +483,17 @@ bool IsMode74Family(StereoMode mode) {
          mode == StereoMode::AerPresenceExperimental ||
          mode == StereoMode::DrawSceneOnlyDual ||
          mode == StereoMode::ShaderConstStereo ||
-         mode == StereoMode::FovPresenceHammer;
+         mode == StereoMode::FovPresenceHammer ||
+         mode == StereoMode::FovPresenceDrawScene ||
+         mode == StereoMode::AspectLetterboxSafe ||
+         mode == StereoMode::AspectFillAggressive ||
+         mode == StereoMode::AspectFillSweet ||
+         mode == StereoMode::LetterboxWideFov ||
+         mode == StereoMode::SteamVrRtLetterbox ||
+         mode == StereoMode::SteamVrRtSafe ||
+         mode == StereoMode::ConfigEyeRtLetterbox ||
+         mode == StereoMode::HitchCutEyeProj ||
+         mode == StereoMode::CullSyncPresence;
 }
 
 bool IsSparseSessionDual(StereoMode mode) {
@@ -470,7 +505,7 @@ bool IsAerPresenceMode(StereoMode mode) {
 }
 
 bool IsDrawSceneOnlyDual(StereoMode mode) {
-  return mode == StereoMode::DrawSceneOnlyDual;
+  return mode == StereoMode::DrawSceneOnlyDual || IsAspectSafeFovFamily(mode);
 }
 
 bool IsShaderConstStereo(StereoMode mode) {
@@ -478,7 +513,178 @@ bool IsShaderConstStereo(StereoMode mode) {
 }
 
 bool IsFovPresenceHammer(StereoMode mode) {
+  // Mode 79 ONLY — do NOT fold 80/81/82/83 in (FOVPROOF every-ES spam = street hitch).
   return mode == StereoMode::FovPresenceHammer;
+}
+
+bool IsFovPresenceDrawScene(StereoMode mode) {
+  return mode == StereoMode::FovPresenceDrawScene;
+}
+
+bool IsAspectLetterboxSafe(StereoMode mode) {
+  return mode == StereoMode::AspectLetterboxSafe;
+}
+
+bool IsAspectFillAggressive(StereoMode mode) {
+  return mode == StereoMode::AspectFillAggressive;
+}
+
+bool IsAspectFillSweet(StereoMode mode) {
+  return mode == StereoMode::AspectFillSweet;
+}
+
+bool IsLetterboxWideFov(StereoMode mode) {
+  return mode == StereoMode::LetterboxWideFov;
+}
+
+bool IsSteamVrRtLetterbox(StereoMode mode) {
+  return mode == StereoMode::SteamVrRtLetterbox;
+}
+
+bool IsSteamVrRtSafe(StereoMode mode) {
+  return mode == StereoMode::SteamVrRtSafe;
+}
+
+bool IsConfigEyeRtLetterbox(StereoMode mode) {
+  return mode == StereoMode::ConfigEyeRtLetterbox;
+}
+
+bool IsHitchCutEyeProj(StereoMode mode) {
+  return mode == StereoMode::HitchCutEyeProj;
+}
+
+bool IsCullSyncPresence(StereoMode mode) {
+  return mode == StereoMode::CullSyncPresence;
+}
+
+bool UsesSteamVrEyeRt(StereoMode mode) {
+  return IsSteamVrRtLetterbox(mode) || IsSteamVrRtSafe(mode);
+}
+
+bool UsesConfigEyeRt(StereoMode mode) {
+  return IsConfigEyeRtLetterbox(mode) || IsHitchCutEyeProj(mode) || IsCullSyncPresence(mode);
+}
+
+uint32_t GetConfiguredEyeRtDim() {
+  // Fixed square Submit canvases — NOT SteamVR GetRecommendedRenderTargetSize.
+  // Tiers chosen for Win32 VRAM + StretchRect cost on Reverb G2 class HMDs.
+  // Mode88 hitch default = 1440; Mode87/89 quality default = 2048.
+  static std::atomic<int> s_dim{-1};
+  int dim = s_dim.load();
+  if (dim > 0)
+    return static_cast<uint32_t>(dim);
+
+  const int kDefault =
+      IsHitchCutEyeProj(GetStereoMode()) ? 1440 : 2048;
+  constexpr int kTiers[] = {1440, 2048, 2560, 2880};
+  constexpr int kN = 4;
+  int raw = kDefault;
+  char buf[32]{};
+  int v = 0;
+  if (ReadSmallFile("gtaiv_dxvk_vr.eyert", buf, sizeof(buf)) > 0 &&
+      sscanf_s(buf, "%d", &v) == 1 && v >= 512 && v <= 4096) {
+    raw = v;
+  }
+  // Snap to nearest practical tier (user may type 2000 → 2048).
+  int best = kTiers[0];
+  int bestD = raw > best ? raw - best : best - raw;
+  for (int i = 1; i < kN; ++i) {
+    const int d = raw > kTiers[i] ? raw - kTiers[i] : kTiers[i] - raw;
+    if (d < bestD) {
+      bestD = d;
+      best = kTiers[i];
+    }
+  }
+  if (s_dim.exchange(best) < 0) {
+    if (raw != best)
+      Log("EyeRt: config=%d → tier %d (gtaiv_dxvk_vr.eyert; tiers 1440/2048/2560/2880; "
+          "Mode88 default 1440 else 2048; NOT SteamVR recommended)",
+          raw, best);
+    else
+      Log("EyeRt: %d×%d fixed square (gtaiv_dxvk_vr.eyert; tiers 1440/2048/2560/2880; "
+          "Mode88 default 1440 else 2048; NOT SteamVR recommended)",
+          best, best);
+  }
+  return static_cast<uint32_t>(best);
+}
+
+bool WantsNoMidDrawEyeProj(StereoMode mode) {
+  // Mode86 ONLY: mid-draw HMD EyeProj vs engine cull → rectangular sidewalk holes.
+  // Mode87/88/89 ALWAYS keep EyeProj (user: NEVER ship without EyeProj).
+  return IsSteamVrRtSafe(mode);
+}
+
+bool WantsDualEveryOther(StereoMode mode) {
+  // Mode86: hitch cut without EyeProj (A/B only). Mode88: hitch cut WITH EyeProj.
+  // Mode88 also honors gtaiv_dxvk_vr.dualn (2=every other, 3=every 3rd, …).
+  return IsSteamVrRtSafe(mode) || IsHitchCutEyeProj(mode);
+}
+
+// Mode88: dual cadence N (2=every other). File gtaiv_dxvk_vr.dualn; clamp 2..4.
+uint32_t GetDualEveryN() {
+  static std::atomic<int> s_n{-1};
+  int n = s_n.load();
+  if (n > 0)
+    return static_cast<uint32_t>(n);
+  int v = 2;
+  char buf[16]{};
+  int raw = 0;
+  if (ReadSmallFile("gtaiv_dxvk_vr.dualn", buf, sizeof(buf)) > 0 &&
+      sscanf_s(buf, "%d", &raw) == 1 && raw >= 2 && raw <= 4)
+    v = raw;
+  if (s_n.exchange(v) < 0)
+    Log("DualN: every %d DrawScene (gtaiv_dxvk_vr.dualn; Mode88 hitch; 2=default 3=lighter)",
+        v);
+  return static_cast<uint32_t>(v);
+}
+
+bool IsAspectSafeFovFamily(StereoMode mode) {
+  return mode == StereoMode::FovPresenceDrawScene ||
+         mode == StereoMode::AspectLetterboxSafe ||
+         mode == StereoMode::AspectFillAggressive ||
+         mode == StereoMode::AspectFillSweet ||
+         mode == StereoMode::LetterboxWideFov ||
+         mode == StereoMode::SteamVrRtLetterbox ||
+         mode == StereoMode::SteamVrRtSafe ||
+         mode == StereoMode::ConfigEyeRtLetterbox ||
+         mode == StereoMode::HitchCutEyeProj ||
+         mode == StereoMode::CullSyncPresence;
+}
+
+bool WantsAggressiveFovPresence(StereoMode mode) {
+  // Soft modes: prove drawn FOV + dual, but no CCam+8 / EyeProj forever spam.
+  // Mode88: quiet after proven (still EyeProj in dual). Mode89: mild soft (own path).
+  // Mode87: aggressive cull sync.
+  if (mode == StereoMode::AspectLetterboxSafe || mode == StereoMode::AspectFillSweet ||
+      mode == StereoMode::LetterboxWideFov || mode == StereoMode::SteamVrRtLetterbox ||
+      mode == StereoMode::SteamVrRtSafe || mode == StereoMode::HitchCutEyeProj ||
+      mode == StereoMode::CullSyncPresence)
+    return false;
+  return mode == StereoMode::DrawSceneOnlyDual || mode == StereoMode::FovPresenceHammer ||
+         mode == StereoMode::FovPresenceDrawScene || mode == StereoMode::AspectFillAggressive ||
+         mode == StereoMode::ConfigEyeRtLetterbox;
+}
+
+bool WantsQuietFovProof(StereoMode mode) {
+  // EyeProj only until drawn FOV proven (then dual-only). Mode83/84/85/88/89 quiet path.
+  // Mode86 intentionally excluded — WantsNoMidDrawEyeProj (prove via EndScene/CCam).
+  // Mode87 uses aggressive path (EyeProj stays in dual; CCam climbs for cull sync).
+  return IsAspectFillSweet(mode) || IsLetterboxWideFov(mode) || IsSteamVrRtLetterbox(mode) ||
+         mode == StereoMode::AspectLetterboxSafe || IsHitchCutEyeProj(mode) ||
+         IsCullSyncPresence(mode);
+}
+
+CanvasAspectPolicy GetCanvasAspectPolicy(StereoMode mode) {
+  // 88/87/86/85/80/81: hard letterbox (Mode80 scale ~62%v).
+  // 89: mild soft letterbox (~68%v / fillH≤108%) — fewer bars than 80, not Mode84 groß.
+  // 84: soft letterbox 78%/118% (groß risk). 82/83: fill (monitor risk).
+  if (mode == StereoMode::CullSyncPresence)
+    return CanvasAspectPolicy::SoftLetterbox;
+  if (mode == StereoMode::LetterboxWideFov)
+    return CanvasAspectPolicy::SoftLetterbox;
+  if (mode == StereoMode::AspectFillAggressive || mode == StereoMode::AspectFillSweet)
+    return CanvasAspectPolicy::FillPrefer;
+  return CanvasAspectPolicy::LetterboxPrefer;
 }
 
 float GetStereoSepMeters() {

@@ -726,6 +726,28 @@ void ReleaseEyeRts() {
 bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
   if (!dev || w < 16 || h < 16)
     return false;
+  // Device pointer changed (Reset / recreate) — old POOL_DEFAULT textures are dead.
+  if (g_device && g_device != dev) {
+    Log("StereoRender: device changed %p→%p — releasing eye RTs", static_cast<void*>(g_device),
+        static_cast<void*>(dev));
+    ReleaseEyeRts();
+  }
+  // Cooperative level: if lost/not-reset, skip CreateTexture (avoids hang on options).
+  {
+    const HRESULT coop = dev->TestCooperativeLevel();
+    if (coop == D3DERR_DEVICELOST) {
+      const bool had = g_texL || g_texR || g_holdL || g_holdR;
+      ReleaseEyeRts();
+      g_device = nullptr;
+      if (had)
+        Log("DeviceReset: TestCooperativeLevel DEVICELOST — released eye RTs");
+      return false;
+    }
+    if (coop == D3DERR_DEVICENOTRESET) {
+      // Reset pending — wait for HookReset; do not allocate into a dying device.
+      return false;
+    }
+  }
   const bool mode44 = GetStereoMode() == StereoMode::FovCanvasMotionGuardRtLock ||
                       IsHeadOwnedCamFamily(GetStereoMode());
   const bool haveRts =
@@ -762,7 +784,8 @@ bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
       FAILED(dev->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
                                 &g_holdR, nullptr))) {
     ReleaseEyeRts();
-    Log("StereoRender: CreateTexture RT FAIL %ux%u", w, h);
+    Log("StereoRender: CreateTexture RT FAIL %ux%u (device may be Lost — try again after Reset)",
+        w, h);
     return false;
   }
   g_rtW = w;
@@ -925,10 +948,113 @@ void ComputeCanvasSize(uint32_t bbW, uint32_t bbH, uint32_t* outW, uint32_t* out
   *outW = bbW;
   *outH = bbH;
   float coverH = 0.f, coverV = 0.f;
-  if (!GetCoverFovTangents(&coverH, &coverV))
-    return;
+  const bool haveCover = GetCoverFovTangents(&coverH, &coverV);
   float gameH = 0.f, gameV = 0.f;
   GetGameFovTangents(&gameH, &gameV);
+
+  // Mode87 DEFAULT: fixed square eye RT from gtaiv_dxvk_vr.eyert (NOT SteamVR
+  // GetRecommendedRenderTargetSize). Letterbox BB into square; game still draws @ BB.
+  if (UsesConfigEyeRt(GetStereoMode())) {
+    static uint32_t s_lockDim = 0;
+    static int s_lockMode = -1;
+    if (GetStereoMode() != static_cast<StereoMode>(s_lockMode)) {
+      s_lockDim = 0;
+      s_lockMode = static_cast<int>(GetStereoMode());
+    }
+    const uint32_t dim = GetConfiguredEyeRtDim();
+    if (s_lockDim == 0) {
+      s_lockDim = dim;
+      Log("StereoCanvasSize: Mode%d LOCKED eyeRT=%ux%u src=config-eyert bb=%ux%u "
+          "(fixed square; NOT steamvr-recommended; letterbox BB→eyeRT; EyeProj ON)",
+          static_cast<int>(GetStereoMode()), s_lockDim, s_lockDim, bbW, bbH);
+    }
+    *outW = s_lockDim;
+    *outH = s_lockDim;
+
+    static uint32_t s_loggedGen = 0xFFFFFFFFu;
+    const uint32_t gen = GetGameFovPublishGeneration();
+    if (gen != s_loggedGen && gen > 0) {
+      s_loggedGen = gen;
+      const float fillH = (haveCover && coverH > 0.05f && gameH > 0.05f) ? (gameH / coverH) : 0.f;
+      const float fillV = (haveCover && coverV > 0.05f && gameV > 0.05f) ? (gameV / coverV) : 0.f;
+      const float gameAspect = (gameV > 0.05f) ? (gameH / gameV) : 0.f;
+      const float bbAspect = (bbH > 0) ? (static_cast<float>(bbW) / static_cast<float>(bbH)) : 0.f;
+      Log("StereoCanvasSize: Mode%d eyeRT=%ux%u bb=%ux%u gameTan=(%.3f,%.3f) "
+          "gameAspect=%.3f bbAspect=%.3f coverTan=(%.3f,%.3f) fill≈%.0f%%h/%.0f%%v "
+          "policy=letterbox gen=%u src=config-eyert",
+          static_cast<int>(GetStereoMode()), s_lockDim, s_lockDim, bbW, bbH, gameH, gameV,
+          gameAspect, bbAspect, coverH, coverV, fillH * 100.f, fillV * 100.f, gen);
+    }
+    return;
+  }
+
+  // Mode85/86 A/B only: size Submit eye RTs from SteamVR recommended (not default).
+  // Game still draws at BB; CopySurfToEyeCanvas letterboxes into this canvas.
+  const bool steamVrRt = UsesSteamVrEyeRt(GetStereoMode());
+  if (steamVrRt) {
+    static uint32_t s_lockW = 0, s_lockH = 0;
+    static int s_lockMode = -1;
+    if (GetStereoMode() != static_cast<StereoMode>(s_lockMode)) {
+      s_lockW = s_lockH = 0;
+      s_lockMode = static_cast<int>(GetStereoMode());
+    }
+    uint32_t recW = 0, recH = 0;
+    const bool haveRec = GetRecommendedEyeRtSize(&recW, &recH);
+    uint32_t w = bbW, h = bbH;
+    const char* src = "bb-fallback";
+    if (haveRec) {
+      w = recW;
+      h = recH;
+      src = "steamvr-recommended";
+    }
+    // Mode86: min(recommended, BB×1.25, 1440) — Mode85 2048² StretchRect hitchy.
+    // Mode85: keep prior 2048 cap for A/B.
+    const bool safeRt = IsSteamVrRtSafe(GetStereoMode());
+    const uint32_t kSteamMaxDim = safeRt ? 1440u : 2048u;
+    if (safeRt) {
+      const uint32_t bbCap = (std::max)(bbW, bbH);
+      const uint32_t softCap = (bbCap > 0) ? (bbCap + bbCap / 4u) : kSteamMaxDim;  // ×1.25
+      if (w > softCap)
+        w = softCap;
+      if (h > softCap)
+        h = softCap;
+    }
+    if (w > kSteamMaxDim)
+      w = kSteamMaxDim;
+    if (h > kSteamMaxDim)
+      h = kSteamMaxDim;
+    if (s_lockW == 0) {
+      s_lockW = w;
+      s_lockH = h;
+      Log("StereoCanvasSize: Mode%d LOCKED eyeRT=%ux%u src=%s recommended=%ux%u bb=%ux%u "
+          "maxDim=%u (letterbox BB→SteamVR RT; policy=letterbox; A/B only)%s",
+          static_cast<int>(GetStereoMode()), s_lockW, s_lockH, src, recW, recH, bbW, bbH,
+          kSteamMaxDim, safeRt ? " noMidDrawEyeProj dual1/2" : "");
+    }
+    w = s_lockW;
+    h = s_lockH;
+    *outW = w;
+    *outH = h;
+
+    static uint32_t s_loggedGen = 0xFFFFFFFFu;
+    const uint32_t gen = GetGameFovPublishGeneration();
+    if (gen != s_loggedGen && gen > 0) {
+      s_loggedGen = gen;
+      const float fillH = (haveCover && coverH > 0.05f && gameH > 0.05f) ? (gameH / coverH) : 0.f;
+      const float fillV = (haveCover && coverV > 0.05f && gameV > 0.05f) ? (gameV / coverV) : 0.f;
+      const float gameAspect = (gameV > 0.05f) ? (gameH / gameV) : 0.f;
+      const float bbAspect = (bbH > 0) ? (static_cast<float>(bbW) / static_cast<float>(bbH)) : 0.f;
+      Log("StereoCanvasSize: Mode%d recommended=%ux%u eyeRT=%ux%u bb=%ux%u gameTan=(%.3f,%.3f) "
+          "gameAspect=%.3f bbAspect=%.3f coverTan=(%.3f,%.3f) fill≈%.0f%%h/%.0f%%v "
+          "policy=letterbox gen=%u src=%s",
+          static_cast<int>(GetStereoMode()), recW, recH, w, h, bbW, bbH, gameH, gameV,
+          gameAspect, bbAspect, coverH, coverV, fillH * 100.f, fillV * 100.f, gen, src);
+    }
+    return;
+  }
+
+  if (!haveCover)
+    return;
   if (!(gameH > 0.05f) || !(gameV > 0.05f))
     return;
 
@@ -978,10 +1104,19 @@ void ComputeCanvasSize(uint32_t bbW, uint32_t bbH, uint32_t* outW, uint32_t* out
     s_loggedGen = gen;
     const float fillH = (coverH > 0.05f) ? (gameH / coverH) : 0.f;
     const float fillV = (coverV > 0.05f) ? (gameV / coverV) : 0.f;
+    const float gameAspect = (gameV > 0.05f) ? (gameH / gameV) : 0.f;
+    const float bbAspect = (bbH > 0) ? (static_cast<float>(bbW) / static_cast<float>(bbH)) : 0.f;
+    const char* polStr = "letterbox";
+    if (GetCanvasAspectPolicy(GetStereoMode()) == CanvasAspectPolicy::FillPrefer)
+      polStr = "fill";
+    else if (GetCanvasAspectPolicy(GetStereoMode()) == CanvasAspectPolicy::SoftLetterbox)
+      polStr = IsCullSyncPresence(GetStereoMode()) ? "soft68" : "soft78";
     Log("StereoCanvasSize: bb=%ux%u canvas=%ux%u sx=%.2f sy=%.2f gameTan=(%.3f,%.3f) "
-        "coverTan=(%.3f,%.3f) fill≈%.0f%%h/%.0f%%v trueFov=%d gen=%u maxDim=%u locked=%d",
-        bbW, bbH, w, h, sx, sy, gameH, gameV, coverH, coverV, fillH * 100.f, fillV * 100.f,
-        IsGameFovFromCCamActive() ? 1 : 0, gen, maxDim, (comfort && s_lockW) ? 1 : 0);
+        "gameAspect=%.3f bbAspect=%.3f coverTan=(%.3f,%.3f) fill≈%.0f%%h/%.0f%%v "
+        "trueFov=%d gen=%u maxDim=%u locked=%d policy=%s",
+        bbW, bbH, w, h, sx, sy, gameH, gameV, gameAspect, bbAspect, coverH, coverV,
+        fillH * 100.f, fillV * 100.f, IsGameFovFromCCamActive() ? 1 : 0, gen, maxDim,
+        (comfort && s_lockW) ? 1 : 0, polStr);
   }
 }
 
@@ -1098,7 +1233,10 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
   if (rc.right - rc.left >= 16 && rc.bottom - rc.top >= 16 && src.right - src.left >= 16 &&
       src.bottom - src.top >= 16) {
     dev->ColorFill(dst, nullptr, D3DCOLOR_XRGB(0, 0, 0));
-    ok = SUCCEEDED(dev->StretchRect(bb, &src, dst, &rc, D3DTEXF_LINEAR));
+    // Mode88 hitch cut: POINT filter (LINEAR StretchRect cost showed up on streets).
+    const D3DTEXTUREFILTERTYPE filt =
+        IsHitchCutEyeProj(GetStereoMode()) ? D3DTEXF_NONE : D3DTEXF_LINEAR;
+    ok = SUCCEEDED(dev->StretchRect(bb, &src, dst, &rc, filt));
   }
   dst->Release();
   bb->Release();
@@ -1137,8 +1275,35 @@ bool CopyBbToEyeCanvas(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye
   IDirect3DSurface9* bb = nullptr;
   if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb)
     return false;
+  static LARGE_INTEGER s_qpf{};
+  if (s_qpf.QuadPart == 0)
+    QueryPerformanceFrequency(&s_qpf);
+  LARGE_INTEGER t0{}, t1{};
+  QueryPerformanceCounter(&t0);
   const bool ok = CopySurfToEyeCanvas(dev, bb, tex, eye);
+  QueryPerformanceCounter(&t1);
   bb->Release();
+  const double ms =
+      (s_qpf.QuadPart > 0)
+          ? (1000.0 * static_cast<double>(t1.QuadPart - t0.QuadPart) /
+             static_cast<double>(s_qpf.QuadPart))
+          : 0.0;
+  // StretchRect cost profile (street hitch): log slow copies + rolling average.
+  static std::atomic<uint32_t> s_n{0};
+  static std::atomic<uint32_t> s_sumUs{0};  // microseconds sum
+  static std::atomic<uint32_t> s_slow{0};
+  ++s_n;
+  const uint32_t us = static_cast<uint32_t>(ms * 1000.0 + 0.5);
+  s_sumUs.fetch_add(us);
+  if (ms >= 2.0)
+    ++s_slow;
+  const uint32_t n = s_n.load();
+  if (n == 1 || (n % 400) == 0 || ms >= 4.0) {
+    const uint32_t sumUs = s_sumUs.load();
+    const float avgMs = n > 0 ? (static_cast<float>(sumUs) / 1000.f / static_cast<float>(n)) : 0.f;
+    Log("StretchRect: copy ms=%.2f avg=%.2f n=%u slow2ms+=%u eyeRT=%ux%u (street hitch probe)",
+        ms, avgMs, n, s_slow.load(), g_rtW, g_rtH);
+  }
   return ok;
 }
 
@@ -1713,13 +1878,12 @@ bool Mode74WritePubProjSlots(Mode74ProjBackup* bak) {
     Mode74PushDeviceViewSrcCopy(viewEye);
 
     bool ranProj = false;
+    const uint32_t n = ++g_mode74PublishProjInjects;
     if (g_origPublishProj) {
       g_origPublishProj(reinterpret_cast<void*>(static_cast<uintptr_t>(active)), nullptr);
       ranProj = true;
-      ++g_mode74PublishProjInjects;
     }
 
-    const uint32_t n = ++g_mode74ProjInjects;
     if (n <= 4 || (n % 300) == 0)
       Log("PubProj: WRITE eye=%s +0x180 sx=%.3f ox=%.3f +0xC0=#%u sep=%.1fcm "
           "cache=%d callProj=%d view=0x%X (VP from eye-offset view copy; never view+0x80)",
@@ -3177,9 +3341,14 @@ const float* Mode72SelectSrc(const float* src, uint32_t startReg, uint32_t count
   // HMD GetProjectionRaw → drawn proj upload.
   // Temporal (dual OFF): PubProj HOLD owns FOV — skip EyeProj discover/inject entirely
   // (was ~17M "see" checks + 45k log lines → street hitch via log I/O).
-  // Dual OPEN / Mode78 / Mode79: keep EyeProj for same-frame L/R proj / FOV proof.
+  // Dual OPEN / Mode78: keep EyeProj for L/R. Aggressive FOV: only until proven
+  // (Mode80 hitch) — then dual-only. Mode83/84 quiet: same path via WantsQuietFovProof.
+  // Mode86: NEVER mid-draw EyeProj (even in dual) — HMD proj vs engine cull = sidewalk holes.
+  const bool needFovProof =
+      (WantsAggressiveFovPresence(sm) || WantsQuietFovProof(sm)) && !IsDrawnFovProven();
   const bool wantEyeProj =
-      dualOpen || IsShaderConstStereo(sm) || IsFovPresenceHammer(sm);
+      !WantsNoMidDrawEyeProj(sm) &&
+      (dualOpen || g_inDual.load() || IsShaderConstStereo(sm) || needFovProof);
   if (mode74 && wantEyeProj && src && count == 16 && g_mode74ProjCacheOk.load()) {
     bool usedCache = false;
     uint32_t active = Mode74ResolveViewForInject(&usedCache);
@@ -3196,7 +3365,12 @@ const float* Mode72SelectSrc(const float* src, uint32_t startReg, uint32_t count
     // Require real proj signature OR known PublishSync proj slot — do not fire on bare reg.
     const bool slotProj = looksProj || (off == 0x180);
     const uint32_t disc = g_mode74ProjDiscoverN.fetch_add(1) + 1;
-    if (disc <= 8 || (disc % 5000) == 0) {
+    // Quieter discover spam (Mode88 hitch cut): every 25k after warmup.
+    const uint32_t discEvery =
+        (IsHitchCutEyeProj(sm) || IsCullSyncPresence(sm) || IsConfigEyeRtLetterbox(sm))
+            ? 25000u
+            : 5000u;
+    if (disc <= 8 || (disc % discEvery) == 0) {
       const char* offTag = "?";
       if (off == 0x80)
         offTag = "+0x80";
@@ -3223,7 +3397,16 @@ const float* Mode72SelectSrc(const float* src, uint32_t startReg, uint32_t count
             g_mode74LocalProj, src);
       ++g_mode74ProjInjects;
       const uint32_t n = g_mode74ProjInjects.load();
-      if (n <= 4 || (n % 600) == 0)
+      if (!IsDrawnFovProven() && n >= 16) {
+        SetDrawnFovProven(true);
+        PublishGameFovFromDrawnSy(g_mode74LocalProj[0], g_mode74LocalProj[5],
+                                  GetBackbufferAspect());
+        Log("FOVPROOF: DRAWN via EyeProj inject n=%u sx=%.3f sy=%.3f — canvas ungated", n,
+            g_mode74LocalProj[0], g_mode74LocalProj[5]);
+      }
+      const uint32_t injEvery =
+          (IsHitchCutEyeProj(sm) || IsCullSyncPresence(sm)) ? 2400u : 600u;
+      if (n <= 4 || (n % injEvery) == 0)
         Log("EyeProj: INJECT src-copy #%u eye=%s reg=%u off=%d sx=%.3f ox=%.3f dual=%d "
             "(HMD FOV on draw upload; never view+0x80)",
             n, (GetStereoEye() == StereoEye::Right) ? "R" : "L", startReg, off,
@@ -3341,7 +3524,16 @@ const float* Mode72SelectSrc(const float* src, uint32_t startReg, uint32_t count
 // After a Mode74 view inject: if device VS regs still hold a game projection, replace
 // with cached HMD eye proj (src-copy style on the constant bank — never view+0x80).
 void Mode74PatchDeviceProjIfPresent(void* device) {
-  if (!device || !g_mode74ProjCacheOk.load() || !g_inDual.load())
+  if (!device || !g_mode74ProjCacheOk.load())
+    return;
+  const StereoMode sm = GetStereoMode();
+  // Mode86: never rewrite mid-draw VS proj (frustum-cull hole source).
+  if (WantsNoMidDrawEyeProj(sm))
+    return;
+  // Dual Mode75 always; Mode78; aggressive/quiet FOV only until proven OR in dual.
+  const bool needFovProofPatch =
+      (WantsAggressiveFovPresence(sm) || WantsQuietFovProof(sm)) && !IsDrawnFovProven();
+  if (!g_inDual.load() && !IsShaderConstStereo(sm) && !needFovProofPatch)
     return;
   auto* dev = reinterpret_cast<IDirect3DDevice9*>(device);
   float hmd[16]{};
@@ -3366,6 +3558,15 @@ void Mode74PatchDeviceProjIfPresent(void* device) {
   if (patched > 0) {
     const uint32_t n = g_mode74ProjDevicePatches.fetch_add(static_cast<uint32_t>(patched)) +
                        static_cast<uint32_t>(patched);
+    // Mid-draw VS proj rewrite IS the drawn FOV owner — ungated canvas once stable.
+    if (!IsDrawnFovProven() && n >= 24) {
+      SetDrawnFovProven(true);
+      // Prefer measured HMD/adapted scales — never claim CCam wider than drawn.
+      PublishGameFovFromDrawnSy(hmd[0], hmd[5], GetBackbufferAspect());
+      Log("FOVPROOF: DRAWN via device VS patch n=%u sx=%.3f sy=%.3f — canvas ungated "
+          "(EndScene scan often empty; mid-draw owns proj)",
+          n, hmd[0], hmd[5]);
+    }
     if (n <= 4 || (n % 300) == 0)
       Log("EyeProj: device VS patch +%d (total~%u) eye=%s (Get/Set const; never view+0x80)",
           patched, n, (GetStereoEye() == StereoEye::Right) ? "R" : "L");
@@ -3386,9 +3587,14 @@ void __stdcall HookMode72SetVSConstF(void* device, uint32_t startReg, const floa
   void* gameRet = _ReturnAddress();
   const float* useSrc = Mode72SelectSrc(src, startReg, count, gameRet);
   Mode72CallOrig(device, startReg, useSrc, count);
-  // After view upload in Mode75 dual: if device VS regs still hold a game projection,
-  // replace it. Speculative c4 push removed (EyeProj still flat — not the real slot).
-  if (IsSparseSessionDual(sm) && g_inDual.load() && useSrc == g_mode72LocalMat) {
+  // After view upload: if device VS regs still hold a game projection, replace it.
+  // Dual always; Mode78; aggressive/quiet FOV only until proven (then dual-only).
+  // Mode86: never (WantsNoMidDrawEyeProj).
+  const bool needPatch =
+      !WantsNoMidDrawEyeProj(sm) &&
+      (g_inDual.load() || IsShaderConstStereo(sm) ||
+       ((WantsAggressiveFovPresence(sm) || WantsQuietFovProof(sm)) && !IsDrawnFovProven()));
+  if (useSrc == g_mode72LocalMat && needPatch) {
     Mode74PatchDeviceProjIfPresent(device);
   }
 }
@@ -7148,31 +7354,94 @@ void Mode74OnEndScene(IDirect3DDevice9* device) {
   // Cache HMD proj once/ES (PubProj temporal reuses — no BuildHmd per inject).
   Mode74CacheEyeProjections();
 
-  // Mode 79: sample +0x180/+0x308 BEFORE HOLD restore (after restore = game defaults).
-  if (IsFovPresenceHammer(GetStereoMode())) {
-    static uint32_t s_fovEs = 0;
-    ++s_fovEs;
-    if (s_fovEs <= 8 || (s_fovEs % 120) == 0) {
-      float coverH = 0.f, coverV = 0.f;
-      const bool haveCover = GetCoverFovTangents(&coverH, &coverV);
-      float p180sx = 0.f, p308a = 0.f;
-      bool usedCache = false;
-      const uint32_t active = Mode74ResolveViewForInject(&usedCache);
-      if (active) {
-        __try {
-          const auto* base = reinterpret_cast<const float*>(static_cast<uintptr_t>(active));
-          p180sx = base[0x180 / 4];
-          p308a = base[0x308 / 4];
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-        }
+  // Prove drawn FOV via device VS projection scales BEFORE HOLD restore.
+  // Cinema CCam45 → rendered V~58.7° → sy≈1/tan(29.35°)≈1.78.
+  // Wide CCam~80 → rendered V~104° → sy≈0.9. If sy stays ~1.7, CCam is ignored.
+  if (device && IsMode74Family(GetStereoMode())) {
+    float bestSy = 99.f, bestSx = 0.f;
+    int found = 0;
+    for (UINT base = 0; base <= 48; base += 4) {
+      float block[16]{};
+      if (FAILED(device->GetVertexShaderConstantF(base, block, 4)))
+        continue;
+      if (!Mode74LooksLikeProjection(block))
+        continue;
+      ++found;
+      // Lower sy = wider vertical FOV (cinema~1.78, HMD cover~0.95).
+      if (block[5] < bestSy) {
+        bestSy = block[5];
+        bestSx = block[0];
       }
-      const uint32_t pn = ++g_mode79FovProofN;
-      Log("Mode79: FOVPROOF #%u cover=(%.3f,%.3f) haveCover=%d frameCover=(%.3f,%.3f) "
-          "view+0x180[0]=%.3f view+0x308[0]=%.3f pubProj=%u eyeProj=%u active=0x%X "
-          "(pre-restore HOLD; want HMD cover in slots; never view+0x80)",
-          pn, coverH, coverV, haveCover ? 1 : 0, g_mode74FrameDesc.coverTanH,
-          g_mode74FrameDesc.coverTanV, p180sx, p308a, g_mode74PublishProjInjects.load(),
-          g_mode74ProjInjects.load(), active);
+    }
+    if (found == 0)
+      bestSy = 0.f;
+    // Wide FOV: sy drops below ~1.25 (cinema ~1.78). Require stable samples.
+    static uint32_t s_wideHits = 0;
+    static uint32_t s_cinemaHits = 0;
+    static uint32_t s_proofGen = 0;
+    const uint32_t proofGen = GetDrawnFovProofGeneration();
+    if (proofGen != s_proofGen) {
+      s_proofGen = proofGen;
+      s_wideHits = 0;
+      s_cinemaHits = 0;
+    }
+    if (found > 0 && bestSy > 0.2f && bestSy < 1.25f)
+      ++s_wideHits;
+    else if (found > 0 && bestSy >= 1.45f)
+      ++s_cinemaHits;
+    if (!IsDrawnFovProven() && s_wideHits >= 8) {
+      SetDrawnFovProven(true);
+      // Honest canvas from measured sy — Mode82 giant was CCam publish > drawn.
+      PublishGameFovFromDrawnSy(bestSx, bestSy, GetBackbufferAspect());
+      Log("FOVPROOF: DRAWN WIDE sy=%.3f sx=%.3f found=%d — canvas ungated (measured)", bestSy,
+          bestSx, found);
+    }
+    // Mode79 ONLY — FOVPROOF spam on 80/83 was street hitch.
+    if (IsFovPresenceHammer(GetStereoMode())) {
+      static uint32_t s_meas = 0;
+      ++s_meas;
+      if (s_meas <= 8 || (s_meas % 120) == 0) {
+        float gameH = 0.f, gameV = 0.f;
+        GetGameFovTangents(&gameH, &gameV);
+        float coverH = 0.f, coverV = 0.f;
+        GetCoverFovTangents(&coverH, &coverV);
+        float heldSx = -1.f;
+        for (int i = 0; i < g_mode74HeldPubN; ++i) {
+          if (!g_mode74HeldPub[i].held || !g_mode74HeldPub[i].self)
+            continue;
+          __try {
+            auto* p180 = reinterpret_cast<float*>(
+                reinterpret_cast<uintptr_t>(g_mode74HeldPub[i].self) + 0x180);
+            heldSx = p180[0];
+          } __except (EXCEPTION_EXECUTE_HANDLER) {
+          }
+          break;
+        }
+        float p180sx = 0.f, p308a = 0.f;
+        bool usedCache = false;
+        const uint32_t active = Mode74ResolveViewForInject(&usedCache);
+        if (active) {
+          __try {
+            const auto* base = reinterpret_cast<const float*>(static_cast<uintptr_t>(active));
+            p180sx = base[0x180 / 4];
+            p308a = base[0x308 / 4];
+          } __except (EXCEPTION_EXECUTE_HANDLER) {
+          }
+        }
+        const uint32_t pn = ++g_mode79FovProofN;
+        Log("Mode79: FOVPROOF #%u cover=(%.3f,%.3f) gameTan=(%.3f,%.3f) pendingCcam=%.1f "
+            "proven=%d vsProj found=%d sx=%.3f sy=%.3f wideHits=%u cinemaHits=%u "
+            "held+0x180[0]=%.3f active+0x180[0]=%.3f +0x308[0]=%.3f pubProj=%u eyeProj=%u "
+            "devPatch=%u active=0x%X (gate canvas until sy<1.25; never view+0x80)",
+            pn, coverH, coverV, gameH, gameV, GetPendingCcamFovDegrees(),
+            IsDrawnFovProven() ? 1 : 0, found, bestSx, bestSy, s_wideHits, s_cinemaHits, heldSx,
+            p180sx, p308a, g_mode74PublishProjInjects.load(), g_mode74ProjInjects.load(),
+            g_mode74ProjDevicePatches.load(), active);
+        if (s_cinemaHits > 60 && s_wideHits < 3 && (s_meas % 120) == 0)
+          Log("FOVPROOF: CCam write NOT reaching drawn VS proj (sy still cinema~%.2f) — "
+              "honest canvas stays gated; presence still blocked on unknown FOV owner",
+              bestSy);
+      }
     }
   }
 
@@ -7199,6 +7468,8 @@ void Mode74OnEndScene(IDirect3DDevice9* device) {
 
   // Dual frames that ran BuildRootA×2 skip temporal capture (Mode 75 only).
   // HOLD last true L/R only while gate OPEN (sparse dual active).
+  // Mode77/80/87/88/89 DrawScene dual: MUST HOLD — TemporalCapture would overwrite
+  // same-frame L/R (bug fixed 2026-07-26). Mode88 off-ticks also HOLD via flag.
   // Mode 74 hitchcut → pair-hold. Mode 76 → AER. Dual CLOSED → same.
   const bool dualCaptured = g_mode74DidDualThisFrame.exchange(false);
   const bool gateOpen = IsSparseSessionDual(GetStereoMode()) && g_mode74GateOpen.load() &&
@@ -7206,7 +7477,10 @@ void Mode74OnEndScene(IDirect3DDevice9* device) {
                         g_mode74DualEnabled.load();
   const bool haveTruePair = g_haveL && g_haveR && g_mode74DualN.load() > 0;
   const bool holdSparsePair = dualCaptured || (gateOpen && haveTruePair);
-  if (holdSparsePair) {
+  const bool holdDrawScenePair =
+      IsDrawSceneOnlyDual(GetStereoMode()) && g_haveL && g_haveR &&
+      (dualCaptured || g_mode77DualN.load() > 0);
+  if (holdSparsePair || holdDrawScenePair) {
     IDirect3DSurface9* bb = nullptr;
     if (SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
       D3DSURFACE_DESC desc{};
@@ -7252,7 +7526,8 @@ void Mode74OnEndScene(IDirect3DDevice9* device) {
     s_fpsEs0 = s_es;
   }
   // Quieter when dual OFF (street path); still log hitchy lastEs (dedupe streaks).
-  const bool dualOffQuiet = !g_mode74DualOptIn.load() || g_mode74DualSessionOff.load();
+  const bool dualOffQuiet = !g_mode74DualOptIn.load() || g_mode74DualSessionOff.load() ||
+                            IsHitchCutEyeProj(GetStereoMode());
   const uint32_t logEvery = dualOffQuiet ? 600u : 120u;
   const DWORD lastEs = g_mode74LastEsMs.load();
   static DWORD s_lastHitchLogEs = 0;
@@ -7275,10 +7550,11 @@ void Mode74OnEndScene(IDirect3DDevice9* device) {
         g_mode74PubC0Writes.load(), g_mode74ProjInjects.load(),
         g_mode74PublishProjCalls.load(), GetStereoSepMeters() * 100.f, kMode74DualEveryN,
         g_mode74DualEnabled.load() ? 1 : 0, g_mode74DualOptIn.load() ? 1 : 0, lastEs,
-        g_mode74LastDualMs.load(), g_mode74DualSkipRemain.load(), holdSparsePair ? 1 : 0,
+        g_mode74LastDualMs.load(), g_mode74DualSkipRemain.load(),
+        (holdSparsePair || holdDrawScenePair) ? 1 : 0,
         gateOpen ? kMode74DualViewBudgetPerEye : kMode74TemporalViewBudget,
         static_cast<int>(GetStereoMode()));
-  // App FPS estimate: quieter when dual OFF (every 2s).
+  // App FPS estimate: quieter when dual OFF / Mode88 (every 2s).
   const DWORD fpsEveryMs = dualOffQuiet ? 2000u : 1000u;
   if (nowEs - s_fpsTick >= fpsEveryMs) {
     const uint32_t dEs = s_es - s_fpsEs0;
@@ -7286,9 +7562,10 @@ void Mode74OnEndScene(IDirect3DDevice9* device) {
     const float esPerSec = dMs > 0 ? (1000.f * static_cast<float>(dEs) / static_cast<float>(dMs))
                                    : 0.f;
     Log("Mode74: AppFPS es/s=%.1f lastEs=%ums dualMs=%u dualN=%u hold=%d gate=%s "
-        "(want es/s ≈ submit/s; hold=1 means sparse L/R reused)",
+        "drawDualN=%u (want es/s ≈ submit/s; hold=1 means L/R reused)",
         esPerSec, g_mode74LastEsMs.load(), g_mode74LastDualMs.load(), g_mode74DualN.load(),
-        holdSparsePair ? 1 : 0, gateOpen ? "OPEN" : "CLOSED");
+        (holdSparsePair || holdDrawScenePair) ? 1 : 0, gateOpen ? "OPEN" : "CLOSED",
+        g_mode77DualN.load());
     s_fpsTick = nowEs;
     s_fpsEs0 = s_es;
   }
@@ -7803,6 +8080,22 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
       g_origBuild(self, edx);
       return;
     }
+    // Mode86/88: dual every N DrawScene — cuts StretchRect×2 + DrawScene×2 hitch.
+    // Off ticks: mono DrawScene + HOLD last true L/R (do NOT TemporalCapture overwrite).
+    // Mode88 keeps EyeProj ON; Mode86 does not (A/B only — jumping).
+    // Mode88: gtaiv_dxvk_vr.dualn (2=default, 3=lighter). Mode86 fixed 2.
+    if (WantsDualEveryOther(mode)) {
+      static uint32_t s_dualTick = 0;
+      ++s_dualTick;
+      const uint32_t everyN =
+          IsHitchCutEyeProj(mode) ? GetDualEveryN() : 2u;
+      if ((s_dualTick % everyN) != 0u) {
+        g_origBuild(self, edx);
+        if (g_haveL && g_haveR)
+          g_mode74DidDualThisFrame.store(true);  // HOLD last pair
+        return;
+      }
+    }
     g_inDual.store(true);
     const bool ok = RunMode77DrawSceneDualGuarded(self, edx);
     g_inDual.store(false);
@@ -7814,6 +8107,7 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
       g_origBuild(self, edx);
       return;
     }
+    g_mode74DidDualThisFrame.store(true);  // EndScene HOLD — protect same-frame L/R
     const uint32_t n = ++g_mode77DualN;
     if (n <= 6 || (n % 120) == 0)
       Log("Mode77: DRAWSCENE-ONLY dual #%u haveL=%d haveR=%d injects=%u sep=%.0fcm "
@@ -8177,6 +8471,16 @@ bool InstallAllThreePhases() {
 }
 
 }  // namespace
+
+// Graphics-options / resolution change: D3DPOOL_DEFAULT eye RTs die on Reset.
+// Must release BEFORE device Reset (dangling pointers → hang/freeze).
+void StereoNotifyDeviceLost() {
+  const bool had = g_texL || g_texR || g_holdL || g_holdR || g_resolveSurf;
+  ReleaseEyeRts();
+  g_device = nullptr;
+  if (had)
+    Log("DeviceReset: released eye RTs (POOL_DEFAULT) before/after Lost — will recreate");
+}
 
 bool InstallStereoRenderHooks() {
   if (g_ok.load())
@@ -8581,28 +8885,92 @@ bool InstallStereoRenderHooks() {
               "dual×2 OFF; jump risk; kill=45");
         } else if (mode == StereoMode::DrawSceneOnlyDual) {
           Log("Mode77: DRAWSCENE-ONLY DUAL (Approach A) — DrawScene×2 not BuildRootA×2; "
-              "gate=%u ES hitch≥%ums; okDraw=%d; kill=45",
+              "gate=%u ES hitch≥%ums; okDraw=%d; FOV canvas GATED until drawn sy<1.25; "
+              "kill=45",
               kMode77GateNeedLiveEs, kMode77HitchMs, okDraw ? 1 : 0);
         } else if (mode == StereoMode::ShaderConstStereo) {
           Log("Mode78: SHADER-CONST STEREO (Approach C) — high-rate VIEW/PROJ inject "
               "budget=%u/ES; no BuildRootA×2; pair-hold capture; kill=45",
               kMode78ViewBudget);
         } else if (mode == StereoMode::FovPresenceHammer) {
-          Log("Mode79: FOV PRESENCE HAMMER (Approach E) — prove +0x180/+0x308/CCam cover "
-              "FOV in FOVPROOF logs; EyeProj on; kill=45");
+          Log("Mode79: FOV PRESENCE HAMMER — CCam hard + drawn-FOV proof + honest canvas "
+              "(no 162%%h lie); EyeProj on; kill=45");
+        } else if (mode == StereoMode::FovPresenceDrawScene) {
+          Log("Mode80: ASPECT-SAFE LETTERBOX — Mode77 dual + FOV prove + "
+              "gameTan aspect=BB letterbox (fill~100%%h/62%%v on G2); okDraw=%d; kill=45",
+              okDraw ? 1 : 0);
+        } else if (mode == StereoMode::AspectLetterboxSafe) {
+          Log("Mode81: LETTERBOX-SAFE — Mode77 dual + softer cover-H FOV; bars OK; "
+              "never squash; okDraw=%d; kill=45",
+              okDraw ? 1 : 0);
+        } else if (mode == StereoMode::AspectFillAggressive) {
+          Log("Mode82: FILL-HMD AGGRESSIVE — Mode77 dual + cover-V FOV; canvas from "
+              "MEASURED drawn FOV only (no giant lie); may crop sides; okDraw=%d; kill=45",
+              okDraw ? 1 : 0);
+        } else if (mode == StereoMode::AspectFillSweet) {
+          Log("Mode83: FILL-SWEET — Mode77 dual + ~90%%v fill (headset: 149%%h monitor; "
+              "prefer 84) + quiet EyeProj; okDraw=%d; kill=45",
+              okDraw ? 1 : 0);
+        } else if (mode == StereoMode::LetterboxWideFov) {
+          Log("Mode84: SOFT-LETTERBOX (A/B) — ~78%%v / fillH≤118%%; headset groß — prefer 85; "
+              "okDraw=%d; kill=45",
+              okDraw ? 1 : 0);
+        } else if (mode == StereoMode::SteamVrRtLetterbox) {
+          Log("Mode85: STEAMVR-RT + MODE80 LETTERBOX — eye RTs from "
+              "GetRecommendedRenderTargetSize (cap 2048); hard letterbox; Mode77 dual + "
+              "quiet EyeProj; A/B only — prefer 87; okDraw=%d; kill=45",
+              okDraw ? 1 : 0);
+        } else if (mode == StereoMode::SteamVrRtSafe) {
+          Log("Mode86: STEAMVR-RT NO-EYEPROJ (A/B only) — mid-draw EyeProj OFF; eye RT "
+              "min(rec,BB*1.25,1440); Mode80 letterbox; DrawScene dual 1/2; headset jumping "
+              "worse — prefer 87; okDraw=%d; kill=45",
+              okDraw ? 1 : 0);
+        } else if (mode == StereoMode::ConfigEyeRtLetterbox) {
+          (void)GetConfiguredEyeRtDim();  // log eyert tier at arm
+          Log("Mode87: CONFIG-EYERT + EyeProj (quality A/B) — EyeProj ON mid-draw; fixed "
+              "square eyeRT from gtaiv_dxvk_vr.eyert (default 2048); NOT SteamVR recommended; "
+              "Mode77 dual every frame; Mode80 letterbox; CCam/PubProj cull sync; "
+              "okDraw=%d; prefer 88 for streets; kill=45",
+              okDraw ? 1 : 0);
+        } else if (mode == StereoMode::HitchCutEyeProj) {
+          (void)GetConfiguredEyeRtDim();
+          Log("Mode88: HITCHCUT + EyeProj DEFAULT — EyeProj ON; dual every %u DrawScene "
+              "+ HOLD last L/R (gtaiv_dxvk_vr.dualn 2..4); eyert default 1440; quiet "
+              "EyeProj after FOV proven; Mode80 letterbox; Reset-safe eye RTs; never "
+              "Mode86; okDraw=%d; kill=45",
+              GetDualEveryN(), okDraw ? 1 : 0);
+        } else if (mode == StereoMode::CullSyncPresence) {
+          (void)GetConfiguredEyeRtDim();
+          Log("Mode89: CULL-SYNC PRESENCE (A/B) — EyeProj ON; dual every frame; quieter "
+              "logs; aggressive CCam/PubProj cull sync; mild soft letterbox ~68%%v/"
+              "fillH≤108%% (never Mode83; not Mode84 78%% groß); Reset-safe RTs; "
+              "okDraw=%d; kill=45",
+              okDraw ? 1 : 0);
         } else {
           Log("Mode74family: unknown mode %d", static_cast<int>(mode));
         }
         Log("StereoRender: mode %d family (74=hitchcut 75=saferDual 76=AER 77=drawScene "
-            "78=shader 79=fov; dualOptIn=%d) ok=%d fovSite=%d vsHook=%d pubProj=%d "
-            "uploadFn=%d draw=%d",
+            "78=shader 79=fov 80=letterbox 81=softLB 82=fill 83=fillSweet 84=softLB "
+            "85=SteamVR-RT 86=noEyeProjA/B 87=EyeProj+eyert 88=DEFAULT hitch+EyeProj "
+            "89=cullSync; dualOptIn=%d) ok=%d fovSite=%d vsHook=%d pubProj=%d uploadFn=%d "
+            "draw=%d",
             static_cast<int>(mode), dualOptIn ? 1 : 0, g_ok.load() ? 1 : 0, fovOk ? 1 : 0,
             okHook ? 1 : 0, okPub ? 1 : 0, okUpload ? 1 : 0, okDraw ? 1 : 0);
-        Log("StereoRender: how-to — stereo=74 default; 75 safer dual; 76 AER; 77 DrawScene; "
-            "78 shader; 79 FOV; F8: 1cm=MOST fused; kill=45");
+        Log("StereoRender: how-to — stereo=88 DEFAULT (EyeProj ON; dual 1/2 HOLD; "
+            "eyert=1440); A/B 87=dual every/2048, 89=presence, 80=letterbox; kill 45; "
+            "NEVER 86 default; skip 74; F8: 1cm=MOST fused");
+        SetDrawnFovProven(false);
         Log("HmdLook: ENABLED DRAW-PATH (HMD orient + seated 6DoF frozen/ES + EyeToHead "
             "cached); UploadFn/PubProj also stamp look; F9 recenter; pose/seat spike reject");
         Log("PubProj: TEMPORAL HOLD 1×/self/ES (cached eye proj); never view+0x80");
+        Log("PoseFreeze: BeginFrameHmdPoseSample + EMA reject (pos>8cm / fwdDot<0.90) + "
+            "seat step clamp 8cm — jump fix path ON");
+        if (IsConfigEyeRtLetterbox(mode) || IsCullSyncPresence(mode))
+          Log("CullSync: CCam+PubProj target same HMD EyeProj FOV (aggressive); sidewalk "
+              "hole possible if engine cull lags — keep EyeProj ON anyway");
+        if (IsHitchCutEyeProj(mode))
+          Log("HitchCut: dual 1/2 + HOLD + quieter EyeProj/log + eyert≤1440 default; "
+              "device Reset releases eye RTs before recreate");
         if (IsAerPresenceMode(mode))
           Log("AERPose: Submit_TextureWithPose + engine L↔R AER (Mode76 quality)");
         Log("StereoRender: kill-switch - stereo=45");

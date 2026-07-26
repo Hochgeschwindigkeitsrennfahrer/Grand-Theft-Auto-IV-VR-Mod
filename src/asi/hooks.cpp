@@ -2,6 +2,7 @@
 #include "log.h"
 #include "openvr_mono.h"
 #include "stereo_proj.h"
+#include "stereo_render.h"
 
 #include "../../thirdparty/minhook/include/MinHook.h"
 
@@ -17,6 +18,7 @@ using Direct3DCreate9_t = IDirect3D9*(WINAPI*)(UINT);
 using Present_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, const RECT*, const RECT*, HWND,
                                               const RGNDATA*);
 using EndScene_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*);
+using Reset_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, D3DPRESENT_PARAMETERS*);
 using CreateDevice_t = HRESULT(STDMETHODCALLTYPE*)(IDirect3D9*, UINT, D3DDEVTYPE, HWND, DWORD,
                                                    D3DPRESENT_PARAMETERS*, IDirect3DDevice9**);
 
@@ -24,6 +26,7 @@ Direct3DCreate9_t g_realCreate9 = nullptr;
 CreateDevice_t g_realCreateDevice = nullptr;
 Present_t g_realPresent = nullptr;
 EndScene_t g_realEndScene = nullptr;
+Reset_t g_realReset = nullptr;
 
 std::mutex g_hookMu;
 std::unordered_set<void*> g_hookedFns;
@@ -53,8 +56,27 @@ HRESULT STDMETHODCALLTYPE HookPresent(IDirect3DDevice9* self, const RECT* src, c
   return g_realPresent(self, src, dst, hwnd, dirty);
 }
 
+// Graphics options / resolution change call Reset — POOL_DEFAULT eye RTs die.
+// Release BEFORE Reset to avoid hang on dangling StretchRect/Submit.
+HRESULT STDMETHODCALLTYPE HookReset(IDirect3DDevice9* self, D3DPRESENT_PARAMETERS* pp) {
+  const UINT bw = pp ? pp->BackBufferWidth : 0;
+  const UINT bh = pp ? pp->BackBufferHeight : 0;
+  asi::Log("DeviceReset: BEFORE Reset bb=%ux%u — releasing eye RTs", bw, bh);
+  asi::StereoNotifyDeviceLost();
+  const HRESULT hr = g_realReset(self, pp);
+  if (SUCCEEDED(hr))
+    asi::Log("DeviceReset: OK — eye RTs will recreate on next EndScene");
+  else
+    asi::Log("DeviceReset: FAILED hr=0x%08lx (eye RTs cleared; wait for next Reset)",
+             static_cast<unsigned long>(hr));
+  return hr;
+}
+
 void EnsureDeviceHooks(IDirect3DDevice9* device) {
   void** vt = *reinterpret_cast<void***>(device);
+  // IDirect3DDevice9: Reset=16, Present=17, EndScene=42
+  HookFn(vt[16], reinterpret_cast<void*>(&HookReset), reinterpret_cast<void**>(&g_realReset),
+         "Reset");
   HookFn(vt[17], reinterpret_cast<void*>(&HookPresent), reinterpret_cast<void**>(&g_realPresent),
          "Present");
   HookFn(vt[42], reinterpret_cast<void*>(&HookEndScene), reinterpret_cast<void**>(&g_realEndScene),

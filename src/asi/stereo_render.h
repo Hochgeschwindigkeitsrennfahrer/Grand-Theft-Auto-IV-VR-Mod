@@ -9,6 +9,9 @@ bool InstallStereoRenderHooks();
 // Create/resize eye RTs when mode >= 4.
 void StereoRenderOnDevice(IDirect3DDevice9* device);
 
+// Graphics options / resolution change: release POOL_DEFAULT eye RTs before Reset.
+void StereoNotifyDeviceLost();
+
 // If mode >= 4 and RTs ready, Submit L/R from eye textures. Returns true if handled.
 bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop);
 

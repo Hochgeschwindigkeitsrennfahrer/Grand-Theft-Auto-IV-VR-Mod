@@ -1,8 +1,292 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-## Deployed 2026-07-25 overnight marathon — Mode **74** morning-safe DEFAULT
+## Deployed 2026-07-26 — Mode **88** HITCHCUT + EyeProj DEFAULT (90-min nap session)
 
-### User feedback that drove this night
+### Headset feedback Mode87 (`20260726-174440-mode87-eyeproj-eyert`)
+| Issue | Notes |
+|------|--------|
+| Scale OK again | ~Mode80 letterbox look |
+| **Heavy hitching** | Dual every frame + 2048² StretchRect + EyeProj log I/O |
+| **Bars still present** | Honest 16:9→G2 letterbox ≈100%h / 62%v (geometry; not a bug) |
+| **Game froze** | Graphics options → D3D Reset; eye RTs not released → hang |
+
+### Mode88 changes (best balance DEFAULT)
+| Path | Change |
+|------|--------|
+| **EyeProj** | **ON** (never Mode86). Quiet after FOV proven; still ON in dual |
+| **Dual** | DrawScene×2 **every N** (default **2**) + **HOLD** last L/R on off ticks |
+| **HOLD bugfix** | Mode77 dual now sets `didDualThisFrame` — EndScene no longer TemporalCapture-overwrites same-frame L/R |
+| **Eye RT** | Fixed square eyert — Mode88 **default 1440** (file `gtaiv_dxvk_vr.eyert`) |
+| **dualn** | Optional `gtaiv_dxvk_vr.dualn` = 2..4 (3 = lighter streets) |
+| **Reset** | Hook `IDirect3DDevice9::Reset` → release POOL_DEFAULT eye RTs before Reset |
+| **Log I/O** | Buffered log (~100ms flush); quieter EyeProj discover/inject |
+| **Scale** | Mode80 LetterboxPrefer — honest ~100%h / 62%v |
+| **Never** | live `view+0x80`; Mode83 fill-zoom; Mode86 default; kill≠45 |
+
+### Mode89 A/B (bars / presence) — not default
+| Path | Change |
+|------|--------|
+| Dual | Every frame (Mode77 quality) |
+| Bars | Mild soft letterbox **~68%v / fillH≤108%** (not Mode84 78% groß; never Mode83) |
+| Eye RT | eyert **2048** for A/B |
+| FOV | Quiet FOV-proof so canvas ungates (fixed this session) |
+| Tradeoff | Heavier than 88; try if bars annoy more than hitch |
+| Log proof | `20260726-180837-mode89-fovproof-bars`: fill≈**108%h / 67%v**; StereoDiff≈7–8k; AppFPS≈55 |
+
+### Mode map (edit `gtaiv_dxvk_vr.stereo`)
+
+| stereo | Name | What |
+|--------|------|------|
+| **88** | **HITCHCUT + EyeProj DEFAULT** | EyeProj ON; dual 1/N HOLD; eyert 1440; Reset-safe |
+| **89** | Cull-sync soft bars A/B | Dual every; ~68%v soft; eyert 2048 |
+| **87** | EyeProj + eyert quality | Dual every; eyert 2048; hitchier |
+| **80** | Hard letterbox | Scale reference |
+| **86** | No-EyeProj | A/B only — jumping; NEVER default |
+| 45 | Kill | Safe fallback |
+
+**Skip 74**. **Never** live `view+0x80`. Kill=**45**. Remap 71→45, 73→72.
+
+**Build:** `ASI_BUILD_ID 20260726-181542-mode88-stretch-point`  
+**Play:** stereo **`88`** + eyert **`1440`** + dualn **`2`** already in game dir.
+
+**Agent log proof (this session):**
+- `StereoMode: 88` · Mode88 HITCHCUT + EyeProj · okDraw=1
+- `Hooked Reset` · `DeviceReset: BEFORE/OK` on boot (graphics-options freeze path armed)
+- `EyeRt: 1440×1440` · `LOCKED eyeRT=1440×1440 src=config-eyert` · DualN every 2
+- `FOVPROOF: DRAWN via device VS patch` · fill≈**100%h / 62%v** letterbox
+- `DRAWSCENE-ONLY dual #` climbing · `hold=1` · StereoDiff≈**5100–8800** (real L≠R)
+- AppFPS es/s ≈**55–90** · submit/s matched (apartment/menu ~90; streets expect lower)
+- StretchRect POINT filter (Mode88) · QPC copy ~0.02ms · dualn=`3` A/B up to ~65 es/s earlier
+
+**90-min session chronology (agent):** appended at end of this Mode88 section.
+
+**You test (short English):**
+1. Headset on — Mode **88** (already set).
+2. **Streets:** fewer hitches than Mode87?
+3. **EyeProj feel?** Still present (not flat Mode86)?
+4. **Bars:** top/bottom OK if scale realistic (~Mode80)?
+5. **Graphics options:** change resolution / AA — should **not freeze** (watch log for `DeviceReset:`).
+6. Want fewer bars (may hitch more) → stereo **`89`**, eyert `2048`, restart.
+7. Want sharper → eyert `2048` keep stereo `88`, restart.
+8. More hitch cut → dualn file `3`, restart.
+9. Bad → stereo **`80`**. Kill → **`45`**. Never leave on **86**.
+
+**Test order:** **88** → 80 (scale) → optional **89** (bars) → kill **45**. Skip 74.
+
+**Tradeoffs (why 88 default):**
+- Keeps EyeProj (Mode86 jumping fail)
+- Cuts dual+StretchRect cost vs Mode87 every-frame/2048
+- Honest Mode80 bars (62%v is geometric for 16:9→G2 letterbox; Mode83 zoom forbidden)
+- Reset-safe for graphics options
+
+---
+
+## Prior deployed 2026-07-26 — Mode **87** EyeProj + fixed eyert DEFAULT
+
+### Headset feedback Mode86 (`20260726-173233-mode86-noeyeproj`) — HARD FAIL
+| Issue | Notes |
+|------|--------|
+| **Jumping like crazy** | Worse than with EyeProj — dual 1/2 + no mid-draw EyeProj broke look |
+| **Looks worse** | EyeProj OFF feels wrong |
+| **Bars still full** | Letterbox bars remained |
+
+**Rule:** **NEVER ship without EyeProj.** Prefer EyeProj ON + documented sidewalk-hole risk over EyeProj OFF.
+
+### Mode87 changes
+| Path | Change |
+|------|--------|
+| **EyeProj** | **ON** mid-draw (Mode86 `WantsNoMidDrawEyeProj` not used) |
+| **Eye RT** | Fixed square from **`gtaiv_dxvk_vr.eyert`** — default **2048**; tiers **1440 / 2048 / 2560 / 2880**. **NOT** SteamVR `GetRecommendedRenderTargetSize` |
+| **Dual** | Mode77 DrawScene×2 **every frame** (not Mode86 1/2) |
+| **Scale** | Mode80 LetterboxPrefer + aggressive CCam/PubProj toward same HMD FOV as EyeProj (cull sync) |
+| **Jump** | Pose freeze + EMA reject (pos>8cm / fwdDot<0.90) + seat 8cm clamp; HMD worldlook stamps |
+| **Never** | live `view+0x80`; kill≠45 |
+
+SteamVR recommended RT path kept only for Mode **85/86 A/B** — re-integrate later when stereo/FOV solid.
+
+### Eye RT how-to (concrete)
+1. Open folder: `C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV\`
+2. Create or edit file **`gtaiv_dxvk_vr.eyert`** (Notepad).
+3. Put **one number** on the first line, then save:
+   - `1440` = lighter / fewer StretchRect hitches
+   - `2048` = **default** (already set)
+   - `2560` = sharper, heavier
+   - `2880` = max tier (VRAM / hitch risk)
+4. Restart GTA. Log must show `EyeRt: …` and `eyeRT=2048×2048` (or your tier) with `src=config-eyert`.
+
+### Mode map (edit `gtaiv_dxvk_vr.stereo`)
+
+| stereo | Name | What |
+|--------|------|------|
+| **87** | **EyeProj + eyert DEFAULT** | EyeProj ON; fixed eyert; dual every frame; Mode80 letterbox |
+| **80** | Hard letterbox | Scale reference A/B |
+| **86** | No-EyeProj SteamVR-RT | A/B only — jumping; do not use as default |
+| **85** | SteamVR-RT letterbox | A/B only — hole + hitch |
+| 45 | Kill | Safe fallback |
+
+**Skip 74**. **Never** live `view+0x80`. Kill=**45**.
+
+**Build:** `ASI_BUILD_ID 20260726-174440-mode87-eyeproj-eyert`  
+**Play:** stereo **`87`** + eyert **`2048`** already in game dir. GTA running.
+
+**Agent log proof (this session):**
+- `StereoMode: 87` · Mode87 CONFIG-EYERT + EyeProj DEFAULT · okDraw=1
+- `EyeRt: 2048×2048` fixed square · `LOCKED eyeRT=2048×2048 src=config-eyert` · **0** `src=steamvr-recommended` eyeRT locks
+- `eyeProj=` counter climbing (16000+) via device VS patch; `FOVPROOF: DRAWN via device VS patch`
+- `DRAWSCENE-ONLY dual #` climbing (8000+) every frame
+- `HmdLook: DRAW stamp #` climbing (worldlook ON)
+- `PoseFreeze:` EMA reject + seat clamp ON
+- Canvas fill≈**100%h / 62%v** letterbox (Mode80-ish)
+- AppFPS stereo=1 ~50–70 submit/s under dual
+
+**You test (short English):**
+1. Headset on — Mode **87** (already set).
+2. **Less jump than 86?** Turn head / walk.
+3. **EyeProj feel back?** World FOV / presence (not flat cinema).
+4. **Hole?** Sidewalk black rectangle / floating beams? (possible — report).
+5. **Bars?** Top/bottom OK if scale realistic (Mode80-ish)?
+6. Bad → stereo file **`80`**. Kill → **`45`**. Never leave on **86**.
+7. Sharper later → edit `gtaiv_dxvk_vr.eyert` to `2560`, restart.
+
+**Test order:** **87** → 80 (compare) → kill **45**. Skip 74. Never default 86.
+
+---
+
+## Prior deployed 2026-07-26 — Mode **86** SteamVR-RT SAFE DEFAULT (hole fix)
+
+### Headset feedback Mode85 (`20260726-171853-mode85-steamvrrt`)
+| Issue | Notes |
+|------|--------|
+| **Black sidewalk hole** | Sharp rectangular void + floating curb beams (WMR mirror screenshot) |
+| **Still groß** | Characters oversized vs Mode80 |
+| **Strong bars** | Expected under letterbox; OK if scale realistic |
+| **Street hitches** | 2048² StretchRect + DrawScene×2 every frame |
+
+### Glitch root cause (best evidence)
+Mid-draw **EyeProj / device VS proj rewrite** during Mode77 dual: HMD asymmetric FOV stamped into VS constants while engine frustum cull / streaming still uses game FOV → missing tiles = black rectangle with stray beams. Mode74 EndScene without dual did not show this hole class. Mode86 keeps dual + PubProj HOLD + VIEW inject; **never** mid-draw EyeProj.
+
+### Mode86 changes
+| Path | Change |
+|------|--------|
+| **EyeProj** | **OFF** even in dual (`WantsNoMidDrawEyeProj`) — hole fix |
+| **Eye RT** | `min(recommended, BB×1.25, **1440**)` — was Mode85 2048² hitch |
+| **Dual** | DrawScene×2 **every other** call (1/2) |
+| **Scale** | Mode80 LetterboxPrefer; CCam cap **85** (Mode85 was 88) |
+| **Never** | live `view+0x80`; kill≠45 |
+
+### Mode map (edit `gtaiv_dxvk_vr.stereo`)
+
+| stereo | Name | What |
+|--------|------|------|
+| **86** | **SteamVR-RT SAFE DEFAULT** | No mid-draw EyeProj; RT≤1440; dual 1/2; Mode80 letterbox |
+| **85** | SteamVR-RT letterbox | A/B — had hole + hitch |
+| **80** | Hard letterbox | Scale reference |
+| **77** | DrawScene dual only | Stereo baseline |
+| 45 | Kill | Safe fallback |
+
+**Skip 74** for this test pass.
+
+**Never** live `view+0x80`. Kill=**45**.
+
+**Build:** `ASI_BUILD_ID 20260726-173233-mode86-noeyeproj`  
+**Play:** stereo **`86`** already in game dir. GTA launched OK.
+
+**Agent log proof (this session):**
+- `StereoMode: 86` · Mode86 STEAMVR-RT SAFE DEFAULT · okDraw=1
+- eye RT **1440×1440** (recommended 2836×2772 capped; `noMidDrawEyeProj dual1/2`)
+- **0** `EyeProj: INJECT` / `see` / `device VS patch` lines
+- `DRAWSCENE-ONLY dual #` climbing (8000+)
+- AppFPS es/s ~88–90 · stereo=1
+- Canvas FOV may stay GATED (prove without EyeProj) → more Mode80-honest bars, less groß risk
+
+**You test (short English):**
+1. Headset on — Mode **86** (already set).
+2. **Hole gone?** Walk sidewalks — no black rectangle / floating beams?
+3. **Scale:** closer to Mode **80** (not groß like 84/85)?
+4. **Bars:** top/bottom OK if scale realistic?
+5. **Streets:** fewer hitches than 85?
+6. Bad → stereo file **`80`**. Kill → **`45`**.
+7. **Skip 74**.
+
+**Test order:** **86** → 80 (compare scale) → kill **45**. Skip 74.
+
+**Superseded by Mode 87** (EyeProj back ON; fixed eyert; Mode86 was HARD FAIL — jumping).
+
+---
+
+## Prior deployed 2026-07-26 — Mode **85** SteamVR-RT + Mode80 letterbox
+
+Mode85: recommended eye RT capped 2048² + Mode80 letterbox + quiet EyeProj. Headset: black hole + still groß + hitches. Superseded by Mode **86**, then **87**.
+Build was: `ASI_BUILD_ID 20260726-171853-mode85-steamvrrt`.
+
+### Why SteamVR recommended RT helps
+Game BB is **16:9**; HMD eyes are nearer square. Mode85/86 size Submit eye canvases from OpenVR `GetRecommendedRenderTargetSize`, then **letterboxes** the game BB into that canvas. Game still draws at BB — we only change the copy target.
+
+### Why Mode84 was still groß
+Soft-letterbox aimed ~78%v with fillH cap ~118% → image larger than Mode80’s honest ~100%h/62%v letterbox. Fewer bars ≠ realistic scale.
+
+---
+
+## Prior deployed 2026-07-26 — Mode **84** soft-letterbox (groß again)
+
+Mode84 fill≈118%h/73%v had no bars but scale groß. Superseded by Mode **85**, then **86**.
+Build was: `ASI_BUILD_ID 20260726-170915-mode84-softlb`.
+
+---
+
+## Prior deployed 2026-07-26 — Mode **83** fill-sweet (monitor again)
+
+Mode83 fill≈149%h/92%v felt fat/monitor. Superseded by Mode **84**, then **85**.
+Build was: `ASI_BUILD_ID 20260726-164513-mode83-fillsweet`.
+
+### Headset feedback that drove Mode83 (Mode80 aspectsafe `20260726-163120`)
+| Mode | Result |
+|------|--------|
+| **80** | Scale/aspect **OK**, but **too many bars** (~62%v) + **perf bad** |
+| **82** | Still **giant** — fill mode claimed wider canvas than drawn |
+| **81** | Looks OK, still bars + hitches |
+| **74** | **Skip** — do not require testing |
+
+### Why Mode80 had ~62%v bars
+On Reverb G2, cover FOV is near-square; game BB is **16:9**. Mode80 **LetterboxPrefer** keeps `tanH = tanV × 1.778`, then uniform scale-down so neither axis exceeds cover → **max honest letterbox = ~100%h / ~62%v**. Raising CCam FOV alone cannot remove those bars under letterbox (policy undoes vertical fill). More vertical fill **requires** FillPrefer (allow slight side crop) while keeping aspect.
+
+### Why Mode82 was giant
+FillPrefer published optimistic CCam tangents **wider than measured drawn FOV** → StereoCanvas zoomed/cropped → giant monitor. Fixed: canvas publish from **measured** `sy/sx` + clamp FillPrefer to drawn.
+
+---
+
+## Prior deployed 2026-07-26 — Mode **80** aspect-safe FOV (letterbox 62%v)
+
+Mode80 letterbox kept correct aspect but forced ~62%v bars on G2. Superseded by Mode **83**, then **84**, then **85**.
+Build was: `ASI_BUILD_ID 20260726-163120-mode80-aspectsafe`.
+
+---
+
+## Prior deployed 2026-07-26 — Mode **80** FOV presence (SQUEEZE BUG)
+
+### Headset that drove that build (user, Mode74 morning)
+| Mode | Result |
+|------|--------|
+| **74** | Completely smooth |
+| **76** | Smooth — still **giant monitor** |
+| **77** | **Best feel** / smooth — **SAME** fat/huge monitor |
+| **79** | **No difference noticed** |
+
+Smoothness OK on 77. Boss: giant monitor / not inside the world. Mode80 fovprove fixed giant-monitor lie but then **squeezed** after restart — superseded by **aspectsafe** above.
+
+### Why Mode79 did nothing (evidence)
+1. Mode79 only raised CCam cap **85→90**; `hmdTarget` was already **~71.5** → **identical FOV behavior to Mode74**.
+2. FOVPROOF: `active+0x180[0]=1.000` always while PubProj stamped `sx≈0.93` on a *different* held object — **slot/stamp mismatch**; `+0x308` never showed HMD tangents on active view.
+3. Canvas published lied `gameTan=(1.881,1.058)` from CCam → **fill≈162%h** → StereoCanvas **cropped/zoomed** the BB into the HMD = **giant monitor**, even when drawn FOV stayed cinema.
+4. `eyeProj=0` on Mode79 temporal — draw path uploaded **view+0x80**, not +0x180 proj.
+
+**Build was:** `ASI_BUILD_ID 20260726-162039-mode80-fovprove` — do not keep as default.
+
+---
+
+## Prior deployed 2026-07-25 overnight marathon — Mode **74** morning-safe
+
+### User feedback that drove that night
 Mode75 denser fearvr (`20260725-180123-mode75-fearvr`): **felt even LESS like actual 3D** → **SCRAPPED**.
 
 ### Mode map (edit `gtaiv_dxvk_vr.stereo`)
@@ -44,6 +328,7 @@ Mode75 denser fearvr (`20260725-180123-mode75-fearvr`): **felt even LESS like ac
 ---
 
 ## Prior deployed 2026-07-25 — Mode **75** fear-vr denser — SCRAPPED (less 3D)
+
 
 ### Goal
 Proper **3D stereo** (presence first). Studied [DR-89/fear-vr](https://github.com/DR-89/fear-vr) (MIT) → `docs/FEAR_VR_RE.md`.
@@ -2098,3 +2383,4 @@ Stereo success criteria: parallax **and** fusion, acceptable FPS.
 4. Expect FPS ~90  
 
 Kill switch on freeze: kill game → set stereo file to `0` → restart.
+

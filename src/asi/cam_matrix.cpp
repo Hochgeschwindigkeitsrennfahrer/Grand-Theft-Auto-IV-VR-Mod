@@ -689,12 +689,81 @@ float Mode74HmdTargetCcamDegrees() {
     needTanV = 0.05f;
   const float targetFromH =
       (2.f * std::atan(needTanV) * kRad2Deg) / kEng;
-  float target = (targetFromV > targetFromH) ? targetFromV : targetFromH;
-  // Presence: fill HMD (was V-only @80). Cap 85 — >~85 historically stressed canvas.
+
+  const StereoMode sm = GetStereoMode();
+  const CanvasAspectPolicy policy = GetCanvasAspectPolicy(sm);
+  float target = 0.f;
+  if (IsAspectFillSweet(sm)) {
+    // Mode83: aim ~90% of cover-V (less bars than letterbox 62%v; may crop sides).
+    // Still aspect-preserving at publish (tanH = tanV × bbAspect).
+    // Headset: fill≈149%h → monitor — prefer Mode84 letterbox.
+    constexpr float kFillV = 0.90f;
+    float needTanV = coverV * kFillV;
+    if (needTanV < 0.05f)
+      needTanV = 0.05f;
+    target = (2.f * std::atan(needTanV) * kRad2Deg) / kEng;
+  } else if (IsCullSyncPresence(sm)) {
+    // Mode89: mild soft letterbox ~68%v — fewer bars than Mode80; not Mode84 groß.
+    constexpr float kFillV = 0.68f;
+    float needTanV = coverV * kFillV;
+    if (needTanV < 0.05f)
+      needTanV = 0.05f;
+    target = (2.f * std::atan(needTanV) * kRad2Deg) / kEng;
+    if (targetFromH > target)
+      target = targetFromH;
+  } else if (IsLetterboxWideFov(sm)) {
+    // Mode84: aim ~78% cover-V (soft letterbox). Aspect locked at publish;
+    // fillH hard-capped ~118% — fewer bars than Mode80 62%v, not Mode83 149%h.
+    // Headset: no bars but groß — prefer Mode85 hard letterbox.
+    constexpr float kFillV = 0.78f;
+    float needTanV = coverV * kFillV;
+    if (needTanV < 0.05f)
+      needTanV = 0.05f;
+    target = (2.f * std::atan(needTanV) * kRad2Deg) / kEng;
+    // Also ensure cover-H is reachable under the fillH cap (real FOV climb).
+    if (targetFromH > target)
+      target = targetFromH;
+  } else if (policy == CanvasAspectPolicy::FillPrefer) {
+    // Mode82: aim cover-V (taller) so HMD fills vertically; H may exceed cover → crop.
+    target = (targetFromV > targetFromH) ? targetFromV : targetFromH;
+  } else if (IsSteamVrRtLetterbox(sm) || IsSteamVrRtSafe(sm) || IsAspectLetterboxSafe(sm) ||
+             IsHitchCutEyeProj(sm)) {
+    // Mode88/86/85/81: cover-H only — Mode80-honest vertical letterbox; never chase cover-V.
+    target = targetFromH;
+  } else {
+    // Mode80 / Mode74 family / Mode89: prefer cover-H (letterbox OK) but allow
+    // mild max with V so presence climbs. Still aspect-safe at publish.
+    target = (targetFromV > targetFromH) ? targetFromV : targetFromH;
+  }
+
+  // Aggressive presence (77/79/80/82/87/89): push toward Reverb G2 ~90-100° feel.
+  // Mode84 letterbox-wide: cap ~94 (cover-H climb). Mode83 fill: cap ~92.
+  // Mode85/81 letterbox: softer cap 88. Mode88/86 + baseline Mode74: cap 85.
+  float cap = 85.f;
+  if (IsLetterboxWideFov(sm))
+    cap = 94.f;
+  else if (IsCullSyncPresence(sm))
+    cap = 90.f;  // Mode89 mild soft — under Mode84 94 / Mode83 92
+  else if (IsAspectFillSweet(sm))
+    cap = 92.f;
+  else if (WantsAggressiveFovPresence(sm))
+    cap = 98.f;
+  else if (IsSteamVrRtSafe(sm) || IsHitchCutEyeProj(sm))
+    cap = 85.f;  // Mode80-honest; Mode85 cap 88 felt still groß
+  else if (IsSteamVrRtLetterbox(sm) || IsAspectLetterboxSafe(sm))
+    cap = 88.f;
   if (target < 50.f)
     target = 50.f;
-  if (target > 85.f)
-    target = 85.f;
+  if (target > cap)
+    target = cap;
+  // Presence modes: if cover asks for more than formula, still climb toward cap.
+  // Mode83/84: no +8 hammer (perf + honest letterbox/fill).
+  if (WantsAggressiveFovPresence(sm) && !IsAspectFillSweet(sm) && target < cap - 0.5f) {
+    // Bias +8° toward HMD presence (cinema killer) without exceeding cap.
+    target += 8.f;
+    if (target > cap)
+      target = cap;
+  }
   return target;
 }
 
@@ -766,14 +835,51 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
       }
       if (target > 85.f)
         target = 85.f;
-      // Mode79: allow up to 90° cover (giant-screen killer) when HMD asks for it.
-      if (IsFovPresenceHammer(sm) && hmdTarget > 5.f) {
+      // Aggressive presence (77/79/80/82): allow up to 98° CCam cover.
+      if (IsCullSyncPresence(sm) && hmdTarget > 5.f) {
+        // Mode89: mild soft ~68%v, cap 90 — fillH≤108% at publish.
         target = hmdTarget;
         if (target > 90.f)
           target = 90.f;
+      } else if (WantsAggressiveFovPresence(sm) && hmdTarget > 5.f) {
+        target = hmdTarget;
+        if (target > 98.f)
+          target = 98.f;
+      } else if (IsLetterboxWideFov(sm) && hmdTarget > 5.f) {
+        // Mode84: soft letterbox ~78%v target, cap 94 — fillH capped at publish.
+        target = hmdTarget;
+        if (target > 94.f)
+          target = 94.f;
+      } else if (IsAspectFillSweet(sm) && hmdTarget > 5.f) {
+        // Mode83: ~90%v target from Mode74HmdTargetCcamDegrees, cap 92.
+        target = hmdTarget;
+        if (target > 92.f)
+          target = 92.f;
+      } else if ((IsSteamVrRtSafe(sm) || IsSteamVrRtLetterbox(sm) ||
+                  IsAspectLetterboxSafe(sm) || IsHitchCutEyeProj(sm)) &&
+                 hmdTarget > 5.f) {
+        // Mode88/86: cover-H, cap 85. Mode85/81: cap 88.
+        target = hmdTarget;
+        const float softCap =
+            (IsSteamVrRtSafe(sm) || IsHitchCutEyeProj(sm)) ? 85.f : 88.f;
+        if (target > softCap)
+          target = softCap;
       }
       // Gameplay / our prior write band only — skip cutscene spikes (~90+).
-      const bool inBand = before <= 85.f;
+      float bandHi = 85.f;
+      if (WantsAggressiveFovPresence(sm))
+        bandHi = 98.f;
+      else if (IsLetterboxWideFov(sm))
+        bandHi = 94.f;
+      else if (IsCullSyncPresence(sm))
+        bandHi = 90.f;
+      else if (IsAspectFillSweet(sm))
+        bandHi = 92.f;
+      else if (IsSteamVrRtSafe(sm) || IsHitchCutEyeProj(sm))
+        bandHi = 85.f;
+      else if (IsSteamVrRtLetterbox(sm) || IsAspectLetterboxSafe(sm))
+        bandHi = 88.f;
+      const bool inBand = before <= bandHi;
       if (inBand && target > before + 0.4f) {
         // Engine reset to base — write target.
         if (s_lastWritten > 0.f && std::fabs(before - s_lastWritten) < 0.4f) {
@@ -783,6 +889,16 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
           after = target;
           s_lastWritten = target;
           add = target - before;
+          // Also stamp CopyMat mat+0x50 (Mode16: same FOV field as CCam+0x60).
+          if (g_liveCamMat) {
+            __try {
+              float* matFov =
+                  reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(g_liveCamMat) + 0x50);
+              if (*matFov > 5.f && *matFov < 160.f)
+                *matFov = target;
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+            }
+          }
         }
       } else if (inBand && s_lastWritten > 0.f &&
                  std::fabs(before - s_lastWritten) < 0.4f) {
@@ -800,9 +916,10 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
       const uint32_t n = ++g_fovSiteCalls;
       if (n <= 4 || (n % 2400) == 0)
         Log("FovSite: Mode74 HMD #%u CCam+0x60 %.3f -> %.3f (hmdTarget=%.1f add=%.1f) "
-            "self=%p (full cover FOV; restore on kill=45)",
-            n, before, after, hmdTarget, add, self);
-      // Publish canvas FOV only when we actually changed CCam (skip churn).
+            "self=%p proven=%d (full cover FOV; canvas gated until drawn proof; kill=45)",
+            n, before, after, hmdTarget, add, self, IsDrawnFovProven() ? 1 : 0);
+      // Publish canvas FOV only when we actually changed CCam — still gated inside
+      // PublishGameFovFromCCamDegrees until drawn FOV is proven.
       if (after > before + 0.2f)
         PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
       // Mode74 DRAW-PATH owns HMD look — skip late CamMatrix refresh (street hitch).

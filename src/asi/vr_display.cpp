@@ -41,8 +41,15 @@ std::atomic<bool> g_loggedInset{false};
 // Mode 36: true engine FOV from CCam+0x60 (after fovadd). Blocks D3DTS_PROJECTION
 // probe from clobbering — Rage ignores Set/GetTransform projection (Mode 15 dead).
 std::atomic<bool> g_fovFromCCam{false};
+// Canvas must not claim wide FOV until EndScene proves drawn proj widened.
+std::atomic<bool> g_drawnFovProven{false};
+std::atomic<float> g_pendingCcamDeg{0.f};
+std::atomic<uint32_t> g_drawnFovProofGen{0};
 std::atomic<float> g_bbAspect{16.f / 9.f};
 std::atomic<uint32_t> g_fovPublishGen{0};
+// Measured drawn half-FOV (from VS sy/sx). FillPrefer must not exceed these.
+std::atomic<float> g_drawnMeasTanH{0.f};
+std::atomic<float> g_drawnMeasTanV{0.f};
 // Mode 37: latch tangents for one L→R pair (same canvas geometry both eyes).
 std::atomic<bool> g_pairLatchOn{false};
 std::atomic<float> g_pairLatchH{0.f};
@@ -231,28 +238,119 @@ uint32_t GetGameFovPublishGeneration() {
   return g_fovPublishGen.load();
 }
 
-void PublishGameFovFromCCamDegrees(float ccamDeg, float aspectWH) {
-  if (!(ccamDeg >= 5.f) || !(ccamDeg <= 160.f) || !std::isfinite(ccamDeg))
+void SetDrawnFovProven(bool proven) {
+  if (!proven) {
+    g_drawnFovProven.store(false);
+    g_drawnMeasTanH.store(0.f);
+    g_drawnMeasTanV.store(0.f);
+    ++g_drawnFovProofGen;
     return;
-  // Mode 16 probe: CCam 45.000 → rendered vertical ≈ 58.7° (tanV≈0.562 at 16:9).
-  constexpr float kEng = 58.7f / 45.f;
-  float vDeg = ccamDeg * kEng;
-  if (vDeg > 170.f)
-    vDeg = 170.f;
-  const float tanV = std::tan(0.5f * vDeg * 3.14159265f / 180.f);
-  float aspect = aspectWH;
-  if (!(aspect > 0.5f) || !(aspect < 3.f))
-    aspect = g_bbAspect.load();
-  if (!(aspect > 0.5f) || !(aspect < 3.f))
-    aspect = 16.f / 9.f;
-  const float tanH = tanV * aspect;
+  }
+  const bool prev = g_drawnFovProven.exchange(true);
+  if (!prev)
+    Log("VrDisplay: DRAWN FOV PROVEN — canvas may use CCam/HMD cover tangents "
+        "(anti-giant gate open)");
+}
+
+bool IsDrawnFovProven() {
+  return g_drawnFovProven.load();
+}
+
+uint32_t GetDrawnFovProofGeneration() {
+  return g_drawnFovProofGen.load();
+}
+
+float GetPendingCcamFovDegrees() {
+  return g_pendingCcamDeg.load();
+}
+
+bool GetDrawnMeasuredTangents(float* tanHalfH, float* tanHalfV) {
+  const float h = g_drawnMeasTanH.load();
+  const float v = g_drawnMeasTanV.load();
+  if (!(h > 0.05f) || !(v > 0.05f))
+    return false;
+  if (tanHalfH)
+    *tanHalfH = h;
+  if (tanHalfV)
+    *tanHalfV = v;
+  return true;
+}
+
+// Shared store path for aspect-safe gameTan (from CCam formula or measured sy).
+void StoreAspectSafeGameTan(float tanH, float tanV, float aspect, float ccamDegForLog,
+                            const char* srcTag) {
+  float coverH = 0.f, coverV = 0.f;
+  const bool haveCover = GetCoverFovTangents(&coverH, &coverV);
+  const CanvasAspectPolicy policy = GetCanvasAspectPolicy(GetStereoMode());
+  const StereoMode mode = GetStereoMode();
+
+  // Force BB aspect before policy.
+  if (aspect > 0.5f && aspect < 3.f)
+    tanH = tanV * aspect;
+
+  if (haveCover && coverH > 0.05f && coverV > 0.05f) {
+    if (policy == CanvasAspectPolicy::LetterboxPrefer) {
+      // Uniform scale-down only — preserves aspect. Causes ~62%v on 16:9+G2.
+      const float scaleH = coverH / tanH;
+      const float scaleV = coverV / tanV;
+      const float scale = (scaleH < scaleV) ? scaleH : scaleV;
+      if (scale < 1.f && scale > 0.05f) {
+        tanH *= scale;
+        tanV *= scale;
+      }
+    } else if (policy == CanvasAspectPolicy::SoftLetterbox) {
+      // Mode84: aspect locked; aim ~78%v with HARD fillH cap ~118%.
+      // Mode89: milder ~68%v / fillH≤108% — fewer bars than Mode80 62%v, not Mode84 groß.
+      float kMaxFillV = IsCullSyncPresence(mode) ? 0.68f : 0.78f;
+      float kMaxFillH = IsCullSyncPresence(mode) ? 1.08f : 1.18f;
+      if (tanV > coverV * kMaxFillV && coverV > 0.05f) {
+        const float s = (coverV * kMaxFillV) / tanV;
+        tanH *= s;
+        tanV *= s;
+      }
+      if (tanH > coverH * kMaxFillH && coverH > 0.05f) {
+        const float s = (coverH * kMaxFillH) / tanH;
+        tanH *= s;
+        tanV *= s;
+      }
+      // Never claim wider than measured drawn FOV (Mode82/83 giant fix).
+      float measH = 0.f, measV = 0.f;
+      if (GetDrawnMeasuredTangents(&measH, &measV)) {
+        if (tanV > measV * 1.02f && measV > 0.05f) {
+          const float s = measV / tanV;
+          tanH *= s;
+          tanV *= s;
+        }
+      }
+    } else {
+      // FillPrefer: keep aspect; may exceed coverH (crop sides). Mode83 soft-cap ~92%v.
+      float maxFillV = 1.0f;
+      if (IsAspectFillSweet(mode))
+        maxFillV = 0.92f;
+      if (tanV > coverV * maxFillV && coverV > 0.05f) {
+        const float s = (coverV * maxFillV) / tanV;
+        tanH *= s;
+        tanV *= s;
+      }
+      // Never claim wider than measured drawn FOV (Mode82 giant fix).
+      float measH = 0.f, measV = 0.f;
+      if (GetDrawnMeasuredTangents(&measH, &measV)) {
+        if (tanV > measV * 1.02f && measV > 0.05f) {
+          const float s = measV / tanV;
+          tanH *= s;
+          tanV *= s;
+        }
+      }
+    }
+  }
+  // Re-assert aspect after any scale.
+  if (aspect > 0.5f && aspect < 3.f)
+    tanH = tanV * aspect;
+
   if (!(tanH > 0.05f) || !(tanV > 0.05f) || !(tanH < 5.f) || !(tanV < 5.f))
     return;
 
   const float curH = g_gameTanH.load();
-  // Mode 44 owns fixed-size eye RTs, so retain the first stable true-FOV tangent
-  // through ordinary CCam noise. A real zoom/camera change still exceeds 5%.
-  const StereoMode mode = GetStereoMode();
   const float gate = (mode == StereoMode::FovCanvasMotionGuardRtLock ||
                       IsHeadOwnedCamFamily(mode))
                          ? 0.05f
@@ -265,11 +363,76 @@ void PublishGameFovFromCCamDegrees(float ccamDeg, float aspectWH) {
   g_fovFromCCam.store(true);
   if (changed) {
     const uint32_t gen = ++g_fovPublishGen;
+    const float aspectOut = (tanV > 0.05f) ? (tanH / tanV) : 0.f;
+    const float fillH = (haveCover && coverH > 0.05f) ? (tanH / coverH) : 0.f;
+    const float fillV = (haveCover && coverV > 0.05f) ? (tanV / coverV) : 0.f;
+    // Mode84 SoftLetterbox logs as "letterbox" (aspect-honest; not Mode83 fill-zoom).
+    const char* polStr = "letterbox";
+    if (policy == CanvasAspectPolicy::FillPrefer)
+      polStr = "fill";
+    else if (policy == CanvasAspectPolicy::SoftLetterbox)
+      polStr = "letterbox";  // soft ~78%v / fillH≤118% — proof grep matches
     if (gen <= 6 || (gen % 120) == 0)
-      Log("VrDisplay: gameTan from TRUE CCam FOV=%.1f -> tan=(%.3f,%.3f) gen=%u "
-          "(canvas uses engine FOV; not D3DTS_PROJECTION)",
-          ccamDeg, tanH, tanV, gen);
+      Log("VrDisplay: gameTan ASPECT-SAFE %s CCam=%.1f -> tan=(%.3f,%.3f) aspect=%.3f "
+          "bbAspect=%.3f fill≈%.0f%%h/%.0f%%v policy=%s gen=%u "
+          "(no independent cover clamp; letterbox>squash)",
+          srcTag, ccamDegForLog, tanH, tanV, aspectOut, aspect, fillH * 100.f, fillV * 100.f,
+          polStr, gen);
   }
+}
+
+void PublishGameFovFromCCamDegrees(float ccamDeg, float aspectWH) {
+  if (!(ccamDeg >= 5.f) || !(ccamDeg <= 160.f) || !std::isfinite(ccamDeg))
+    return;
+  g_pendingCcamDeg.store(ccamDeg);
+  // Mode16: CCam 45° → rendered V ≈ 58.7°. Publishing lied wide gameTan while the
+  // draw frustum stayed cinema caused StereoCanvas 162%h crop → giant monitor
+  // (Mode79 headset). Gate canvas until EndScene proves drawn proj widened.
+  if (IsMode74Family(GetStereoMode()) && !g_drawnFovProven.load()) {
+    static uint32_t s_gateLog = 0;
+    if ((++s_gateLog) <= 4 || (s_gateLog % 1200) == 0)
+      Log("VrDisplay: canvas FOV GATED ccam=%.1f (drawn FOV unproven — keep measured "
+          "gameTan; prevents 162%%h zoom/giant monitor)",
+          ccamDeg);
+    return;
+  }
+  // Mode 16 probe: CCam 45.000 → rendered vertical ≈ 58.7° (tanV≈0.562 at 16:9).
+  constexpr float kEng = 58.7f / 45.f;
+  float vDeg = ccamDeg * kEng;
+  if (vDeg > 170.f)
+    vDeg = 170.f;
+  float tanV = std::tan(0.5f * vDeg * 3.14159265f / 180.f);
+  float aspect = aspectWH;
+  if (!(aspect > 0.5f) || !(aspect < 3.f))
+    aspect = g_bbAspect.load();
+  if (!(aspect > 0.5f) || !(aspect < 3.f))
+    aspect = 16.f / 9.f;
+  float tanH = tanV * aspect;
+  StoreAspectSafeGameTan(tanH, tanV, aspect, ccamDeg, "CCam");
+}
+
+void PublishGameFovFromDrawnSy(float sx, float sy, float aspectWH) {
+  // D3D proj: sx≈1/tanH, sy≈1/tanV (symmetric). Prefer sy for V; force BB aspect.
+  if (!(sy > 0.2f) || !(sy < 5.f) || !std::isfinite(sy))
+    return;
+  float aspect = aspectWH;
+  if (!(aspect > 0.5f) || !(aspect < 3.f))
+    aspect = g_bbAspect.load();
+  if (!(aspect > 0.5f) || !(aspect < 3.f))
+    aspect = 16.f / 9.f;
+  float tanV = 1.f / sy;
+  float tanH = tanV * aspect;
+  if (sx > 0.2f && sx < 5.f && std::isfinite(sx)) {
+    // Keep measured for clamp; still publish aspect-forced pair.
+    g_drawnMeasTanH.store(1.f / sx);
+  } else {
+    g_drawnMeasTanH.store(tanH);
+  }
+  g_drawnMeasTanV.store(tanV);
+  if (!g_drawnFovProven.load())
+    SetDrawnFovProven(true);
+  const float pending = g_pendingCcamDeg.load();
+  StoreAspectSafeGameTan(tanH, tanV, aspect, pending > 5.f ? pending : 0.f, "DRAWN");
 }
 
 void UpdateGameFovFromDevice(IDirect3DDevice9* device) {
@@ -469,9 +632,24 @@ void LogVrDisplayInfo() {
   }
   uint32_t rw = 0, rh = 0;
   sys->GetRecommendedRenderTargetSize(&rw, &rh);
-  Log("VrDisplay: SteamVR recommended %ux%u (compositor only). Submit = game BB, nullptr bounds.",
+  Log("VrDisplay: SteamVR recommended %ux%u (Mode85/86 A/B only; Mode87 uses eyert file)",
       rw, rh);
   EnsureBoundsCache();
+}
+
+bool GetRecommendedEyeRtSize(uint32_t* outW, uint32_t* outH) {
+  if (!outW || !outH)
+    return false;
+  vr::IVRSystem* sys = vr::VRSystem();
+  if (!sys)
+    return false;
+  uint32_t rw = 0, rh = 0;
+  sys->GetRecommendedRenderTargetSize(&rw, &rh);
+  if (rw < 16 || rh < 16)
+    return false;
+  *outW = rw;
+  *outH = rh;
+  return true;
 }
 
 bool InstallVrDisplayHooks() {

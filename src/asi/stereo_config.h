@@ -276,6 +276,60 @@ enum class StereoMode : int {
   // Mode 79: FOV/projection presence hammer — prove + strengthen CCam/+0x308/VS proj
   // until log shows HMD cover FOV (giant-screen killer). Approach E. Kill → 74 or 45.
   FovPresenceHammer = 79,
+  // Mode 80: Mode77 DrawScene dual + FOV presence + ASPECT-SAFE canvas (no H/V
+  // independent cover clamp — that squeezed rooms after restart). Prefer slight
+  // letterbox over squash. A/B vs 83. Kill → 77/74/45.
+  FovPresenceDrawScene = 80,
+  // Mode 81: same dual + softer FOV target (cover-H only) — letterbox-safe.
+  // Bars top/bottom OK; never fill by destroying aspect. Kill → 80/74/45.
+  AspectLetterboxSafe = 81,
+  // Mode 82: same dual + aggressive FOV toward cover-V (may crop sides). Canvas
+  // MUST publish measured drawn FOV only (headset: unclamped FillPrefer → giant).
+  // Kill → 80/74/45.
+  AspectFillAggressive = 82,
+  // Mode 83: Mode77 DrawScene dual + aspect-preserving fill toward ~90%v
+  // (less bars than 80 letterbox 62%v; may slight side crop) + Mode77-ish perf.
+  // Headset 2026-07-26: fill≈149%h/92%v → giant monitor again. Prefer Mode84.
+  // Kill → 80/77/45.
+  AspectFillSweet = 83,
+  // Mode 84: soft letterbox (~78%v / fillH≤118%). Headset 2026-07-26: no bars but
+  // scale groß again (soft fill zoom). Prefer Mode85.
+  // Kill → 80/45.
+  LetterboxWideFov = 84,
+  // Mode 85: SteamVR GetRecommendedRenderTargetSize eye RTs + Mode80-honest
+  // LetterboxPrefer + Mode77 dual + quiet EyeProj. Headset: black sidewalk hole
+  // (mid-draw EyeProj vs cull) + still groß + 2048² StretchRect hitches → prefer 86.
+  // Kill → 80/45.
+  SteamVrRtLetterbox = 85,
+  // Mode 86 (A/B only): Mode85 SteamVR-RT letterbox BUT no mid-draw EyeProj —
+  // headset: jumping worse + bars; NEVER default. Kill → 80/45.
+  SteamVrRtSafe = 86,
+  // Mode 87: Mode77 dual every frame + mid-draw EyeProj ON + Mode80 letterbox +
+  // FIXED square eye RT from gtaiv_dxvk_vr.eyert (default 2048; tiers
+  // 1440/2048/2560/2880). NO GetRecommendedRenderTargetSize. Cull synced via
+  // CCam/PubProj toward same HMD FOV as EyeProj. Headset: hitchy on streets.
+  // Kill → 80/45.
+  ConfigEyeRtLetterbox = 87,
+  // Mode 88 DEFAULT (hitch balance): Mode87 EyeProj ON + Mode80 letterbox +
+  // eyert (default **1440**) + DrawScene dual **every other** frame with HOLD
+  // last L/R on off ticks + quiet EyeProj after FOV proven + device-Reset RT
+  // recreate. Never Mode86 (no EyeProj). Kill → 80/45.
+  HitchCutEyeProj = 88,
+  // Mode 89 (presence A/B): Mode87 dual every frame + EyeProj ON + quieter logs
+  // + Reset-safe RTs + aggressive cull sync; Mode80 letterbox (never Mode83 zoom).
+  // Kill → 88/80/45.
+  CullSyncPresence = 89,
+};
+
+// How canvas/FOV publish treats HMD cover vs backbuffer aspect.
+enum class CanvasAspectPolicy : int {
+  // Preserve BB aspect; aim cover horizontal → typical top/bottom bars on G2.
+  LetterboxPrefer = 0,
+  // Preserve BB aspect; aim cover vertical → may crop L/R when game FOV exceeds HMD H.
+  FillPrefer = 1,
+  // Mode84: preserve BB aspect; mild vertical fill (~78%v) with hard fillH cap
+  // (~118%) — fewer bars than letterbox 62%v, no Mode83 ~149%h monitor zoom.
+  SoftLetterbox = 2,
 };
 
 // Mode 45 family: LKG camera + RT lock + motion guard (includes RE scaffold 62/63).
@@ -293,6 +347,46 @@ bool IsDrawSceneOnlyDual(StereoMode mode);
 bool IsShaderConstStereo(StereoMode mode);
 // Mode 79 only — FOV presence hammer + proof logs.
 bool IsFovPresenceHammer(StereoMode mode);
+// Mode 80 — DrawScene dual + FOV presence (also true for Mode80 helper checks).
+bool IsFovPresenceDrawScene(StereoMode mode);
+// Mode 81 — letterbox-safe aspect policy.
+bool IsAspectLetterboxSafe(StereoMode mode);
+// Mode 82 — fill-HMD aggressive (still aspect-preserving).
+bool IsAspectFillAggressive(StereoMode mode);
+// Mode 83 — ~90%v fill + DrawScene dual + quiet perf (monitor risk).
+bool IsAspectFillSweet(StereoMode mode);
+// Mode 84 — soft letterbox (headset: groß; prefer 85).
+bool IsLetterboxWideFov(StereoMode mode);
+// Mode 85 — SteamVR recommended eye RT + Mode80 letterbox (hole/hitch risk).
+bool IsSteamVrRtLetterbox(StereoMode mode);
+// Mode 86 — SteamVR RT no-EyeProj (A/B only; jumping; never default).
+bool IsSteamVrRtSafe(StereoMode mode);
+// Mode 87 — fixed config eye RT + EyeProj + Mode80 letterbox (quality A/B).
+bool IsConfigEyeRtLetterbox(StereoMode mode);
+// Mode 88 — hitch-cut EyeProj DEFAULT (dual 1/2 HOLD + eyert 1440).
+bool IsHitchCutEyeProj(StereoMode mode);
+// Mode 89 — cull-sync presence A/B (dual every frame + quieter).
+bool IsCullSyncPresence(StereoMode mode);
+// Modes 85/86 — size Submit canvases from SteamVR recommended (capped; not default).
+bool UsesSteamVrEyeRt(StereoMode mode);
+// Modes 87/88/89 — fixed square eye RT from gtaiv_dxvk_vr.eyert (not SteamVR recommended).
+bool UsesConfigEyeRt(StereoMode mode);
+// Square eye RT dim from eyert file (1440/2048/2560/2880; Mode88 default 1440 else 2048).
+uint32_t GetConfiguredEyeRtDim();
+// True when mid-draw EyeProj / device VS proj patch must stay OFF (Mode86 only).
+bool WantsNoMidDrawEyeProj(StereoMode mode);
+// True when DrawScene dual runs every other call (Mode86/88) — off ticks HOLD L/R.
+bool WantsDualEveryOther(StereoMode mode);
+// Mode88 dual cadence from gtaiv_dxvk_vr.dualn (2..4; default 2).
+uint32_t GetDualEveryN();
+// Modes 80..89 — DrawScene dual + aspect-safe FOV family.
+bool IsAspectSafeFovFamily(StereoMode mode);
+// Modes that push/prove engine FOV aggressively (77/79/80/82/87/89; 81/83/84/85/86/88 softer).
+bool WantsAggressiveFovPresence(StereoMode mode);
+// True for modes that need EyeProj only until drawn FOV proven (then dual-only).
+bool WantsQuietFovProof(StereoMode mode);
+// Canvas aspect policy for current stereo mode.
+CanvasAspectPolicy GetCanvasAspectPolicy(StereoMode mode);
 
 StereoMode GetStereoMode();
 void ReloadStereoMode();

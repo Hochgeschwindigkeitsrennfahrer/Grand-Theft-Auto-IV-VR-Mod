@@ -19,18 +19,18 @@ while ((Get-Date) -lt $deadline) {
   if (-not (Test-Path $log)) { continue }
   $t = Get-Content $log -Raw -ErrorAction SilentlyContinue
   if ($t -match "mode $Mode family" -or $t -match "StereoMode: $Mode" -or $t -match "Mode${Mode}:") {
-    if ($t -match "es#\d{2,}" -or $t -match "DRAWSCENE-ONLY" -or $t -match "AER QUALITY" -or $t -match "FOVPROOF" -or $t -match "SHADER-CONST" -or $t -match "SAFER SPARSE" -or $t -match "HITCHCUT") {
+    if ($t -match "es#\d{2,}" -or $t -match "DRAWSCENE-ONLY" -or $t -match "AER QUALITY" -or $t -match "FOVPROOF" -or $t -match "SHADER-CONST" -or $t -match "SAFER SPARSE" -or $t -match "HITCHCUT" -or $t -match "CONFIG-EYERT" -or $t -match "CULL-SYNC") {
       $ok = $true
       break
     }
   }
 }
 Write-Host "=== SMOKE mode=$Mode ok=$ok ==="
-Select-String -Path $log -Pattern "ASI_BUILD|StereoMode:|Mode74: HITCHCUT|Mode75:|Mode76:|Mode77:|Mode78:|Mode79:|EXCEPTION|wrote stereo|StereoDiff|FOVPROOF|DRAWSCENE|AER QUALITY|SHADER-CONST|SAFER|AppFPS es/s" |
-  Select-Object -First 25 | ForEach-Object { $_.Line }
+Select-String -Path $log -Pattern "ASI_BUILD|StereoMode:|Mode74: HITCHCUT|Mode75:|Mode76:|Mode77:|Mode78:|Mode79:|Mode8[0-9]:|EXCEPTION|wrote stereo|StereoDiff|FOVPROOF|DRAWSCENE|AER QUALITY|SHADER-CONST|SAFER|AppFPS|DeviceReset|StretchRect:|DualN:" |
+  Select-Object -First 30 | ForEach-Object { $_.Line }
 Write-Host "=== last Mode74 es / MonoSubmit ==="
-Select-String -Path $log -Pattern "Mode74: es#|Mode76AER:|Mode77:|Mode79: FOVPROOF|MonoSubmit #" |
-  Select-Object -Last 8 | ForEach-Object { $_.Line }
+Select-String -Path $log -Pattern "Mode74: es#|Mode76AER:|Mode77:|Mode79: FOVPROOF|MonoSubmit #|AppFPS" |
+  Select-Object -Last 10 | ForEach-Object { $_.Line }
 & "$Root\scripts\restart-gtaiv.ps1" -NoStart -NoPause | Out-Null
 if (-not $ok) { exit 2 }
 exit 0
