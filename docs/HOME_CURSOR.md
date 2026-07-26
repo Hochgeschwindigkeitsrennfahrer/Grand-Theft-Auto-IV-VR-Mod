@@ -1,5 +1,11 @@
 # Cursor at Home — Complete Guide
 
+> This is the original v0/OpenVR setup guide. That mono milestone is complete. For
+> Quest 3 and the planned x86-game/x64-OpenXR split, read
+> [`FULL_VR_PLAN.md`](FULL_VR_PLAN.md) before starting a new implementation session.
+> The x64 calibration host is now implemented; its exact headset steps are in
+> [`OPENXR_QUEST3_TEST.md`](OPENXR_QUEST3_TEST.md).
+
 This document is enough to continue **gtaiv-dxvk-vr** at home on your own.  
 No programming required: Cursor writes the code; you install tools, run builds, and test with the headset.
 

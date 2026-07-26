@@ -1,5 +1,21 @@
 # Architecture
 
+> This file describes the proven v0 OpenVR architecture. The post-v0 target adds a
+> separate x64 OpenXR host for Quest 3 while keeping this path as fallback. See
+> [`FULL_VR_PLAN.md`](FULL_VR_PLAN.md).
+
+The first post-v0 component is now present:
+
+```text
+gtaiv_xr_host.exe (x64, separate process)
+    -> Khronos OpenXR loader 1.1.61 (statically linked)
+    -> XR_KHR_D3D11_enable
+    -> Meta OpenXR / Quest 3
+```
+
+It currently renders only its generated stereo calibration scene. It is deliberately
+not connected to GTA pixels or hooks until that headset gate passes.
+
 ## Runtime
 
 ```
@@ -24,6 +40,7 @@ FusionFix: ASI loader + CE fixes. Leave FF `vulkan.dll` untouched when `d3d9.dll
 gtaiv-dxvk-vr/
   dxvk/                 # old IronWolf submodule (reference, not deliverable)
   src/gtaiv/            # glue / soon ASI
+  src/openxr_host/      # separate x64 OpenXR calibration/sidecar host
   thirdparty/dxvk/      # ID3D9VkInterop snapshot (v3.0.2)
   thirdparty/ironwolf/  # historical IDirect3DVR9 reference
   config/

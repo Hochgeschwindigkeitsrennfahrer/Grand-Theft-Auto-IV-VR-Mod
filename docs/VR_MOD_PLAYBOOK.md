@@ -1,5 +1,9 @@
 # VR Mod Playbook — Orientation for GTA IV CE
 
+> The OpenVR-only wording below records the v0 route. The current product plan keeps
+> that route as fallback and adds a Quest 3 x64 OpenXR sidecar. Stereo and camera logic
+> remain backend-neutral. See [`FULL_VR_PLAN.md`](FULL_VR_PLAN.md).
+
 Goal: reasonable VR display like successful flat→VR mods.  
 **Reference model: BotW BetterVR** (third-person game → true stereo VR).
 

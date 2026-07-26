@@ -3,6 +3,24 @@
 **As of:** 2026-07-23 ~23:45  
 **Version:** **1.5.0** — Mode 7 spike (RT capture + HMD projection); default stereo **off**.
 
+> **Planning update (2026-07-23 PT, no new headset result):** Repository baseline is
+> `8fe072a`, which contains modes 18-24. Mode 24 is built but still needs its headset
+> decision test. Quest 3/OpenXR is now the post-v0 primary target through a separate
+> x64 host; the existing OpenVR/Reverb G2 path remains the fallback. See
+> [`FULL_VR_PLAN.md`](FULL_VR_PLAN.md).
+
+> **Gate 2 headset result (2026-07-24 PT): PASSED for OpenXR presentation.**
+> `gtaiv_xr_host.exe` is verified x64 (`PE 0x8664`) against pinned Khronos OpenXR
+> SDK `release-1.1.61`. Meta reported runtime `Oculus 1.205.0`, system
+> `Meta Quest 3`, RTX 4070 Super LUID `0000000000014e12`, and two 2368x2576
+> three-image swapchains. The headset run reached
+> `READY -> RUNNING -> SYNCHRONIZED -> VISIBLE -> FOCUSED`, displayed distinct
+> left/right calibration output, submitted 900 projection frames, and shut down
+> cleanly. The user correctly reported no GTA image: this gate renders generated
+> calibration pixels only. The unchanged OpenVR ASI also regression-builds as x86
+> (`PE 0x14C`). Next implementation gate is the fixed x86/x64 shared ABI and
+> log-only pose flow; GTA pixels do not reach OpenXR until the later GPU bridge gate.
+
 ---
 
 ## Architecture (proven)

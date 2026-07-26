@@ -1,4 +1,24 @@
-# Build — x86 `d3d9.dll` (Win32)
+# Build — x86 game components and x64 OpenXR host
+
+## Quest 3 calibration host (x64)
+
+This is separate from `GTAIV.exe`; it does not change the x86 ASI or deploy anything
+to the game folder.
+
+```powershell
+cd D:\code\gta-iv
+.\scripts\build-openxr-host.ps1
+```
+
+The build fetches the exact Khronos OpenXR SDK `release-1.1.61`, builds
+`out-openxr\gtaiv_xr_host.exe`, verifies PE machine `0x8664`, and runs a shader
+self-test without touching the headset runtime.
+
+For the live Quest test, follow [`OPENXR_QUEST3_TEST.md`](OPENXR_QUEST3_TEST.md).
+
+---
+
+## Legacy x86 DXVK notes
 
 Goal step 1: **32-bit** `d3d9.dll` from the IronWolf submodule that starts GTA IV CE **flat** (monitor) under FusionFix.  
 **No** OpenVR submit in this step yet.

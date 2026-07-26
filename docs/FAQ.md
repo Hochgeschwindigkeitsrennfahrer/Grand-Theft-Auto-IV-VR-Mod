@@ -19,7 +19,10 @@ Theoretically you could use only a DLL next to the EXE — in practice CE + Fusi
 
 Because L4D2VR and HL2VR work that way and IronWolf's mailbox is built for it. Less custom work for the first headset frame. SteamVR must be running (Reverb G2 through it).
 
-OpenXR can come later; not needed for v0.
+That v0 choice succeeded: mono submit and the OpenVR fallback are proven. The post-v0
+primary target is now Quest 3 through a separate x64 OpenXR host, which can use Meta
+Quest Link without SteamVR. GTA and every loaded hook remain x86. See
+[`FULL_VR_PLAN.md`](FULL_VR_PLAN.md).
 
 ## Is it enough to drop IronWolf/sd805 DLL into GTA?
 

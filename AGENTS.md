@@ -10,6 +10,7 @@ Project: gtaiv-dxvk-vr — GTA IV CE VR: Stock-DXVK 3.0.2 d3d9.dll + ASI Glue + 
 Flat with DXVK 3.0.2 as d3d9.dll ok. No OpenXR for v0. Do not use IronWolf-tiw-rel as the base.
 I am not a programmer — give concrete click/command steps.
 Mono-Submit milestone reached. Next: Stability / Stereo / Camera (one thing per session).
+Post-v0 plan: Quest 3 via a separate x64 OpenXR host; preserve the OpenVR/Reverb G2 fallback.
 ```
 
 ## Non-negotiable
@@ -28,6 +29,10 @@ Mono-Submit milestone reached. Next: Stability / Stereo / Camera (one thing per 
 
 Stock-DXVK **3.0.2** `d3d9.dll` flat ok + ASI Glue: SteamVR/OpenVR, **Mono** eye image via `ID3D9VkInterop*` → `IVRCompositor::Submit`.
 
+That first milestone is complete. The post-v0 Quest 3/OpenXR architecture and gates are
+defined in `docs/FULL_VR_PLAN.md`. GTA-loaded code remains x86; OpenXR lives in a
+separate x64 host; OpenVR remains the fallback.
+
 ## Doc map
 
 | File | When to read |
@@ -35,6 +40,8 @@ Stock-DXVK **3.0.2** `d3d9.dll` flat ok + ASI Glue: SteamVR/OpenVR, **Mono** eye
 | `docs/HOME_CURSOR.md` | User setup at home |
 | `docs/CURRENT-STATE.md` | Status / Next |
 | `docs/VR_STRATEGY.md` | Interop instead of IronWolf |
+| `docs/FULL_VR_PLAN.md` | Quest 3 OpenXR-primary implementation plan |
+| `docs/OPENXR_QUEST3_TEST.md` | Exact Quest 3 calibration-host test |
 | `docs/DXVK_FLAT_TROUBLESHOOT.md` | Flat-DXVK lessons |
 | `docs/ARCHITECTURE.md` | Modules |
 | `docs/CONSTRAINTS.md` | Hard rules |

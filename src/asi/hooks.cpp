@@ -1,5 +1,6 @@
 #include "cam_matrix.h"
 #include "log.h"
+#include "openxr_bridge.h"
 #include "openvr_mono.h"
 #include "stereo_proj.h"
 
@@ -43,8 +44,11 @@ bool HookFn(void* target, void* detour, void** original, const char* name) {
 }
 
 HRESULT STDMETHODCALLTYPE HookEndScene(IDirect3DDevice9* self) {
-  // Frame finished — mono Submit to SteamVR, then EndScene
-  asi::TryMonoSubmit(self);
+  // Frame finished: use exactly one compositor backend.
+  if (asi::IsOpenXrBridgeRequested())
+    asi::PublishOpenXrFrame(self);
+  else
+    asi::TryMonoSubmit(self);
   return g_realEndScene(self);
 }
 
@@ -92,6 +96,65 @@ IDirect3D9* WINAPI HookDirect3DCreate9(UINT sdk) {
   return obj;
 }
 
+LRESULT CALLBACK ProbeWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+  return DefWindowProcA(window, message, wParam, lParam);
+}
+
+bool PrimeExistingDeviceHooks() {
+  if (!g_realCreate9)
+    return false;
+
+  constexpr const char* kClassName = "GTAIV_DXVK_VR_HookProbe";
+  WNDCLASSEXA windowClass{};
+  windowClass.cbSize = sizeof(windowClass);
+  windowClass.lpfnWndProc = ProbeWindowProc;
+  windowClass.hInstance = GetModuleHandleA(nullptr);
+  windowClass.lpszClassName = kClassName;
+  if (!RegisterClassExA(&windowClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+    asi::Log("Hook probe RegisterClassEx failed win32=%lu", GetLastError());
+    return false;
+  }
+
+  HWND window = CreateWindowExA(0, kClassName, "", WS_OVERLAPPED, 0, 0, 16, 16, nullptr,
+                                nullptr, windowClass.hInstance, nullptr);
+  if (!window) {
+    asi::Log("Hook probe CreateWindowEx failed win32=%lu", GetLastError());
+    return false;
+  }
+
+  IDirect3D9* direct3D = g_realCreate9(D3D_SDK_VERSION);
+  if (!direct3D) {
+    DestroyWindow(window);
+    asi::Log("Hook probe Direct3DCreate9 returned null");
+    return false;
+  }
+  EnsureCreateDeviceHook(direct3D);
+
+  D3DPRESENT_PARAMETERS parameters{};
+  parameters.Windowed = TRUE;
+  parameters.SwapEffect = D3DSWAPEFFECT_DISCARD;
+  parameters.BackBufferFormat = D3DFMT_UNKNOWN;
+  parameters.BackBufferWidth = 16;
+  parameters.BackBufferHeight = 16;
+  parameters.hDeviceWindow = window;
+
+  IDirect3DDevice9* probeDevice = nullptr;
+  const HRESULT result = direct3D->CreateDevice(
+      D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &parameters,
+      &probeDevice);
+  if (probeDevice)
+    probeDevice->Release();
+  direct3D->Release();
+  DestroyWindow(window);
+
+  if (FAILED(result)) {
+    asi::Log("Hook probe CreateDevice failed hr=0x%08lx", static_cast<unsigned long>(result));
+    return false;
+  }
+  asi::Log("Hook probe armed shared DXVK EndScene/Present vtable");
+  return true;
+}
+
 bool InstallCreate9Hook() {
   HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
   if (!d3d9)
@@ -115,8 +178,11 @@ bool InstallCreate9Hook() {
     g_mhReady = true;
   }
 
-  return HookFn(proc, reinterpret_cast<void*>(&HookDirect3DCreate9),
-                reinterpret_cast<void**>(&g_realCreate9), "Direct3DCreate9");
+  if (!HookFn(proc, reinterpret_cast<void*>(&HookDirect3DCreate9),
+              reinterpret_cast<void**>(&g_realCreate9), "Direct3DCreate9"))
+    return false;
+  PrimeExistingDeviceHooks();
+  return true;
 }
 
 DWORD WINAPI HookThread(LPVOID) {
@@ -127,7 +193,10 @@ DWORD WINAPI HookThread(LPVOID) {
       // Cam matrix hooks install AFTER OpenVR submit warmup (see openvr_mono) —
       // installing during title causes blackscreen/freeze.
       Sleep(1500);
-      asi::InitOpenVrEarly();
+      if (asi::IsOpenXrBridgeRequested())
+        asi::Log("OpenXRBridge: game hook armed; waiting for first EndScene");
+      else
+        asi::InitOpenVrEarly();
       return 0;
     }
     Sleep(50);

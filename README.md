@@ -1,16 +1,25 @@
 # gtaiv-dxvk-vr
 
-Standalone project: **GTA IV Complete Edition in VR** — stock DXVK **3.0.2** + ASI glue + **OpenVR (SteamVR)** (inspired by L4D2VR / HL2VR patterns).
+Standalone project: **GTA IV Complete Edition in VR** — stock DXVK **3.0.2** +
+Win32 ASI glue. The proven baseline uses **OpenVR/SteamVR**; the post-v0 target adds a
+separate **x64 OpenXR host** for Quest 3 while preserving OpenVR/Reverb G2 fallback.
 
 ```
 GTAIV.exe (32-bit, D3D9)
   → d3d9.dll              (DXVK 3.0.2 — flat / desktop OK)
-  → gtaiv_dxvk_vr.asi     (OpenVR Submit via ID3D9VkInterop)
-  → SteamVR → headset (e.g. HP Reverb G2)
+  → gtaiv_dxvk_vr.asi     (x86 GTA hooks + stereo capture)
+      ├─ current: OpenVR Submit via ID3D9VkInterop → SteamVR
+      └─ target: shared pose/GPU bridge → gtaiv_xr_host.exe (x64) → OpenXR
 ```
 
-**Status (WIP):** Mono image in SteamVR works. Stereo modes are experimental (see `docs/CURRENT-STATE.md`).  
+**Status (WIP):** Mono and angle-correct temporal stereo work in SteamVR; latest code
+contains same-frame stereo Mode 24, which still needs its headset decision test. See
+`docs/CURRENT-STATE.md` and the full Quest 3 plan in `docs/FULL_VR_PLAN.md`.
 Daily-driver baseline: stereo mode **0** (~90 FPS). Kill-switch file: `gtaiv_dxvk_vr.stereo` → `0`.
+
+The separate x64 OpenXR calibration host now builds and reaches the installed Meta
+Quest 3 runtime. Build it with `.\scripts\build-openxr-host.ps1`, then follow
+[`docs/OPENXR_QUEST3_TEST.md`](docs/OPENXR_QUEST3_TEST.md) for the headset gate.
 
 This repository is **private**. A link alone is not enough — invite people as collaborators (see below).
 
@@ -59,6 +68,8 @@ Details: [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md), [`docs/STEREO_EYE_OFF
 |------|----------|
 | [docs/CURRENT-STATE.md](docs/CURRENT-STATE.md) | Current status / what works |
 | [docs/VR_STRATEGY.md](docs/VR_STRATEGY.md) | Strategy |
+| [docs/FULL_VR_PLAN.md](docs/FULL_VR_PLAN.md) | Quest 3 OpenXR-primary plan and acceptance gates |
+| [docs/OPENXR_QUEST3_TEST.md](docs/OPENXR_QUEST3_TEST.md) | Concrete Quest 3 calibration-host test |
 | [docs/VR_MOD_PLAYBOOK.md](docs/VR_MOD_PLAYBOOK.md) | BotW / L4D2VR orientation |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Technical architecture |
 | [docs/BUILD.md](docs/BUILD.md) | Build notes |
@@ -75,6 +86,8 @@ Details: [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md), [`docs/STEREO_EYE_OFF
 | `scripts/build-asi.ps1` | Build `gtaiv_dxvk_vr.asi` (Win32) |
 | `scripts/deploy-asi.ps1` | Copy ASI into game dir (`-Launch` optional) |
 | `scripts/build-deploy-run.ps1` | Build → stop game → deploy → Steam launch |
+| `scripts/build-openxr-host.ps1` | Fetch pinned Khronos SDK, build and verify the x64 host |
+| `scripts/run-openxr-calibration.ps1` | Run the generated Quest/OpenXR eye test |
 | `scripts/fetch-minhook.ps1` | Clone MinHook into `thirdparty/minhook` |
 | `scripts/restart-gtaiv.ps1` | Quick restart via Steam |
 | `scripts/deploy.ps1` | Deploy a `d3d9.dll` (+ backup) |

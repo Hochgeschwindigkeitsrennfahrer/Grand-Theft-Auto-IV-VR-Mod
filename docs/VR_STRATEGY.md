@@ -1,5 +1,10 @@
 # VR Strategy (from 0.6)
 
+> **Post-v0 status:** The OpenVR mono milestone below is complete. The primary next
+> product target is Quest 3 through a separate x64 OpenXR host, while preserving this
+> OpenVR path for fallback and Reverb G2 compatibility. See
+> [`FULL_VR_PLAN.md`](FULL_VR_PLAN.md). GTA-loaded code remains Win32/x86.
+
 ## Decision
 
 **Do not** keep forcing IronWolf `tiw-rel` (~DXVK 2.4) — flat rendering is broken on this PC.  

@@ -1,4 +1,5 @@
 #include "log.h"
+#include "openxr_bridge.h"
 #include "openvr_mono.h"
 
 #include <windows.h>
@@ -11,6 +12,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
     asi::LogInit();
     StartHooks();
   } else if (reason == DLL_PROCESS_DETACH) {
+    asi::ShutdownOpenXrBridge();
     asi::OpenVrShutdown();
   }
   return TRUE;

@@ -2,6 +2,7 @@
 /.vs/
 /out/
 /out-asi/
+/out-openxr/
 /out-win32/
 /build/
 /bin/
@@ -25,6 +26,7 @@
 # Nested clones — use submodules / fetch scripts instead of vendoring blobs
 /thirdparty/openvr/
 /thirdparty/minhook/
+/thirdparty/openxr-sdk/
 
 # Submodule content is tracked via gitlink; ignore local build artifacts inside dxvk
 /dxvk/build/
