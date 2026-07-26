@@ -8,6 +8,14 @@ host. In `backend=openxr` the ASI has a delayed OpenVR import and the launch scr
 does not deploy `openvr_api.dll`, so SteamVR is neither started nor required. This is
 awaiting its first headset result and currently presents one GTA frame to both eyes;
 it is not yet the accepted pose-driven, same-frame stereo bridge.
+
+**Pose + Touch gate (built 2026-07-26, not headset-tested):** the x64 host now owns a
+fixed 384-byte, pointer-free `PoseBridge` shared ABI and publishes the exact
+`xrLocateViews` eye poses/FOV plus HMD, Touch grip/aim poses, triggers, squeeze,
+sticks, A/B/X/Y, left Menu, stick clicks, and Touch states. The x86 ASI validates a
+stable fresh packet and logs it only; it does not yet move GTA or inject inputs.
+See [`OPENXR_POSE_TOUCH_TEST.md`](OPENXR_POSE_TOUCH_TEST.md). This is the required
+safe input proof before camera, controller mapping, or stereo-frame changes.
 **Deployed now:** stereo **`51`** (Mode-50 always-distinct L/R + **`Submit_TextureWithPose`**
 AER) + **`fovadd=18`**, **`ipd=3`**, scale **`100`**, stereoscale **`125`**. Mode **50**
 (motion-guard OFF baseline), **53** (soft guard: 8°/6cm AER-only, 15°/12cm hard mono), and

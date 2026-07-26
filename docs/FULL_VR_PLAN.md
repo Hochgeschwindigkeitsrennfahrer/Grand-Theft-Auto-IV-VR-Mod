@@ -488,6 +488,11 @@ capability-queried Meta extensions.
 
 ### Gate 3 - fixed shared ABI and pose flow
 
+Implementation update (2026-07-26): a first `PoseBridge` ABI and Quest Touch action
+publisher now build, with an x86 **log-only** consumer. This is not a pass until the
+headset test records fresh HMD/eye/controller values and validates host-loss behavior.
+It intentionally does not apply camera or input changes yet.
+
 Add the protocol and its x86/x64 tests. Then:
 
 1. x64 host publishes HMD/eye/controller poses and actions;

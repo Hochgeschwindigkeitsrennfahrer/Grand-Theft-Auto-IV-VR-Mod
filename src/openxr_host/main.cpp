@@ -8,7 +8,9 @@
 #include <wrl/client.h>
 
 #include "game_bridge.h"
+#include "pose_bridge.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -462,6 +464,41 @@ struct EyeSwapchain
     std::vector<ComPtr<ID3D11RenderTargetView>> renderTargetViews;
 };
 
+struct InputActions
+{
+    XrAction gripPose = XR_NULL_HANDLE;
+    XrAction aimPose = XR_NULL_HANDLE;
+    XrAction trigger = XR_NULL_HANDLE;
+    XrAction squeeze = XR_NULL_HANDLE;
+    XrAction thumbstick = XR_NULL_HANDLE;
+    XrAction primaryClick = XR_NULL_HANDLE;
+    XrAction secondaryClick = XR_NULL_HANDLE;
+    XrAction menuClick = XR_NULL_HANDLE;
+    XrAction thumbstickClick = XR_NULL_HANDLE;
+    XrAction primaryTouch = XR_NULL_HANDLE;
+    XrAction secondaryTouch = XR_NULL_HANDLE;
+    XrAction thumbstickTouch = XR_NULL_HANDLE;
+    XrAction thumbrestTouch = XR_NULL_HANDLE;
+};
+
+struct FloatActionSample
+{
+    float value = 0.0f;
+    bool active = false;
+};
+
+struct Vector2ActionSample
+{
+    XrVector2f value {};
+    bool active = false;
+};
+
+struct BooleanActionSample
+{
+    bool value = false;
+    bool active = false;
+};
+
 class CalibrationHost
 {
 public:
@@ -483,8 +520,15 @@ public:
         createD3D11Device();
         createSession();
         createReferenceSpace();
+        createInputActions();
         createSwapchains();
         createRenderer();
+        if (!poseBridge_.initialize([this](const std::string& message) {
+                logger_.write(message);
+            }))
+        {
+            throw std::runtime_error("The x64 pose bridge could not initialize.");
+        }
     }
 
     int run(uint64_t frameLimit, uint64_t timeoutMilliseconds)
@@ -776,7 +820,177 @@ private:
         createInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
         createInfo.poseInReferenceSpace.orientation.w = 1.0f;
         checkXr(xrCreateReferenceSpace(session_, &createInfo, &space_), "xrCreateReferenceSpace(LOCAL)");
+        createInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+        checkXr(
+            xrCreateReferenceSpace(session_, &createInfo, &viewSpace_),
+            "xrCreateReferenceSpace(VIEW)");
         logger_.write("XRHost: referenceSpace=LOCAL");
+    }
+
+    XrPath xrPath(const char* value)
+    {
+        XrPath result = XR_NULL_PATH;
+        checkXr(xrStringToPath(instance_, value, &result), "xrStringToPath");
+        return result;
+    }
+
+    void createInputAction(
+        XrActionType type,
+        const char* name,
+        const char* localizedName,
+        XrAction& action)
+    {
+        XrActionCreateInfo createInfo { XR_TYPE_ACTION_CREATE_INFO };
+        createInfo.actionType = type;
+        strcpy_s(createInfo.actionName, name);
+        strcpy_s(createInfo.localizedActionName, localizedName);
+        createInfo.countSubactionPaths = static_cast<uint32_t>(hands_.size());
+        createInfo.subactionPaths = hands_.data();
+        checkXr(xrCreateAction(inputActionSet_, &createInfo, &action), "xrCreateAction");
+    }
+
+    void createActionSpace(XrAction action, uint32_t hand, XrSpace& space)
+    {
+        XrActionSpaceCreateInfo createInfo { XR_TYPE_ACTION_SPACE_CREATE_INFO };
+        createInfo.action = action;
+        createInfo.subactionPath = hands_[hand];
+        createInfo.poseInActionSpace.orientation.w = 1.0f;
+        checkXr(xrCreateActionSpace(session_, &createInfo, &space), "xrCreateActionSpace");
+    }
+
+    void createInputActions()
+    {
+        hands_[0] = xrPath("/user/hand/left");
+        hands_[1] = xrPath("/user/hand/right");
+
+        XrActionSetCreateInfo actionSetInfo { XR_TYPE_ACTION_SET_CREATE_INFO };
+        strcpy_s(actionSetInfo.actionSetName, "gtaiv_touch");
+        strcpy_s(actionSetInfo.localizedActionSetName, "GTA IV Touch Controllers");
+        checkXr(
+            xrCreateActionSet(instance_, &actionSetInfo, &inputActionSet_),
+            "xrCreateActionSet(GTAIV Touch)");
+
+        createInputAction(
+            XR_ACTION_TYPE_POSE_INPUT,
+            "grip_pose",
+            "Grip Pose",
+            inputActions_.gripPose);
+        createInputAction(
+            XR_ACTION_TYPE_POSE_INPUT,
+            "aim_pose",
+            "Aim Pose",
+            inputActions_.aimPose);
+        createInputAction(
+            XR_ACTION_TYPE_FLOAT_INPUT,
+            "trigger",
+            "Trigger",
+            inputActions_.trigger);
+        createInputAction(
+            XR_ACTION_TYPE_FLOAT_INPUT,
+            "squeeze",
+            "Squeeze",
+            inputActions_.squeeze);
+        createInputAction(
+            XR_ACTION_TYPE_VECTOR2F_INPUT,
+            "thumbstick",
+            "Thumbstick",
+            inputActions_.thumbstick);
+        createInputAction(
+            XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "primary_click",
+            "Primary Button",
+            inputActions_.primaryClick);
+        createInputAction(
+            XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "secondary_click",
+            "Secondary Button",
+            inputActions_.secondaryClick);
+        createInputAction(
+            XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "menu_click",
+            "Menu Button",
+            inputActions_.menuClick);
+        createInputAction(
+            XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "thumbstick_click",
+            "Thumbstick Click",
+            inputActions_.thumbstickClick);
+        createInputAction(
+            XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "primary_touch",
+            "Primary Touch",
+            inputActions_.primaryTouch);
+        createInputAction(
+            XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "secondary_touch",
+            "Secondary Touch",
+            inputActions_.secondaryTouch);
+        createInputAction(
+            XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "thumbstick_touch",
+            "Thumbstick Touch",
+            inputActions_.thumbstickTouch);
+        createInputAction(
+            XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "thumbrest_touch",
+            "Thumbrest Touch",
+            inputActions_.thumbrestTouch);
+
+        std::vector<XrActionSuggestedBinding> bindings;
+        const auto bind = [this, &bindings](XrAction action, const char* path) {
+            bindings.push_back({ action, xrPath(path) });
+        };
+        bind(inputActions_.gripPose, "/user/hand/left/input/grip/pose");
+        bind(inputActions_.gripPose, "/user/hand/right/input/grip/pose");
+        bind(inputActions_.aimPose, "/user/hand/left/input/aim/pose");
+        bind(inputActions_.aimPose, "/user/hand/right/input/aim/pose");
+        bind(inputActions_.trigger, "/user/hand/left/input/trigger/value");
+        bind(inputActions_.trigger, "/user/hand/right/input/trigger/value");
+        bind(inputActions_.squeeze, "/user/hand/left/input/squeeze/value");
+        bind(inputActions_.squeeze, "/user/hand/right/input/squeeze/value");
+        bind(inputActions_.thumbstick, "/user/hand/left/input/thumbstick");
+        bind(inputActions_.thumbstick, "/user/hand/right/input/thumbstick");
+        bind(inputActions_.primaryClick, "/user/hand/left/input/x/click");
+        bind(inputActions_.primaryClick, "/user/hand/right/input/a/click");
+        bind(inputActions_.secondaryClick, "/user/hand/left/input/y/click");
+        bind(inputActions_.secondaryClick, "/user/hand/right/input/b/click");
+        bind(inputActions_.menuClick, "/user/hand/left/input/menu/click");
+        bind(inputActions_.thumbstickClick, "/user/hand/left/input/thumbstick/click");
+        bind(inputActions_.thumbstickClick, "/user/hand/right/input/thumbstick/click");
+        bind(inputActions_.primaryTouch, "/user/hand/left/input/x/touch");
+        bind(inputActions_.primaryTouch, "/user/hand/right/input/a/touch");
+        bind(inputActions_.secondaryTouch, "/user/hand/left/input/y/touch");
+        bind(inputActions_.secondaryTouch, "/user/hand/right/input/b/touch");
+        bind(inputActions_.thumbstickTouch, "/user/hand/left/input/thumbstick/touch");
+        bind(inputActions_.thumbstickTouch, "/user/hand/right/input/thumbstick/touch");
+        bind(inputActions_.thumbrestTouch, "/user/hand/left/input/thumbrest/touch");
+        bind(inputActions_.thumbrestTouch, "/user/hand/right/input/thumbrest/touch");
+
+        XrInteractionProfileSuggestedBinding suggested {
+            XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
+        suggested.interactionProfile =
+            xrPath("/interaction_profiles/oculus/touch_controller");
+        suggested.countSuggestedBindings = static_cast<uint32_t>(bindings.size());
+        suggested.suggestedBindings = bindings.data();
+        checkXr(
+            xrSuggestInteractionProfileBindings(instance_, &suggested),
+            "xrSuggestInteractionProfileBindings(Oculus Touch)");
+
+        createActionSpace(inputActions_.gripPose, 0u, gripSpaces_[0]);
+        createActionSpace(inputActions_.gripPose, 1u, gripSpaces_[1]);
+        createActionSpace(inputActions_.aimPose, 0u, aimSpaces_[0]);
+        createActionSpace(inputActions_.aimPose, 1u, aimSpaces_[1]);
+
+        XrSessionActionSetsAttachInfo attachInfo {
+            XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO };
+        attachInfo.countActionSets = 1u;
+        attachInfo.actionSets = &inputActionSet_;
+        checkXr(
+            xrAttachSessionActionSets(session_, &attachInfo),
+            "xrAttachSessionActionSets(GTAIV Touch)");
+        inputReady_ = true;
+        logger_.write(
+            "XRHost: Touch actions ready (grip/aim, triggers, squeeze, sticks, buttons, touches)");
     }
 
     void createSwapchains()
@@ -1057,6 +1271,308 @@ private:
         }
     }
 
+    FloatActionSample readFloatAction(XrAction action, XrPath hand) const
+    {
+        XrActionStateGetInfo getInfo { XR_TYPE_ACTION_STATE_GET_INFO };
+        getInfo.action = action;
+        getInfo.subactionPath = hand;
+        XrActionStateFloat state { XR_TYPE_ACTION_STATE_FLOAT };
+        if (XR_FAILED(xrGetActionStateFloat(session_, &getInfo, &state))
+            || state.isActive != XR_TRUE)
+        {
+            return {};
+        }
+        FloatActionSample sample {};
+        sample.value = std::clamp(state.currentState, 0.0f, 1.0f);
+        sample.active = true;
+        return sample;
+    }
+
+    Vector2ActionSample readVector2Action(XrAction action, XrPath hand) const
+    {
+        XrActionStateGetInfo getInfo { XR_TYPE_ACTION_STATE_GET_INFO };
+        getInfo.action = action;
+        getInfo.subactionPath = hand;
+        XrActionStateVector2f state { XR_TYPE_ACTION_STATE_VECTOR2F };
+        if (XR_FAILED(xrGetActionStateVector2f(session_, &getInfo, &state))
+            || state.isActive != XR_TRUE)
+        {
+            return {};
+        }
+        return { state.currentState, true };
+    }
+
+    BooleanActionSample readBooleanAction(XrAction action, XrPath hand) const
+    {
+        XrActionStateGetInfo getInfo { XR_TYPE_ACTION_STATE_GET_INFO };
+        getInfo.action = action;
+        getInfo.subactionPath = hand;
+        XrActionStateBoolean state { XR_TYPE_ACTION_STATE_BOOLEAN };
+        if (XR_FAILED(xrGetActionStateBoolean(session_, &getInfo, &state))
+            || state.isActive != XR_TRUE)
+        {
+            return {};
+        }
+        return { state.currentState == XR_TRUE, true };
+    }
+
+    bool poseActionActive(XrAction action, XrPath hand) const
+    {
+        XrActionStateGetInfo getInfo { XR_TYPE_ACTION_STATE_GET_INFO };
+        getInfo.action = action;
+        getInfo.subactionPath = hand;
+        XrActionStatePose state { XR_TYPE_ACTION_STATE_POSE };
+        return XR_SUCCEEDED(xrGetActionStatePose(session_, &getInfo, &state))
+            && state.isActive == XR_TRUE;
+    }
+
+    static void initializePose(gtaiv_xr_bridge::Pose& destination)
+    {
+        destination.orientation[3] = 1.0f;
+    }
+
+    static void copyPose(
+        gtaiv_xr_bridge::Pose& destination,
+        const XrPosef& source)
+    {
+        destination.orientation[0] = source.orientation.x;
+        destination.orientation[1] = source.orientation.y;
+        destination.orientation[2] = source.orientation.z;
+        destination.orientation[3] = source.orientation.w;
+        destination.position[0] = source.position.x;
+        destination.position[1] = source.position.y;
+        destination.position[2] = source.position.z;
+    }
+
+    bool locatePose(
+        XrSpace source,
+        XrTime displayTime,
+        gtaiv_xr_bridge::Pose& destination) const
+    {
+        if (source == XR_NULL_HANDLE)
+            return false;
+        XrSpaceLocation location { XR_TYPE_SPACE_LOCATION };
+        if (XR_FAILED(xrLocateSpace(source, space_, displayTime, &location)))
+            return false;
+        const XrSpaceLocationFlags required =
+            XR_SPACE_LOCATION_POSITION_VALID_BIT
+            | XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+        if ((location.locationFlags & required) != required)
+            return false;
+        copyPose(destination, location.pose);
+        return true;
+    }
+
+    void setActive(
+        gtaiv_xr_bridge::ControllerState& destination,
+        uint32_t activeBit,
+        const FloatActionSample& value,
+        float& output) const
+    {
+        if (!value.active)
+            return;
+        destination.activeFlags |= activeBit;
+        output = value.value;
+    }
+
+    void setButton(
+        gtaiv_xr_bridge::ControllerState& destination,
+        uint32_t activeBit,
+        uint32_t buttonBit,
+        const BooleanActionSample& value) const
+    {
+        if (!value.active)
+            return;
+        destination.activeFlags |= activeBit;
+        if (value.value)
+            destination.buttons |= buttonBit;
+    }
+
+    bool fillControllerState(
+        uint32_t hand,
+        XrTime displayTime,
+        gtaiv_xr_bridge::ControllerState& destination) const
+    {
+        initializePose(destination.gripPose);
+        initializePose(destination.aimPose);
+        bool valid = false;
+        if (poseActionActive(inputActions_.gripPose, hands_[hand])
+            && locatePose(gripSpaces_[hand], displayTime, destination.gripPose))
+        {
+            destination.activeFlags |= gtaiv_xr_bridge::ControllerGripPose;
+            valid = true;
+        }
+        if (poseActionActive(inputActions_.aimPose, hands_[hand])
+            && locatePose(aimSpaces_[hand], displayTime, destination.aimPose))
+        {
+            destination.activeFlags |= gtaiv_xr_bridge::ControllerAimPose;
+            valid = true;
+        }
+
+        setActive(
+            destination,
+            gtaiv_xr_bridge::ControllerTrigger,
+            readFloatAction(inputActions_.trigger, hands_[hand]),
+            destination.trigger);
+        setActive(
+            destination,
+            gtaiv_xr_bridge::ControllerSqueeze,
+            readFloatAction(inputActions_.squeeze, hands_[hand]),
+            destination.squeeze);
+        const Vector2ActionSample stick =
+            readVector2Action(inputActions_.thumbstick, hands_[hand]);
+        if (stick.active)
+        {
+            destination.activeFlags |= gtaiv_xr_bridge::ControllerThumbstick;
+            destination.thumbstickX = stick.value.x;
+            destination.thumbstickY = stick.value.y;
+        }
+        setButton(
+            destination,
+            gtaiv_xr_bridge::ControllerPrimary,
+            gtaiv_xr_bridge::ControllerPrimaryClick,
+            readBooleanAction(inputActions_.primaryClick, hands_[hand]));
+        setButton(
+            destination,
+            gtaiv_xr_bridge::ControllerSecondary,
+            gtaiv_xr_bridge::ControllerSecondaryClick,
+            readBooleanAction(inputActions_.secondaryClick, hands_[hand]));
+        setButton(
+            destination,
+            gtaiv_xr_bridge::ControllerMenu,
+            gtaiv_xr_bridge::ControllerMenuClick,
+            readBooleanAction(inputActions_.menuClick, hands_[hand]));
+        setButton(
+            destination,
+            gtaiv_xr_bridge::ControllerThumbstickClick,
+            gtaiv_xr_bridge::ControllerThumbstickPressed,
+            readBooleanAction(inputActions_.thumbstickClick, hands_[hand]));
+        setButton(
+            destination,
+            gtaiv_xr_bridge::ControllerPrimaryTouch,
+            gtaiv_xr_bridge::ControllerPrimaryTouched,
+            readBooleanAction(inputActions_.primaryTouch, hands_[hand]));
+        setButton(
+            destination,
+            gtaiv_xr_bridge::ControllerSecondaryTouch,
+            gtaiv_xr_bridge::ControllerSecondaryTouched,
+            readBooleanAction(inputActions_.secondaryTouch, hands_[hand]));
+        setButton(
+            destination,
+            gtaiv_xr_bridge::ControllerThumbstickTouch,
+            gtaiv_xr_bridge::ControllerThumbstickTouched,
+            readBooleanAction(inputActions_.thumbstickTouch, hands_[hand]));
+        setButton(
+            destination,
+            gtaiv_xr_bridge::ControllerThumbrestTouch,
+            gtaiv_xr_bridge::ControllerThumbrestTouched,
+            readBooleanAction(inputActions_.thumbrestTouch, hands_[hand]));
+
+        if ((destination.activeFlags & gtaiv_xr_bridge::ControllerTrigger) != 0u
+            && destination.trigger >= 0.75f)
+        {
+            destination.activeFlags |= gtaiv_xr_bridge::ControllerTriggerClick;
+            destination.buttons |= gtaiv_xr_bridge::ControllerTriggerPressed;
+        }
+        if ((destination.activeFlags & gtaiv_xr_bridge::ControllerSqueeze) != 0u
+            && destination.squeeze >= 0.75f)
+        {
+            destination.activeFlags |= gtaiv_xr_bridge::ControllerSqueezeClick;
+            destination.buttons |= gtaiv_xr_bridge::ControllerSqueezePressed;
+        }
+        return valid;
+    }
+
+    void publishPoseAndInput(
+        const XrFrameState& frameState,
+        const std::array<XrView, EyeCount>& views,
+        bool viewsValid)
+    {
+        gtaiv_xr_bridge::PoseBridge frame {};
+        frame.flags = gtaiv_xr_bridge::PoseBridgeHostRunning
+            | gtaiv_xr_bridge::PoseBridgeSessionRunning;
+        frame.frameId = frameCounter_ + 1u;
+        frame.predictedDisplayTime = static_cast<int64_t>(frameState.predictedDisplayTime);
+        frame.referenceSpaceGeneration = referenceSpaceGeneration_;
+        frame.recenterRequestId = recenterRequestId_;
+        initializePose(frame.hmdPose);
+        for (uint32_t eye = 0u; eye < EyeCount; ++eye)
+            initializePose(frame.eyePoses[eye]);
+
+        if (viewsValid)
+        {
+            frame.flags |= gtaiv_xr_bridge::PoseBridgeViewsValid;
+            for (uint32_t eye = 0u; eye < EyeCount; ++eye)
+            {
+                copyPose(frame.eyePoses[eye], views[eye].pose);
+                frame.eyeFovs[eye].angleLeft = views[eye].fov.angleLeft;
+                frame.eyeFovs[eye].angleRight = views[eye].fov.angleRight;
+                frame.eyeFovs[eye].angleUp = views[eye].fov.angleUp;
+                frame.eyeFovs[eye].angleDown = views[eye].fov.angleDown;
+            }
+        }
+
+        if (locatePose(viewSpace_, frameState.predictedDisplayTime, frame.hmdPose))
+            frame.flags |= gtaiv_xr_bridge::PoseBridgeHmdValid;
+
+        if (inputReady_)
+        {
+            XrActiveActionSet activeSet {};
+            activeSet.actionSet = inputActionSet_;
+            XrActionsSyncInfo syncInfo { XR_TYPE_ACTIONS_SYNC_INFO };
+            syncInfo.countActiveActionSets = 1u;
+            syncInfo.activeActionSets = &activeSet;
+            const XrResult syncResult = xrSyncActions(session_, &syncInfo);
+            if (XR_SUCCEEDED(syncResult))
+            {
+                if (fillControllerState(
+                        0u,
+                        frameState.predictedDisplayTime,
+                        frame.controllers[0]))
+                {
+                    frame.flags |= gtaiv_xr_bridge::PoseBridgeLeftControllerValid;
+                }
+                if (fillControllerState(
+                        1u,
+                        frameState.predictedDisplayTime,
+                        frame.controllers[1]))
+                {
+                    frame.flags |= gtaiv_xr_bridge::PoseBridgeRightControllerValid;
+                }
+            }
+            else if (!inputSyncErrorLogged_)
+            {
+                std::ostringstream message;
+                message << "XRHost: xrSyncActions unavailable result="
+                        << static_cast<int32_t>(syncResult);
+                logger_.write(message.str());
+                inputSyncErrorLogged_ = true;
+            }
+        }
+
+        const bool recenterChord =
+            (frame.controllers[0].buttons & gtaiv_xr_bridge::ControllerMenuClick) != 0u
+            && (frame.controllers[1].buttons
+                & gtaiv_xr_bridge::ControllerThumbstickPressed) != 0u;
+        if (recenterChord && !recenterChordDown_)
+        {
+            ++recenterRequestId_;
+            if (recenterRequestId_ == 0u)
+                ++recenterRequestId_;
+            frame.recenterRequestId = recenterRequestId_;
+            logger_.write("XRHost: Touch recenter chord requested (left Menu + right stick click)");
+        }
+        recenterChordDown_ = recenterChord;
+
+        poseBridge_.publish(frame);
+        if (!loggedInput_)
+        {
+            logger_.write(
+                "XRHost: Pose/Input publishing started; GTA reader is log-only until its hardware gate passes");
+            loggedInput_ = true;
+        }
+    }
+
     bool renderFrame()
     {
         XrFrameWaitInfo waitInfo { XR_TYPE_FRAME_WAIT_INFO };
@@ -1093,6 +1609,8 @@ private:
             frameState.shouldRender == XR_TRUE
             && locatedViewCount == EyeCount
             && (viewState.viewStateFlags & requiredFlags) == requiredFlags;
+
+        publishPoseAndInput(frameState, views, viewsValid);
 
         std::array<XrCompositionLayerProjectionView, EyeCount> projectionViews {
             XrCompositionLayerProjectionView {
@@ -1308,6 +1826,53 @@ private:
             "xrReleaseSwapchainImage");
     }
 
+    void destroyInputActions() noexcept
+    {
+        for (XrSpace& actionSpace : gripSpaces_)
+        {
+            if (actionSpace != XR_NULL_HANDLE)
+            {
+                xrDestroySpace(actionSpace);
+                actionSpace = XR_NULL_HANDLE;
+            }
+        }
+        for (XrSpace& actionSpace : aimSpaces_)
+        {
+            if (actionSpace != XR_NULL_HANDLE)
+            {
+                xrDestroySpace(actionSpace);
+                actionSpace = XR_NULL_HANDLE;
+            }
+        }
+        const auto destroyAction = [](XrAction& action) {
+            if (action != XR_NULL_HANDLE)
+            {
+                xrDestroyAction(action);
+                action = XR_NULL_HANDLE;
+            }
+        };
+        destroyAction(inputActions_.gripPose);
+        destroyAction(inputActions_.aimPose);
+        destroyAction(inputActions_.trigger);
+        destroyAction(inputActions_.squeeze);
+        destroyAction(inputActions_.thumbstick);
+        destroyAction(inputActions_.primaryClick);
+        destroyAction(inputActions_.secondaryClick);
+        destroyAction(inputActions_.menuClick);
+        destroyAction(inputActions_.thumbstickClick);
+        destroyAction(inputActions_.primaryTouch);
+        destroyAction(inputActions_.secondaryTouch);
+        destroyAction(inputActions_.thumbstickTouch);
+        destroyAction(inputActions_.thumbrestTouch);
+        if (inputActionSet_ != XR_NULL_HANDLE)
+        {
+            xrDestroyActionSet(inputActionSet_);
+            inputActionSet_ = XR_NULL_HANDLE;
+        }
+        hands_ = {};
+        inputReady_ = false;
+    }
+
     void shutdown() noexcept
     {
         if (context_)
@@ -1317,6 +1882,7 @@ private:
         }
         gameFrame_ = {};
         gameBridge_.reset();
+        poseBridge_.reset();
 
         for (EyeSwapchain& swapchain : swapchains_)
         {
@@ -1337,6 +1903,13 @@ private:
         pixelShader_.Reset();
         vertexShader_.Reset();
 
+        destroyInputActions();
+
+        if (viewSpace_ != XR_NULL_HANDLE)
+        {
+            xrDestroySpace(viewSpace_);
+            viewSpace_ = XR_NULL_HANDLE;
+        }
         if (space_ != XR_NULL_HANDLE)
         {
             xrDestroySpace(space_);
@@ -1364,6 +1937,7 @@ private:
     XrSystemId systemId_ = XR_NULL_SYSTEM_ID;
     XrSession session_ = XR_NULL_HANDLE;
     XrSpace space_ = XR_NULL_HANDLE;
+    XrSpace viewSpace_ = XR_NULL_HANDLE;
     XrSessionState sessionState_ = XR_SESSION_STATE_UNKNOWN;
     XrEnvironmentBlendMode environmentBlendMode_ = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     PFN_xrGetD3D11GraphicsRequirementsKHR getD3D11GraphicsRequirements_ = nullptr;
@@ -1384,13 +1958,25 @@ private:
     ComPtr<ID3D11RasterizerState> rasterizerState_;
     gtaiv_xr_host::GameBridge gameBridge_;
     gtaiv_xr_host::GameFrameView gameFrame_;
+    gtaiv_xr_host::PoseBridgePublisher poseBridge_;
 
     std::vector<XrViewConfigurationView> viewConfigurationViews_;
     std::array<EyeSwapchain, EyeCount> swapchains_;
+    std::array<XrPath, EyeCount> hands_ {};
+    std::array<XrSpace, EyeCount> gripSpaces_ {};
+    std::array<XrSpace, EyeCount> aimSpaces_ {};
+    InputActions inputActions_ {};
+    XrActionSet inputActionSet_ = XR_NULL_HANDLE;
     uint64_t frameCounter_ = 0;
+    uint32_t referenceSpaceGeneration_ = 1u;
+    uint32_t recenterRequestId_ = 0u;
     bool sessionRunning_ = false;
     bool exitRequested_ = false;
     bool loggedFov_ = false;
+    bool loggedInput_ = false;
+    bool inputReady_ = false;
+    bool inputSyncErrorLogged_ = false;
+    bool recenterChordDown_ = false;
     bool gameMode_ = false;
 };
 

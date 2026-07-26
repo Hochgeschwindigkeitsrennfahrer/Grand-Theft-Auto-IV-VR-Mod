@@ -1,6 +1,7 @@
 #include "cam_matrix.h"
 #include "log.h"
 #include "openxr_bridge.h"
+#include "openxr_pose_client.h"
 #include "openvr_mono.h"
 #include "stereo_proj.h"
 
@@ -45,9 +46,10 @@ bool HookFn(void* target, void* detour, void** original, const char* name) {
 
 HRESULT STDMETHODCALLTYPE HookEndScene(IDirect3DDevice9* self) {
   // Frame finished: use exactly one compositor backend.
-  if (asi::IsOpenXrBridgeRequested())
+  if (asi::IsOpenXrBridgeRequested()) {
+    asi::PollOpenXrPoseBridge();
     asi::PublishOpenXrFrame(self);
-  else
+  } else
     asi::TryMonoSubmit(self);
   return g_realEndScene(self);
 }

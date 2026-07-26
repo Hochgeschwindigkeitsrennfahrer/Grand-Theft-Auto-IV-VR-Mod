@@ -1,5 +1,6 @@
 #include "log.h"
 #include "openxr_bridge.h"
+#include "openxr_pose_client.h"
 #include "openvr_mono.h"
 
 #include <windows.h>
@@ -12,6 +13,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID) {
     asi::LogInit();
     StartHooks();
   } else if (reason == DLL_PROCESS_DETACH) {
+    asi::ShutdownOpenXrPoseBridge();
     asi::ShutdownOpenXrBridge();
     asi::OpenVrShutdown();
   }

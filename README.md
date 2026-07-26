@@ -23,6 +23,8 @@ full Quest 3 plan in `docs/FULL_VR_PLAN.md`. Daily-driver baseline: stereo mode
 The separate x64 OpenXR calibration host now builds and reaches the installed Meta
 Quest 3 runtime. Build it with `.\scripts\build-openxr-host.ps1`, then follow
 [`docs/OPENXR_QUEST3_TEST.md`](docs/OPENXR_QUEST3_TEST.md) for the headset gate.
+For the direct host-to-GTA HMD and Quest Touch controller log gate, use
+[`docs/OPENXR_POSE_TOUCH_TEST.md`](docs/OPENXR_POSE_TOUCH_TEST.md).
 
 This repository is **private**. A link alone is not enough — invite people as collaborators (see below).
 

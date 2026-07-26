@@ -24,6 +24,7 @@ $src = @(
   "src\asi\log.cpp",
   "src\asi\hooks.cpp",
   "src\asi\openxr_bridge.cpp",
+  "src\asi\openxr_pose_client.cpp",
   "src\asi\openvr_mono.cpp",
   "src\asi\hmd_look.cpp",
   "src\asi\hmd_pose.cpp",
