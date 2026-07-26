@@ -64,6 +64,8 @@ HRESULT STDMETHODCALLTYPE HookReset(IDirect3DDevice9* self, D3DPRESENT_PARAMETER
   asi::Log("DeviceReset: BEFORE Reset bb=%ux%u — releasing eye RTs", bw, bh);
   asi::StereoNotifyDeviceLost();
   const HRESULT hr = g_realReset(self, pp);
+  // Always clear again after Reset — CreateTexture may have raced mid-call.
+  asi::StereoNotifyDeviceLost();
   if (SUCCEEDED(hr))
     asi::Log("DeviceReset: OK — eye RTs will recreate on next EndScene");
   else

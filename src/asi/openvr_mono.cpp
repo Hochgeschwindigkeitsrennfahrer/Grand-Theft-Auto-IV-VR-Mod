@@ -131,6 +131,16 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   if (!g_vrReady.load())
     return;
 
+  // Graphics-options / resolution change: never Flush/Submit/StretchRect on a
+  // lost device — that path hung Mode87. HookReset releases eye RTs; skip here.
+  {
+    const HRESULT coop = device->TestCooperativeLevel();
+    if (coop == D3DERR_DEVICELOST || coop == D3DERR_DEVICENOTRESET) {
+      StereoNotifyDeviceLost();
+      return;
+    }
+  }
+
   if (g_warmupFrames.load() > 0) {
     g_warmupFrames.fetch_sub(1);
     return;
@@ -244,11 +254,29 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   }
 
   const uint32_t n = ++g_submitCount;
+  static DWORD s_fpsTick = 0;
+  static uint32_t s_fpsSub0 = 0;
+  const DWORD now = GetTickCount();
+  if (s_fpsTick == 0) {
+    s_fpsTick = now;
+    s_fpsSub0 = n;
+  }
   if (n <= 10 || (n % 60) == 0) {
     Log("MonoSubmit #%u %ux%u fmt=%u pose=%d errL=%d errR=%d can=%d stereo=%d", n,
         vulkanData.m_nWidth, vulkanData.m_nHeight, vulkanData.m_nFormat, static_cast<int>(poseErr),
         static_cast<int>(eL), static_cast<int>(eR),
         vr::VRCompositor()->CanRenderScene() ? 1 : 0, stereoSubmitted ? 1 : 0);
+  }
+  // App FPS: Submits/sec (compare to Mode74 es/s — must match ~1:1).
+  if (now - s_fpsTick >= 1000) {
+    const uint32_t dSub = n - s_fpsSub0;
+    const DWORD dMs = now - s_fpsTick;
+    const float subPerSec =
+        dMs > 0 ? (1000.f * static_cast<float>(dSub) / static_cast<float>(dMs)) : 0.f;
+    Log("MonoSubmit: AppFPS submit/s=%.1f stereo=%d (want ≈ Mode74 es/s)", subPerSec,
+        stereoSubmitted ? 1 : 0);
+    s_fpsTick = now;
+    s_fpsSub0 = n;
   }
 
   PollRecenterHotkey();

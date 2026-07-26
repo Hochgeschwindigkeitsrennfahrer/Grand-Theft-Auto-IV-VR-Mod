@@ -46,18 +46,20 @@
 
 **Skip 74**. **Never** live `view+0x80`. Kill=**45**. Remap 71→45, 73→72.
 
-**Build:** `ASI_BUILD_ID 20260726-183112-mode88-default-final`  
-**Play:** stereo **`88`** + eyert **`1440`** + dualn **`2`** already in game dir.
+**Build:** `ASI_BUILD_ID 20260726-190230-mode88-reset-coop`  
+**Play:** stereo **`88`** + eyert **`1440`** + dualn **`2`** already in game dir.  
+(Prior final: `20260726-183112-mode88-default-final` — same Mode88 policy; reset-coop adds DEVICELOST skip-Submit + post-Reset RT clear.)
 
 **Agent log proof (this session):**
 - `StereoMode: 88` · Mode88 HITCHCUT + EyeProj · okDraw=1
 - `Hooked Reset` · `DeviceReset: BEFORE/OK` on boot (graphics-options freeze path armed)
 - `EyeRt: 1440×1440` · DualN every 2 · StretchRect POINT
 - `FOVPROOF` · fill≈**100%h / 62%v** letterbox
-- Dual + `hold=1` · StereoDiff≫0
-- AppFPS es/s ≈**90** (apartment) with HitchHist `0-16≈540 / 51+≈0` per 5s window
+- Dual + `hold=1` · StereoDiff≫0 (~5–9k)
+- AppFPS es/s ≈**90** apartment / menu; sustained digests also saw **~32–40** when load rises (HitchHist mostly ≤16ms)
 - Mode89 A/B: fill≈**108%h / 67%v** soft68; StereoDiff≈7–8k
-- dualn=`3` A/B: lighter dual, more HOLD
+- dualn=`3` A/B: lighter dual, more HOLD (mtime reload live)
+- Digests: `docs/_re_scratch/mode88_25min_digest.txt`, `mode88_final_digest.txt`
 
 ### 90-min session chronology (wall-clock)
 | Time | Approach | Learned |
@@ -74,7 +76,11 @@
 | 18:17 | HitchHist | 0-16ms dominant; 51+ rare after load |
 | 18:20–18:30 | 10-min sustained | AppFPS ~37–40 under load; HitchHist still mostly ≤16ms |
 | 18:31 | Mode88-default-final | SteamVR IPC blip once; after restart FOVPROOF + 90 es/s |
-| — | Commits `66ca013`, `05dff3d` | No push |
+| 18:46 | GTA/SteamVR exited mid-digest | Log froze at dual#34320; restart SteamVR+GTA |
+| 19:01 | Restart proof | Mode88 FOVPROOF + 90 es/s; HitchHist clean |
+| 19:02 | Build `mode88-reset-coop` | TestCoop skip-Submit on LOST/NOTRESET; Reset clears RTs twice |
+| 19:02+ | Final digest to 90 min | dualn=2 restored as default; game left running |
+| — | Commits `66ca013`… + reset-coop | No push |
 
 **You test (short English):**
 1. Headset on — Mode **88** (already set).
