@@ -46,19 +46,33 @@
 
 **Skip 74**. **Never** live `view+0x80`. Kill=**45**. Remap 71→45, 73→72.
 
-**Build:** `ASI_BUILD_ID 20260726-181542-mode88-stretch-point`  
+**Build:** `ASI_BUILD_ID 20260726-181933-mode88-eyert-mtime` (then ColorFill skip build follows)  
 **Play:** stereo **`88`** + eyert **`1440`** + dualn **`2`** already in game dir.
 
 **Agent log proof (this session):**
 - `StereoMode: 88` · Mode88 HITCHCUT + EyeProj · okDraw=1
 - `Hooked Reset` · `DeviceReset: BEFORE/OK` on boot (graphics-options freeze path armed)
-- `EyeRt: 1440×1440` · `LOCKED eyeRT=1440×1440 src=config-eyert` · DualN every 2
-- `FOVPROOF: DRAWN via device VS patch` · fill≈**100%h / 62%v** letterbox
-- `DRAWSCENE-ONLY dual #` climbing · `hold=1` · StereoDiff≈**5100–8800** (real L≠R)
-- AppFPS es/s ≈**55–90** · submit/s matched (apartment/menu ~90; streets expect lower)
-- StretchRect POINT filter (Mode88) · QPC copy ~0.02ms · dualn=`3` A/B up to ~65 es/s earlier
+- `EyeRt: 1440×1440` · DualN every 2 · StretchRect POINT
+- `FOVPROOF` · fill≈**100%h / 62%v** letterbox
+- Dual + `hold=1` · StereoDiff≫0
+- AppFPS es/s ≈**90** (apartment) with HitchHist `0-16≈540 / 51+≈0` per 5s window
+- Mode89 A/B: fill≈**108%h / 67%v** soft68; StereoDiff≈7–8k
+- dualn=`3` A/B: lighter dual, more HOLD
 
-**90-min session chronology (agent):** appended at end of this Mode88 section.
+### 90-min session chronology (wall-clock)
+| Time | Approach | Learned |
+|------|----------|---------|
+| 17:57 | Start; read Mode87 state | Hitch + bars + graphics freeze; EyeProj must stay ON |
+| 18:00 | Mode88 design + HOLD bug found | Mode77 dual never set didDual → TemporalCapture overwrote L/R |
+| 18:02 | Build Mode88 hitch-eyeproj | Reset hook fires on boot; 1440 eyert; dual 1/2 HOLD; StereoDiff~5k |
+| 18:04 | Mode89 cullsync-bars | Dual every + soft68; FOV not proven first pass |
+| 18:07 | Mode88 default-balance | FOVPROOF + fill 62%v; AppFPS~55–60 |
+| 18:08 | Mode89 fovproof-bars | SteamVR IPC died once; after restart fill≈108%h/67%v |
+| 18:12 | Mode88 final-default | Restored as best balance |
+| 18:14 | dualn=3 A/B | AppFPS up to ~65; more HOLD |
+| 18:15 | StretchRect POINT | AppFPS **~90** apartment; copy~0.02ms |
+| 18:17 | HitchHist | 0-16ms dominant; 51+ rare after load |
+| — | Checkpoint commit `66ca013` | No push |
 
 **You test (short English):**
 1. Headset on — Mode **88** (already set).

@@ -569,7 +569,24 @@ uint32_t GetConfiguredEyeRtDim() {
   // Fixed square Submit canvases — NOT SteamVR GetRecommendedRenderTargetSize.
   // Tiers chosen for Win32 VRAM + StretchRect cost on Reverb G2 class HMDs.
   // Mode88 hitch default = 1440; Mode87/89 quality default = 2048.
+  // Re-read when eyert file mtime changes (A/B without ASI reload of stale cache).
   static std::atomic<int> s_dim{-1};
+  static FILETIME s_ft{};
+  char path[MAX_PATH]{};
+  FILETIME ft{};
+  bool haveFt = false;
+  if (GetAsiDir(path, MAX_PATH)) {
+    strcat_s(path, "gtaiv_dxvk_vr.eyert");
+    WIN32_FILE_ATTRIBUTE_DATA fad{};
+    if (GetFileAttributesExA(path, GetFileExInfoStandard, &fad)) {
+      ft = fad.ftLastWriteTime;
+      haveFt = true;
+      if (s_dim.load() > 0 &&
+          (ft.dwLowDateTime != s_ft.dwLowDateTime || ft.dwHighDateTime != s_ft.dwHighDateTime)) {
+        s_dim.store(-1);  // force re-parse
+      }
+    }
+  }
   int dim = s_dim.load();
   if (dim > 0)
     return static_cast<uint32_t>(dim);
@@ -596,6 +613,8 @@ uint32_t GetConfiguredEyeRtDim() {
     }
   }
   if (s_dim.exchange(best) < 0) {
+    if (haveFt)
+      s_ft = ft;
     if (raw != best)
       Log("EyeRt: config=%d → tier %d (gtaiv_dxvk_vr.eyert; tiers 1440/2048/2560/2880; "
           "Mode88 default 1440 else 2048; NOT SteamVR recommended)",

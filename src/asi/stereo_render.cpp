@@ -1232,7 +1232,13 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
   bool ok = false;
   if (rc.right - rc.left >= 16 && rc.bottom - rc.top >= 16 && src.right - src.left >= 16 &&
       src.bottom - src.top >= 16) {
-    dev->ColorFill(dst, nullptr, D3DCOLOR_XRGB(0, 0, 0));
+    // Letterbox needs black bars. Mode88 hitch cut: ColorFill only when dest rect
+    // does not cover the full canvas (otherwise StretchRect overwrites all).
+    const bool fullCover =
+        rc.left <= 0 && rc.top <= 0 &&
+        rc.right >= static_cast<LONG>(dd.Width) && rc.bottom >= static_cast<LONG>(dd.Height);
+    if (!fullCover)
+      dev->ColorFill(dst, nullptr, D3DCOLOR_XRGB(0, 0, 0));
     // Mode88 hitch cut: POINT filter (LINEAR StretchRect cost showed up on streets).
     const D3DTEXTUREFILTERTYPE filt =
         IsHitchCutEyeProj(GetStereoMode()) ? D3DTEXF_NONE : D3DTEXF_LINEAR;
@@ -7556,6 +7562,22 @@ void Mode74OnEndScene(IDirect3DDevice9* device) {
         static_cast<int>(GetStereoMode()));
   // App FPS estimate: quieter when dual OFF / Mode88 (every 2s).
   const DWORD fpsEveryMs = dualOffQuiet ? 2000u : 1000u;
+  // Hitch histogram (street probe) — count every ES, dump every 5s with AppFPS.
+  static uint32_t s_h0_16 = 0, s_h17_33 = 0, s_h34_50 = 0, s_h51p = 0;
+  static DWORD s_histTick = 0;
+  if (s_histTick == 0)
+    s_histTick = nowEs;
+  {
+    const DWORD le = g_mode74LastEsMs.load();
+    if (le <= 16)
+      ++s_h0_16;
+    else if (le <= 33)
+      ++s_h17_33;
+    else if (le <= 50)
+      ++s_h34_50;
+    else
+      ++s_h51p;
+  }
   if (nowEs - s_fpsTick >= fpsEveryMs) {
     const uint32_t dEs = s_es - s_fpsEs0;
     const DWORD dMs = nowEs - s_fpsTick;
@@ -7566,6 +7588,12 @@ void Mode74OnEndScene(IDirect3DDevice9* device) {
         esPerSec, g_mode74LastEsMs.load(), g_mode74LastDualMs.load(), g_mode74DualN.load(),
         (holdSparsePair || holdDrawScenePair) ? 1 : 0, gateOpen ? "OPEN" : "CLOSED",
         g_mode77DualN.load());
+    if (nowEs - s_histTick >= 5000u) {
+      Log("HitchHist: lastEs buckets 0-16=%u 17-33=%u 34-50=%u 51+=%u (5s; street probe)",
+          s_h0_16, s_h17_33, s_h34_50, s_h51p);
+      s_h0_16 = s_h17_33 = s_h34_50 = s_h51p = 0;
+      s_histTick = nowEs;
+    }
     s_fpsTick = nowEs;
     s_fpsEs0 = s_es;
   }
