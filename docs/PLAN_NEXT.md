@@ -1,8 +1,97 @@
-# Plan — where we are and what to do next (2026-07-25)
+# Plan — where we are and what to do next (2026-07-26)
 
 Read with `docs/CURRENT-STATE.md`, **`docs/RE_OFFSETS.md`**, **`docs/MAPPED_RVA_CHEATSHEET.md`**, and `docs/HANDOFF_GROK.md`.
 
 **Mapped RVA rule:** CE `.text` **file_offset + 0xC00**. Older session notes below still say `0x30300` / `0x3187C` etc. as historical — live targets are **`0x30F00` / `0x32470`**.
+
+## Session note 2026-07-26 — Mode **88** DEFAULT (nap marathon)
+
+**Shipped:** EyeProj ON + DrawScene dual every-N HOLD + eyert 1440 + Reset-safe RTs + buffered logs.  
+**Build:** `20260726-183112-mode88-default-final` · stereo **`88`** · kill **`45`**.
+
+**Next (one thing per session):**
+1. Headset street walk on **88** — hitch vs Mode87? EyeProj feel? Bars OK?
+2. Graphics options Reset — confirm no freeze (`DeviceReset:` in log).
+3. Optional A/B: stereo **`89`** (soft68 bars) if bars annoy more than hitch.
+4. Optional: dualn=`3` if streets still hitchy.
+5. Cull sync / sidewalk holes if they return with EyeProj ON.
+
+**Never:** Mode86 default; Mode83 fill-zoom; live `view+0x80`; SteamVR RT takeover as default.
+
+---
+
+## Session note 2026-07-25 — Mode74 AER presence (mainline)
+
+**User:** smoother not priority — need **proper VR / presence inside the world**. Port RealVR RE ideas.
+
+**Shipped AER strategy:**
+- One engine eye/frame (L/R) + Submit both `TextureWithPose` (held = last tex + capture pose)
+- Engine FOV = HMD cover H+V; DRAW worldlook + EyeToHead/IPD + seated 6DoF
+- Shared FrameDesc; dual×2 stays file `0` (not default)
+- stereo **`74`** · dual **`0`** · kill **`45`** · tag **`mode74-aer`**
+
+**Ask:** turn head → world stable? lean / near objects → inside VR or still cinema?
+
+**Honest gaps vs Luke GTA5:** no 3DMigoto Unmap FOV rewrite; no CUDA AER v2; no ScriptHookV cam natives; no same-tick L+R; GTA IV Rage seams ≠ GTA5.
+
+---
+
+## Session note 2026-07-25 ~17:23 — Mode74 hitchcut
+
+Superseded by **AER presence**. Build was `20260725-172331-mode74-hitchcut`.
+
+---
+
+## Session note 2026-07-25 ~17:15 — Mode74 temporalfirst
+
+Superseded by **hitchcut**. Build was `20260725-171527-mode74-temporalfirst`.
+
+---
+
+## Session note 2026-07-25 ~17:09 — Mode74 sessionlatch
+
+HARD OFF → SESSION OFF. Superseded by **temporalfirst**.  
+Build was `20260725-170927-mode74-sessionlatch`.
+
+---
+
+## Session note 2026-07-25 ~17:01 — Mode74 fpsfix
+
+HOLD-only-while-OPEN + temporal on HARD OFF. User thrash → superseded by **sessionlatch**.  
+Build was `20260725-170139-mode74-fpsfix`.
+
+---
+
+## Session note 2026-07-25 ~16:55 — Mode74 sparsedual
+
+Sparse 1/8 + HOLD + HARD OFF. User: better stereo, headset FPS bad → superseded by **fpsfix**.  
+Build was `20260725-165539-mode74-sparsedual`.
+---
+
+## Session note 2026-07-25 ~16:41 — Mode74 hmdfov
+
+**User:** still giant TV after worldlook. FOV→HMD helped a bit → still fake 3D.  
+buildid was **`20260725-164113-mode74-hmdfov`**. Superseded by **sparsedual**.
+
+---
+
+## Session note 2026-07-25 ~16:30 — Mode74 worldlook
+
+HMD look stamp; dual OFF. Superseded by hmdfov → sparsedual.
+
+---
+
+## Session note 2026-07-25 ~15:59 — Mode74 toein (RE AFK)
+
+**Checkpoint:** `d5bb0ec` / `checkpoint-mode74-contentinj-20260725`
+
+**RE:** UploadFn `0x2A1E10` silent in-world; hot path = ReplayDispatch **`ret=0x30D13`** → SetVSConstF.  
+**Shipped:** Mode72 ±IPD **+ toe-in @2m**; UploadFn hook kept; CamMatrix IPD on; StereoDiff; dual 1/8 opt-in still OFF.  
+buildid: **`20260725-155908-mode74-toein`** · stereo **`74`** · kill **`45`**.
+
+**Superseded by worldlook** (head-lock root).
+
+---
 
 ## Session note 2026-07-25 ~15:47 — Mode74 contentinj (presence, dual OFF)
 
