@@ -1890,7 +1890,11 @@ bool Mode74WritePubProjSlots(Mode74ProjBackup* bak) {
       ranProj = true;
     }
 
-    if (n <= 4 || (n % 300) == 0)
+    // Mode88/89: quieter (street hitch from log I/O); else every 300.
+    const uint32_t every =
+        (IsHitchCutEyeProj(GetStereoMode()) || IsCullSyncPresence(GetStereoMode())) ? 2400u
+                                                                                    : 300u;
+    if (n <= 4 || (n % every) == 0)
       Log("PubProj: WRITE eye=%s +0x180 sx=%.3f ox=%.3f +0xC0=#%u sep=%.1fcm "
           "cache=%d callProj=%d view=0x%X (VP from eye-offset view copy; never view+0x80)",
           (eye == vr::Eye_Right) ? "R" : "L", proj[0], proj[8], nC0,
@@ -2033,7 +2037,11 @@ void __fastcall HookMode74PublishProj(void* self, void* edx) {
         p180[i] = proj[i];
       g_origPublishProj(self, edx);
       const uint32_t n = ++g_mode74PublishProjInjects;
-      if (n <= 4 || (n % 1200) == 0)
+      const uint32_t every =
+          (IsHitchCutEyeProj(GetStereoMode()) || IsCullSyncPresence(GetStereoMode()))
+              ? 4800u
+              : 1200u;
+      if (n <= 4 || (n % every) == 0)
         Log("PubProj: TEMPORAL HOLD sx=%.3f ox=%.3f n=%u act=%d cache=%d "
             "(1×/self/ES; restore EndScene; never view+0x80; dualEn=0)",
             proj[0], proj[8], n, isActive ? 1 : 0, isCached ? 1 : 0);
@@ -2086,7 +2094,10 @@ void __fastcall HookMode74PublishProj(void* self, void* edx) {
     }
     g_origPublishProj(self, edx);
     const uint32_t n = ++g_mode74PublishProjInjects;
-    if (n <= 4 || (n % 600) == 0)
+    const uint32_t every =
+        (IsHitchCutEyeProj(GetStereoMode()) || IsCullSyncPresence(GetStereoMode())) ? 2400u
+                                                                                    : 600u;
+    if (n <= 4 || (n % every) == 0)
       Log("PubProj: HOOK eye=%s sx=%.3f ox=%.3f n=%u nearCam=%d "
           "(0x31BA0 → +0x308; HOLD +0x180; cacheView=0x%X; never view+0x80)",
           (eye == vr::Eye_Right) ? "R" : "L", proj[0], proj[8], n, nearCam ? 1 : 0, selfU);
@@ -7534,7 +7545,7 @@ void Mode74OnEndScene(IDirect3DDevice9* device) {
   // Quieter when dual OFF (street path); still log hitchy lastEs (dedupe streaks).
   const bool dualOffQuiet = !g_mode74DualOptIn.load() || g_mode74DualSessionOff.load() ||
                             IsHitchCutEyeProj(GetStereoMode());
-  const uint32_t logEvery = dualOffQuiet ? 600u : 120u;
+  const uint32_t logEvery = dualOffQuiet ? 1200u : 120u;
   const DWORD lastEs = g_mode74LastEsMs.load();
   static DWORD s_lastHitchLogEs = 0;
   const bool hitchLog =

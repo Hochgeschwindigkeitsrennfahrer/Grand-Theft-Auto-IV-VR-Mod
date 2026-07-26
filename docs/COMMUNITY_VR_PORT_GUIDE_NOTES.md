@@ -124,6 +124,7 @@ Transferred rules that paid off this session:
 1. **Never claim canvas FOV > drawn FOV** — Mode89 needed quiet FOV-proof before soft letterbox ungated.
 2. **Prefer letterbox over squash** — Mode80 62%v is geometric for 16:9→G2; Mode89 soft68 is the only honest bar-reduction without Mode83 zoom.
 3. **True stereo = dual world draw** — Mode77 DrawScene×2 + HOLD off-ticks (Mode88) beats AER for presence; every-frame dual (87/89) costs hitch.
-4. **Device Reset lifecycle** — graphics-options freeze was POOL_DEFAULT eye RTs surviving Reset; hook Reset + release before recreate.
+4. **Device Reset lifecycle** — graphics-options freeze was POOL_DEFAULT eye RTs surviving Reset; hook Reset + release before/after + skip Submit on `DEVICELOST`/`DEVICENOTRESET`.
 5. **Log I/O is a hitch source** — buffered Log + quieter EyeProj discover cut street disk thrash.
+6. **Dual every-N + HOLD** — Mode88 default dualn=2 keeps StereoDiff≫0 with half StretchRect cost; dualn=3 is optional street hitch cut.
 
