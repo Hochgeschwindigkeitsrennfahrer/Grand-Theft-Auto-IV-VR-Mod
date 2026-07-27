@@ -32,6 +32,7 @@ Stock-DXVK **3.0.2** `d3d9.dll` flat ok + ASI Glue: SteamVR/OpenVR, **Mono** eye
 
 | File | When to read |
 |------|--------------|
+| `docs/NEW_PC_SETUP.md` | Fresh Windows PC — tools + deps |
 | `docs/HOME_CURSOR.md` | User setup at home |
 | `docs/CURRENT-STATE.md` | Status / Next |
 | `docs/VR_STRATEGY.md` | Interop instead of IronWolf |

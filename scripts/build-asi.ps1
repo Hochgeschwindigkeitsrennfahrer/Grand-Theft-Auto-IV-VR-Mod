@@ -4,9 +4,10 @@ $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
 
 & "$PSScriptRoot\fetch-minhook.ps1"
+& "$PSScriptRoot\fetch-openvr.ps1"
 
 if (-not (Test-Path "$Root\thirdparty\openvr\headers\openvr.h")) {
-  throw "OpenVR missing - run: git clone --depth 1 https://github.com/ValveSoftware/openvr.git thirdparty/openvr"
+  throw "OpenVR missing - run: .\scripts\fetch-openvr.ps1"
 }
 
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"

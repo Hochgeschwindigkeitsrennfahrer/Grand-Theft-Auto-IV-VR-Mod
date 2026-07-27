@@ -16,18 +16,20 @@ This repository is **private**. A link alone is not enough — invite people as 
 
 ---
 
-## Quick start (build ASI)
+## Quick start (build ASI) — local Windows PC
+
+Daily work is **on your Windows PC** (Cursor Desktop local agent + VS2022). Not a Cloud Agent.
 
 1. Clone with submodule:
    ```powershell
    git clone --recurse-submodules https://github.com/Hochgeschwindigkeitsrennfahrer/gtaiv-dxvk-vr.git
    cd gtaiv-dxvk-vr
    ```
-2. Fetch dependencies (not vendored in git):
+2. New PC / missing tools — one script (Git, VS2022 C++, MinHook, OpenVR **v2.12.14**):
    ```powershell
-   .\scripts\fetch-minhook.ps1
-   git clone --depth 1 https://github.com/ValveSoftware/openvr.git thirdparty\openvr
+   .\scripts\setup-dev-pc.ps1
    ```
+   Details: [`docs/NEW_PC_SETUP.md`](docs/NEW_PC_SETUP.md). Or deps only: `.\scripts\fetch-deps.ps1`
 3. Build + deploy + launch (default game dir is Steam GTAIV):
    ```powershell
    .\scripts\build-deploy-run.ps1
@@ -72,6 +74,9 @@ Details: [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md), [`docs/STEREO_EYE_OFF
 
 | Script | Purpose |
 |--------|---------|
+| `scripts/setup-dev-pc.ps1` | **New Windows PC:** winget tools + fetch deps |
+| `scripts/fetch-deps.ps1` | Submodule + MinHook + OpenVR v2.12.14 |
+| `scripts/fetch-openvr.ps1` | Clone pinned OpenVR |
 | `scripts/build-asi.ps1` | Build `gtaiv_dxvk_vr.asi` (Win32) |
 | `scripts/deploy-asi.ps1` | Copy ASI into game dir (`-Launch` optional) |
 | `scripts/build-deploy-run.ps1` | Build → stop game → deploy → Steam launch |
