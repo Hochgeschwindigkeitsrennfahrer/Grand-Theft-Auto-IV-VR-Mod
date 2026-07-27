@@ -40,7 +40,7 @@ Evidence: `out-openxr/runs/20260726-231140-steam-safe/`.
 `PoseBridge.eyeFovs` directly into each eye's raw asymmetric tangents. It never calls
 the legacy OpenVR projection cache. The build adds a source isolation gate plus
 numeric left/right/top/bottom regression coverage. Clean x86 ASI SHA-256:
-`6A74D1D78D84FC773C7942EBCF48EE0D51C3A1A09EE84D76E8105F8D1928EFF5`.
+`09DC5691BC0324D71C88FB38E725DFD10A69FB3AA0AB5BCCB50C12F4D23FE3E8`.
 
 The logs proved two independent SteamVR triggers:
 
@@ -119,10 +119,10 @@ Both builds pass offline checks: ASI PE32/x86; host PE32+/x64. The new x86 test 
 `StereoWvpTest: PASS math=5 ctab=1 pairAudit=1 openxrFov=1 openxrEyeRaw=1 runtimeUntouched=1`;
 the host reports
 `protocol=v4 worldStrict=1 wvpProof=1 uiQuad=1 runtimeUntouched=1`.
-Current uncommitted clean-build artifacts: ASI SHA-256
-`6A74D1D78D84FC773C7942EBCF48EE0D51C3A1A09EE84D76E8105F8D1928EFF5`;
+Clean build from code commit `85a9967`: ASI SHA-256
+`09DC5691BC0324D71C88FB38E725DFD10A69FB3AA0AB5BCCB50C12F4D23FE3E8`;
 x64 host SHA-256
-`549C8E041D17645A48E0FEDE1D3ED9A466D759BDBC78009864D858D5D1044FC8`.
+`C7F02CA8F40351B7F7DEAFD6006E7D440EFF9D2222F9B1C2D26E86681C83B472`.
 
 **Important:** Mode 54 is compiled and guarded, but true same-frame world
 stereo/parallax is **not yet a live result**. We have not proved that DXVK's replay
