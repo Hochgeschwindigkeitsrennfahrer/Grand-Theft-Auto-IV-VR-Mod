@@ -90,6 +90,8 @@ public:
 
     void publish(IDirect3DDevice9* gameDevice)
     {
+        if (permanentlyDisabled_)
+            return;
         if (!gameDevice)
             return;
 
@@ -336,6 +338,13 @@ private:
     bool failInitialization(const char* stage)
     {
         Log("OpenXRBridge: FAILED initializing %s", stage);
+        if (legacyD3D9InteropUnsupported_)
+        {
+            permanentlyDisabled_ = true;
+            Log(
+                "OpenXRBridge: DISABLED for this process — DXVK's D3D9 legacy "
+                "shared handle cannot be opened by native D3D11; no per-frame retry");
+        }
         shutdown();
         return false;
     }
@@ -512,6 +521,7 @@ private:
             IID_PPV_ARGS(&d3d11Source_));
         if (FAILED(result) || !d3d11Source_)
         {
+            legacyD3D9InteropUnsupported_ = result == E_INVALIDARG;
             Log(
                 "OpenXRBridge: OpenSharedResource(DXVK KMT) failed hr=0x%08lx "
                 "handle=%p",
@@ -789,6 +799,8 @@ private:
     }
 
     bool ready_ = false;
+    bool permanentlyDisabled_ = false;
+    bool legacyD3D9InteropUnsupported_ = false;
     ComPtr<IDirect3DDevice9> gameDevice_;
     ComPtr<IDirect3DSurface9> d3d9SharedSurface_;
     ComPtr<IDirect3DQuery9> d3d9CompletionQuery_;
@@ -830,9 +842,9 @@ private:
 OpenXrFrameProducer g_producer;
 }
 
-bool IsOpenXrBridgeRequested()
+VrBackend GetVrBackend()
 {
-    static const bool requested = [] {
+    static const VrBackend backend = [] {
         std::ifstream input(moduleDirectory() + "gtaiv_dxvk_vr.backend");
         std::string value;
         std::getline(input, value);
@@ -843,14 +855,34 @@ bool IsOpenXrBridgeRequested()
             [](unsigned char character) {
                 return static_cast<char>(std::tolower(character));
             });
-        const bool enabled = value.find("openxr") != std::string::npos;
+        VrBackend selected = VrBackend::Off;
+        if (value.find("openxr") != std::string::npos)
+            selected = VrBackend::OpenXr;
+        else if (value.find("openvr") != std::string::npos)
+            selected = VrBackend::OpenVr;
+
+        const char* label = "Off (flat; no compositor)";
+        if (selected == VrBackend::OpenXr)
+            label = "OpenXR x64 bridge";
+        else if (selected == VrBackend::OpenVr)
+            label = "OpenVR in-process fallback";
         Log(
             "Backend: %s (gtaiv_dxvk_vr.backend=%s)",
-            enabled ? "OpenXR x64 bridge" : "OpenVR in-process fallback",
+            label,
             value.empty() ? "(missing/default)" : value.c_str());
-        return enabled;
+        return selected;
     }();
-    return requested;
+    return backend;
+}
+
+bool IsOpenXrBridgeRequested()
+{
+    return GetVrBackend() == VrBackend::OpenXr;
+}
+
+bool IsOpenVrBridgeRequested()
+{
+    return GetVrBackend() == VrBackend::OpenVr;
 }
 
 void PublishOpenXrFrame(IDirect3DDevice9* device)

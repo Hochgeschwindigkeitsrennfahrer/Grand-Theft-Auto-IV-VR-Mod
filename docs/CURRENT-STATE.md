@@ -4,18 +4,23 @@
 **Integration update (2026-07-26):** upstream `origin/master` at `01f355b` (Modes
 50–53) is merged into `codex/openxr-sidecar-integration`. The new direct Quest path
 builds as an x86 DXVK/D3D11 GPU-frame producer plus `gtaiv_xr_host.exe` x64 OpenXR
-host. In `backend=openxr` the ASI has a delayed OpenVR import and the launch script
-does not deploy `openvr_api.dll`, so SteamVR is neither started nor required. This is
-awaiting its first headset result and currently presents one GTA frame to both eyes;
-it is not yet the accepted pose-driven, same-frame stereo bridge.
+host. **Safety update (2026-07-26):** the first live direct-GTA attempt failed at
+`OpenSharedResource` with `E_INVALIDARG`: DXVK's legacy D3D9 shared handle is not a
+native-D3D11 importable resource on this machine. The former producer retried that
+failure every EndScene, and `backend=off` incorrectly fell through to OpenVR. Both are
+fixed: `off` is truly flat/no compositor, the invalid-handle path disables itself for
+the process, the game installation has been restored to `backend=off`, and
+`run-openxr-gta.ps1` is preflight-only. No further direct GTA/OpenXR launch is allowed
+until the transport is replaced and reviewed.
 
 **Pose + Touch gate (built 2026-07-26, not headset-tested):** the x64 host now owns a
 fixed 384-byte, pointer-free `PoseBridge` shared ABI and publishes the exact
 `xrLocateViews` eye poses/FOV plus HMD, Touch grip/aim poses, triggers, squeeze,
 sticks, A/B/X/Y, left Menu, stick clicks, and Touch states. The x86 ASI validates a
 stable fresh packet and logs it only; it does not yet move GTA or inject inputs.
-See [`OPENXR_POSE_TOUCH_TEST.md`](OPENXR_POSE_TOUCH_TEST.md). This is the required
-safe input proof before camera, controller mapping, or stereo-frame changes.
+See [`OPENXR_POSE_TOUCH_TEST.md`](OPENXR_POSE_TOUCH_TEST.md). It remains blocked behind
+a replacement, verified image transport; no camera, controller mapping, or stereo-frame
+change may be tested first.
 **Deployed now:** stereo **`51`** (Mode-50 always-distinct L/R + **`Submit_TextureWithPose`**
 AER) + **`fovadd=18`**, **`ipd=3`**, scale **`100`**, stereoscale **`125`**. Mode **50**
 (motion-guard OFF baseline), **53** (soft guard: 8°/6cm AER-only, 15°/12cm hard mono), and

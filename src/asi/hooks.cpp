@@ -45,12 +45,14 @@ bool HookFn(void* target, void* detour, void** original, const char* name) {
 }
 
 HRESULT STDMETHODCALLTYPE HookEndScene(IDirect3DDevice9* self) {
-  // Frame finished: use exactly one compositor backend.
+  // Frame finished: use exactly one explicitly requested compositor backend.
+  // Off means flat GTA and must never fall through to OpenVR/SteamVR.
   if (asi::IsOpenXrBridgeRequested()) {
     asi::PollOpenXrPoseBridge();
     asi::PublishOpenXrFrame(self);
-  } else
+  } else if (asi::IsOpenVrBridgeRequested()) {
     asi::TryMonoSubmit(self);
+  }
   return g_realEndScene(self);
 }
 
@@ -197,8 +199,10 @@ DWORD WINAPI HookThread(LPVOID) {
       Sleep(1500);
       if (asi::IsOpenXrBridgeRequested())
         asi::Log("OpenXRBridge: game hook armed; waiting for first EndScene");
-      else
+      else if (asi::IsOpenVrBridgeRequested())
         asi::InitOpenVrEarly();
+      else
+        asi::Log("Backend: off — GTA runs flat; OpenVR and OpenXR are not started");
       return 0;
     }
     Sleep(50);
