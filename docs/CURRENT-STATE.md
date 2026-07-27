@@ -55,9 +55,10 @@ so the verified 1.2.0.59 form is retained as an explicit fallback.
 Both builds pass offline checks: ASI PE32/x86; host PE32+/x64. The new x86 test reports
 `StereoWvpTest: PASS math=5 ctab=1 pairAudit=1 runtimeUntouched=1`; the host reports
 `protocol=v4 worldStrict=1 wvpProof=1 uiQuad=1 runtimeUntouched=1`.
-Offline artifact SHA-256 values: ASI
-`9EDE0875B269BA9C6534272BBC49D08E40DDDCACD6210D56A2D0FE51E05E1F5B`;
-x64 host `02662FE0AA5379735D3EFC1985C09806205EAE5D2D9454DE0A7CA2B6656FC79A`.
+Clean build from code commit `d333bfa`: ASI SHA-256
+`3718F466A3F3CDED888DD633CD08EA8926A8087CC323C47DB9939D506C221F61`;
+x64 host SHA-256
+`93B2C326D69460CD40D28787C71F1E32EF21BCD347A274E84EA8707F55011EC3`.
 
 **Important:** Mode 54 is compiled and guarded, but true same-frame world
 stereo/parallax is **not yet a live result**. We have not proved that DXVK's replay
