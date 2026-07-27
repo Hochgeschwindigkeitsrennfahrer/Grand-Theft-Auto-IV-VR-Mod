@@ -253,6 +253,95 @@ enum class StereoMode : int {
   // Mode 51 + soft motion guard: 8°/6cm → keep distinct L/R + AER (no flatten);
   // 15°/12cm → full mono fallback. Kill: 51/50/49/45.
   HeadOwnedCamStereoSoftGuard = 53,
+  // Mode 120 CLEAN rewrite (LKG / last-good smooth): Mode50 head-owned + RT lock +
+  // true-FOV canvas + synced DrawScene×2 every N with HOLD/hitchcut (Praydog sequential).
+  // look-move ON (HMD yaw→ped; atan2(-fx,fy)); pedCoupled OFF; motion-guard OFF;
+  // NO AER temporal as 3D path; NEVER BuildRootA×2; NO FPS HUD. dualn default 2.
+  // Kill: 51/45/0. Do NOT mutate — experiments go to 121+.
+  CleanDualLookMove = 120,
+  // Mode 121 EXPERIMENT: identical to Mode 120 but forces dualn=3 (lighter HOLD).
+  // 121+ = experiments. Kill/fallback: 120 (good) / 51 / 45 / 0.
+  CleanDualLookMoveDualN3 = 121,
+  // Mode 122 PERF: Mode120 path + look/pose-budget HOLD (skip dual while turning or
+  // after WaitGetPoses ≥18ms). dualn force 4. Attacks apartment look-stutter/pop-in.
+  // Kill/fallback: 120.
+  CleanDualPerfLookHold = 122,
+  // Mode 123 VOLLBILD: Mode120 + cover-matched fovadd (H≈100% fill, mild V bars OK).
+  // Praydog-inspired: match gameTan to HMD coverTan H — no SoftInset, no Mode83 crop.
+  // Kill/fallback: 120.
+  CleanDualFillMatch = 123,
+  // Mode 124 ZOOM: Mode120 + dezoom-biased F7 ladder default (MatchH6 / Window0 zone).
+  // Kill/fallback: 120.
+  CleanDualZoomScale = 124,
+  // Mode 125 COMBO: Mode122 look/pose HOLD + Mode123 cover-matched fill.
+  // dualn force 4. Kill/fallback: 120.
+  CleanDualPerfFillCombo = 125,
+  // Mode 126 FPS+LIVELOOK: Mode123 cover fill + WaitGetPoses POSEHOLD (skip dual on
+  // ≥16ms stalls — fixes exploring 60–70 half-lock) + during look/pose skip: live BB
+  // → both eyes (NOT Mode122 stale stereo HOLD that snapped). dualn file/default 2.
+  // Stronger dezoom bias: Window0 start + stereoscale 135 after cover-match.
+  // Kill/fallback: 120. OpenVR 2.12.14. No FPS HUD.
+  CleanDualFpsLiveLook = 126,
+  // Mode 127 FPS+LIVELOOK TIGHT: same as 126 (fill + LIVELOOK) but tighter POSEHOLD
+  // (≥12ms skip 5 / ≥24ms skip 8 HARD), forced dualn=3, hitchcut 32ms.
+  // Log proof Mode126: WaitGetPoses half-lock still primary (avg stall ~21ms, AppFPS
+  // dips 50–70 correlated with pose_stall; soft 16ms/3 duals not enough).
+  // Kill/fallback: 120. No FPS HUD. Mode 120/126 paths untouched.
+  CleanDualFpsPoseTight = 127,
+  // Mode 128 FPS NO-LIVELOOK: Mode127 fill + tight POSEHOLD + dualn=3 + hitch 32,
+  // but NO look-rate LIVELOOK (mono BB→both eyes ghosted). Pose stall → HOLD last
+  // stereo (skip dual only; no mono/stereo flicker). Kill/fallback: 120.
+  // Mode 120/127 code paths untouched.
+  CleanDualFpsHoldStereo = 128,
+  // Mode 129 L/R SYNC: Mode128 fill/tight/dualn=3 — on look force same-tick dual
+  // every frame (no temporal L≠R desync); calm = dualn=3 HOLD; high pose_ms →
+  // mono BB both eyes with ≥200ms hysteresis (no mismatched HOLD pair). Kill: 120.
+  // Mode 120/128 paths untouched.
+  CleanDualLrSync = 129,
+  // Mode 130 MONOLOOK: Mode128 fill/tight/dualn=3 — on look (yaw/pitch Δ) submit
+  // identical BB→L and R (one capture); stay mono ≥350ms after look settles
+  // (no frame-by-frame mono↔stereo flip). Calm = dualn=3 HOLD (~90). Pose stall
+  // also extends mono hyst. Kill: 120. Mode 120/129 paths untouched.
+  // Why not 129: same-tick dual is still L then R DrawScene with game time
+  // advancing between eyes → diplopia on head turn even when LOOK-FORCE fires.
+  CleanDualMonoLook = 130,
+  // Mode 131 MONOLOOK PITCH/FPS: Mode130 ghosting fix kept (identical BB both
+  // eyes on look) but: higher pitch thresh than yaw; ≥600ms hyst; sustained look
+  // before enter mono; EndScene BB→L+R only every 3rd mono frame; calm pose →
+  // HOLD last stereo (not mono StretchRect); dualn=3. Kill: 120.
+  // Mode 120/130 paths untouched. OpenVR 2.12.14. No FPS HUD.
+  // FAILED headset test: every-3rd BB + POSEHOLD-CALM starved HMD while Present~90.
+  CleanDualMonoLookPitch = 131,
+  // Mode 132 HMD-EVERY: Mode131 pitch-stable monolook (2.5°/sustain3/600ms) but
+  // StretchRect BB→L+R EVERY EndScene during mono (no every-3rd HMD starve).
+  // Calm: dualn=3 HOLD last stereo like 128. Pose stall → HOLD last stereo
+  // (re-submit each Present — never skip multi-frame without submit content).
+  // Kill: 120. Mode 120/130/131 paths untouched. OpenVR 2.12.14. No FPS HUD.
+  CleanDualMonoLookHmdEvery = 132,
+  // Mode 133 HMD-CHEAP: Mode132 pitch-stable every-frame mono, but ONE StretchRect
+  // BB→L then Submit same tex for L+R (OpenVR allows; halves copy vs 132 BB×2).
+  // Keeps HMD every-frame fresh (no every-3rd starve; no stale stereo HOLD on look).
+  // Calm: dualn=3 HOLD. Kill: 120. Mode 120/130/131/132 paths untouched.
+  // OpenVR 2.12.14. No FPS HUD.
+  // FAILED headset 2026-07-27: same-tex L+R Submit → extreme jumping, fusion gone.
+  CleanDualMonoLookHmdCheap = 133,
+  // Mode 134 BACK-132: exact Mode 132 look path (BB→L AND BB→R every monolook frame;
+  // 132 pitch/hyst 2.5°/sustain3/600ms). NOT same-tex Submit. 133 failed; 134 is the
+  // safe default so user is never stuck on 133. Kill: 120. Paths 120–133 untouched.
+  // OpenVR 2.12.14. No FPS HUD.
+  // FAILED headset 2026-07-27: dualn=3 HOLD + incomplete monolook → HMD freeze, desktop fine.
+  CleanDualMonoLookBack132 = 134,
+  // Mode 135 ALWAYS-FRESH: never submit previous-frame eye textures while view moves.
+  // Looking (low thresh): monolook BB→L AND BB→R every frame (132 style; NOT same-tex).
+  // Calm: same-tick dual every frame (everyN=1). POSEHOLD → fresh monolook that frame
+  // (never bare HOLD). Accept FPS cost to kill HMD freeze. Kill: 120.
+  // Paths 120–134 untouched. OpenVR 2.12.14. No FPS HUD.
+  CleanDualAlwaysFresh = 135,
+  // Mode 136 LATE-LATCH: Mode 120 content (dualn=2, HOLD, NO monolook switch) + every
+  // Submit uses Submit_TextureWithPose with HMD pose sampled immediately before Submit
+  // (not capture-time AER). SteamVR can reproject between content frames → smoother look.
+  // Kill: 120. Paths 120–135 untouched. OpenVR 2.12.14. No FPS HUD.
+  CleanDualLateLatch = 136,
 };
 
 // Mode 40–49: rapid HMD delta → temporary mono pair. Mode 50+ never flattens.
@@ -267,6 +356,26 @@ bool UsesPedCoupledYaw(StereoMode mode);
 bool UsesPreCaptureCamRefresh(StereoMode mode);
 // Mode 44/45/47–53: locked 1536 RTs + 5% FOV publish gate.
 bool UsesRtLockFovGate(StereoMode mode);
+// Mode 120–136 — clean DrawScene×2 + look-move family (120=LKG; 121+=experiments).
+bool IsCleanDualLookMove(StereoMode mode);
+bool IsCleanDualPerfLookHold(StereoMode mode);  // 122 or 125 (stale HOLD)
+bool IsCleanDualFillMatch(StereoMode mode);     // 123, 125–135 (not 136 — 136 = Mode120 scale)
+bool IsCleanDualZoomScale(StereoMode mode);     // 124
+bool IsCleanDualPerfFillCombo(StereoMode mode); // 125
+bool IsCleanDualFpsLiveLook(StereoMode mode);   // 126 or 127 (LIVELOOK path)
+bool IsCleanDualFpsPoseTight(StereoMode mode);  // 127–135 (tighter POSEHOLD)
+bool IsCleanDualFpsHoldStereo(StereoMode mode); // 128 only (pose HOLD last stereo)
+bool IsCleanDualLrSync(StereoMode mode);        // 129 only (look force dual + pose mono hyst)
+bool IsCleanDualMonoLook(StereoMode mode);      // 130 only (look→mono BB ≥350ms hyst)
+bool IsCleanDualMonoLookPitch(StereoMode mode); // 131 only (pitch-stable + BB/3 — FAILED)
+bool IsCleanDualMonoLookHmdEvery(StereoMode mode); // 132 or 134 (pitch-stable + every-frame BB×2)
+bool IsCleanDualMonoLookHmdCheap(StereoMode mode); // 133 only (FAILED same-tex Submit)
+bool IsCleanDualMonoLookBack132(StereoMode mode);  // 134 only (=132-safe; FAILED HOLD freeze)
+bool IsCleanDualAlwaysFresh(StereoMode mode);      // 135 only (everyN=1; never bare HOLD)
+bool IsCleanDualLateLatch(StereoMode mode);        // 136 only (Mode120 content + TextureWithPose late)
+
+// Mode 123: once cover FOV known, set fovadd so fillH≈100% (no SoftInset).
+void TryApplyCoverMatchedFovAdd();
 
 StereoMode GetStereoMode();
 void ReloadStereoMode();
@@ -277,13 +386,16 @@ float GetStereoSepMeters();
 void PollIpdScaleHotkey();
 float GetStereoIpdScale();
 
-// VRScale (L4D2VR): HIGHER → more 6DoF in game units → world feels SMALLER.
-// File: gtaiv_dxvk_vr.scale (percent, 100 = 1.0). Does NOT multiply stereo IPD.
+// 6DoF lean only (file gtaiv_dxvk_vr.scale). Does NOT multiply stereo IPD.
 float GetWorldScale();
+// F7: cycle visual WorldScale presets (fovadd + stereoscale). Persist index to
+// gtaiv_dxvk_vr.worldscale. Default "Open12" — DEZOOM via LOWER fovadd (less
+// StretchRect crop) + higher stereoscale. Higher fovadd = more crop zoom-IN.
 void PollWorldScaleHotkey();
 
-// Soft stereo disparity multiplier (percent). Independent of WorldScale.
+// Soft stereo disparity multiplier (percent). Independent of 6DoF lean.
 // File: gtaiv_dxvk_vr.stereoscale — default 115. F6 cycles. Cap keeps fusion safe.
+// F7 WorldScale presets also write this.
 float GetStereoScale();
 void PollStereoScaleHotkey();
 
@@ -320,8 +432,8 @@ int GetVehicleFollowMode();
 bool GetFovPatchConfig(int* offsetBytes, float* scale);
 
 // gtaiv_dxvk_vr.fovadd: degrees to ADD at CCam+0x60 after cam FOV recompute
-// (FusionFix-style; Mode 35/36/37/38). 0 / absent = read-only log. Clamp 0..40.
-// Mode 37/38 headset default ~18 (Mode 36 used 22 — jump/FPS).
+// (FusionFix-style; Mode 35/36/37/38/120). Live (F7 can change). Clamp 0..40.
+// Mode 120 default via worldscale "Open12" = 12 (less H crop than old Out22/28).
 float GetFovAddDegrees();
 
 }  // namespace asi

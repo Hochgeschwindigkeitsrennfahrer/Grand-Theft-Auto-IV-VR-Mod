@@ -1,5 +1,6 @@
 #include "stereo_config.h"
 #include "log.h"
+#include "vr_display.h"
 
 #include <windows.h>
 
@@ -16,12 +17,44 @@ std::atomic<int> g_mode{static_cast<int>(StereoMode::Off)};
 std::atomic<bool> g_loggedMode{false};
 std::atomic<float> g_sepM{0.06f};
 std::atomic<bool> g_loggedIpd{false};
-// L4D2VR default VRScale ≈ 1.0 (user tunes). 100% = standard. 6DoF only.
+// L4D2VR default VRScale ≈ 1.0 (user tunes). 100% = standard. 6DoF lean only (.scale file).
 std::atomic<float> g_worldScale{1.0f};
 std::atomic<bool> g_loggedScale{false};
 // Soft stereo disparity (not WorldScale). 115% ≈ reclaim size without 150%×IPD break.
 std::atomic<float> g_stereoScale{1.15f};
 std::atomic<bool> g_loggedStereoScale{false};
+// Live FOV ADD (CCam+0x60). F7 worldscale presets update this without restart.
+std::atomic<float> g_fovAdd{0.f};
+std::atomic<bool> g_fovAddLoaded{false};
+std::atomic<int> g_worldScalePreset{-1};
+std::atomic<bool> g_loggedWorldScalePreset{false};
+
+// F7 visual world-scale: fovadd + stereoscale (NOT SoftInset / LetterboxPrefer).
+// Mode120 true-FOV canvas: HIGHER fovadd widens gameTan → StretchRect SRC crop when
+// fill>100% → zoom-IN / giant-monitor (log: fovadd=18 → fill≈150%h on G2).
+// DEZOOM = LOWER fovadd (less H crop, toward coverTan match ~fovadd 6) + HIGHER
+// stereoscale (smaller world). Cap stereoscale 130 (150%×IPD broke fusion).
+struct WorldScalePreset {
+  const char* name;
+  int fovAdd;
+  int stereoPct;
+};
+
+constexpr WorldScalePreset kWorldScalePresets[] = {
+    {"CropMax", 28, 115},   // old Ultra — heaviest H crop / zoom-IN
+    {"Crop", 24, 118},      // still crop-heavy
+    {"TallFill", 20, 120},  // V near full; H crop ~155%
+    {"Mild18", 18, 120},    // prior default-ish; fill≈150%h
+    {"Soft16", 16, 122},
+    {"Open12", 12, 125},    // DEFAULT — less crop than old Out22
+    {"Room8", 8, 128},      // near H-match; more peripheral BB
+    {"MatchH6", 6, 130},    // ~100%h coverTan match on G2 16:9
+    {"Air4", 4, 130},       // slight under-fill; max stereo size
+    {"Window0", 0, 130},    // no fovadd; max stereo (may show V bars)
+};
+constexpr int kWorldScalePresetN =
+    static_cast<int>(sizeof(kWorldScalePresets) / sizeof(kWorldScalePresets[0]));
+constexpr int kWorldScaleDefaultIdx = 5;  // Open12
 
 bool GetAsiDir(char* out, DWORD outLen) {
   HMODULE self = nullptr;
@@ -106,8 +139,17 @@ void ApplyStereoFusionDefaults() {
 void SetStereoScalePercent(int pct) {
   if (pct < 100)
     pct = 100;
-  if (pct > 130)
-    pct = 130;  // hard cap — 150%×IPD broke fusion
+  // Mode 126–135 may use stereoscale 135 (stronger disparity / smaller world). 150%×IPD broke fusion.
+  const StereoMode m = GetStereoMode();
+  const int cap =
+      (IsCleanDualFpsLiveLook(m) || IsCleanDualFpsHoldStereo(m) || IsCleanDualLrSync(m) ||
+       IsCleanDualMonoLook(m) || IsCleanDualMonoLookPitch(m) || IsCleanDualMonoLookHmdEvery(m) ||
+       IsCleanDualMonoLookHmdCheap(m) || IsCleanDualMonoLookBack132(m) ||
+       IsCleanDualAlwaysFresh(m))
+          ? 140
+          : 130;
+  if (pct > cap)
+    pct = cap;
   g_stereoScale.store(static_cast<float>(pct) / 100.f);
 }
 
@@ -139,11 +181,11 @@ void ReloadStereoScale() {
   int pct = 0;
   if (sscanf_s(buf, "%d", &pct) != 1)
     return;
-  if (pct < 100 || pct > 130)
+  if (pct < 100 || pct > 140)
     return;
   SetStereoScalePercent(pct);
   if (!g_loggedStereoScale.exchange(true))
-    Log("StereoScale: %.2f (file) — F6: higher = stronger 3D / smaller feel (cap 130%%)",
+    Log("StereoScale: %.2f (file) — F6: higher = stronger 3D / smaller feel (cap 130%%; Mode126≤140)",
         pct / 100.f);
 }
 
@@ -202,7 +244,81 @@ void ReloadWorldScale() {
     return;
   SetWorldScalePercent(pct);
   if (!g_loggedScale.exchange(true))
-    Log("WorldScale: %.2f (file) — F7: HIGHER = smaller world (L4D2 VRScale)", pct / 100.f);
+    Log("WorldScale6DoF: %.2f (file gtaiv_dxvk_vr.scale) — lean only; F7 = visual presets",
+        pct / 100.f);
+}
+
+void SetFovAddDegrees(float deg) {
+  if (deg < 0.f)
+    deg = 0.f;
+  if (deg > 40.f)
+    deg = 40.f;
+  g_fovAdd.store(deg);
+  g_fovAddLoaded.store(true);
+}
+
+void SaveFovAddFile(int deg) {
+  if (deg < 0)
+    deg = 0;
+  if (deg > 40)
+    deg = 40;
+  char path[MAX_PATH]{};
+  if (!GetAsiDir(path, MAX_PATH))
+    return;
+  strcat_s(path, "gtaiv_dxvk_vr.fovadd");
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "wb") != 0 || !f)
+    return;
+  std::fprintf(f, "%d\n", deg);
+  std::fclose(f);
+}
+
+void SaveWorldScalePresetIndex(int idx) {
+  char path[MAX_PATH]{};
+  if (!GetAsiDir(path, MAX_PATH))
+    return;
+  strcat_s(path, "gtaiv_dxvk_vr.worldscale");
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "wb") != 0 || !f)
+    return;
+  std::fprintf(f, "%d\n", idx);
+  std::fclose(f);
+}
+
+void ApplyWorldScalePreset(int idx, bool fromHotkey) {
+  if (idx < 0 || idx >= kWorldScalePresetN)
+    idx = kWorldScaleDefaultIdx;
+  const WorldScalePreset& p = kWorldScalePresets[idx];
+  SetFovAddDegrees(static_cast<float>(p.fovAdd));
+  SaveFovAddFile(p.fovAdd);
+  SetStereoScalePercent(p.stereoPct);
+  SaveStereoScaleFile(p.stereoPct);
+  g_worldScalePreset.store(idx);
+  SaveWorldScalePresetIndex(idx);
+  g_loggedStereoScale.store(true);
+  if (fromHotkey || !g_loggedWorldScalePreset.exchange(true)) {
+    Log("F7 WorldScale: [%d/%d] %s — fovadd=%d stereoscale=%d%% "
+        "(DEZOOM=lower fovadd/less crop + higher stereo; no SoftInset; 6DoF=.scale)",
+        idx + 1, kWorldScalePresetN, p.name, p.fovAdd, p.stereoPct);
+  }
+}
+
+void ReloadWorldScaleVisual() {
+  char path[MAX_PATH]{};
+  int idx = kWorldScaleDefaultIdx;
+  if (GetAsiDir(path, MAX_PATH)) {
+    strcat_s(path, "gtaiv_dxvk_vr.worldscale");
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "rb") == 0 && f) {
+      char buf[16]{};
+      const size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+      fclose(f);
+      int v = -1;
+      if (n > 0 && sscanf_s(buf, "%d", &v) == 1 && v >= 0 && v < kWorldScalePresetN)
+        idx = v;
+    }
+  }
+  ApplyWorldScalePreset(idx, false);
 }
 
 void ReloadIpdScale() {
@@ -256,8 +372,12 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  // Two-digit modes 10..53. Mode 46 is remapped to protected Mode 45 below:
-  // its direct full-basis camera write froze after loading in a headset test.
+  // Three-digit Mode 120–136 (clean dual+lookmove family; 120=LKG, 121+=experiments).
+  // Two-digit 10..53 otherwise. Mode 46 remapped to protected 45 below.
+  if (n >= 3 && buf[0] == '1' && buf[1] == '3' && buf[2] >= '0' && buf[2] <= '6')
+    return 130 + (buf[2] - '0');
+  if (n >= 3 && buf[0] == '1' && buf[1] == '2' && buf[2] >= '0' && buf[2] <= '9')
+    return 120 + (buf[2] - '0');
   if (n >= 2 && buf[0] >= '1' && buf[0] <= '5' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
     if (v <= 53)
@@ -293,7 +413,7 @@ void ReloadStereoMode() {
     Log("StereoMode: requested 46 is DISABLED (post-load freeze); using protected mode 45");
   }
   int prev = g_mode.load();
-  if (v >= 0 && v <= 53) {
+  if (v >= 0 && (v <= 53 || IsCleanDualLookMove(static_cast<StereoMode>(v)))) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -330,20 +450,109 @@ void ReloadStereoMode() {
                            v == static_cast<int>(StereoMode::HeadOwnedCamStereoAlways) ||
                            v == static_cast<int>(StereoMode::HeadOwnedCamStereoAer) ||
                            v == static_cast<int>(StereoMode::HeadOwnedCamStereoSwap) ||
-                           v == static_cast<int>(StereoMode::HeadOwnedCamStereoSoftGuard))) {
+                           v == static_cast<int>(StereoMode::HeadOwnedCamStereoSoftGuard) ||
+                           IsCleanDualLookMove(static_cast<StereoMode>(v)))) {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadWorldScale();
-    ReloadStereoScale();
+    if (IsCleanDualLookMove(static_cast<StereoMode>(v))) {
+      ReloadWorldScaleVisual();  // F7 presets (fovadd+stereoscale); default Out
+      // Mode 123/125: MatchH6. Mode 126–135: Window0 (stronger dezoom) then cover refine.
+      if (v == static_cast<int>(StereoMode::CleanDualFpsLiveLook) ||
+          v == static_cast<int>(StereoMode::CleanDualFpsPoseTight) ||
+          v == static_cast<int>(StereoMode::CleanDualFpsHoldStereo) ||
+          v == static_cast<int>(StereoMode::CleanDualLrSync) ||
+          v == static_cast<int>(StereoMode::CleanDualMonoLook) ||
+          v == static_cast<int>(StereoMode::CleanDualMonoLookPitch) ||
+          v == static_cast<int>(StereoMode::CleanDualMonoLookHmdEvery) ||
+          v == static_cast<int>(StereoMode::CleanDualMonoLookHmdCheap) ||
+          v == static_cast<int>(StereoMode::CleanDualMonoLookBack132) ||
+          v == static_cast<int>(StereoMode::CleanDualAlwaysFresh)) {
+        ApplyWorldScalePreset(9, false);  // Window0 — fovadd=0 stereoscale=130
+        if (v == static_cast<int>(StereoMode::CleanDualAlwaysFresh))
+          Log("Mode135: ALWAYS-FRESH default → Window0; cover refine + stereoscale 135; "
+              "look→BB→L AND BB→R EVERY (low thresh); calm everyN=1 dual; POSEHOLD→fresh "
+              "monolook (never bare HOLD); hitch→LIVELOOK; not same-tex; kill=120");
+        else if (v == static_cast<int>(StereoMode::CleanDualMonoLookBack132))
+          Log("Mode134: FAILED HOLD freeze — prefer 135; Window0; cover refine + stereoscale 135; "
+              "look→BB→L AND BB→R EVERY EndScene (pitch≥2.5° + sustain3; ≥600ms hyst); "
+              "NOT same-tex Submit (133 FAILED); calm dualn=3 + POSEHOLD last stereo; hitch 32");
+        else if (v == static_cast<int>(StereoMode::CleanDualMonoLookHmdCheap))
+          Log("Mode133: FAILED same-tex — prefer 134/132; Window0; cover refine + stereoscale 135; "
+              "look→BB→L only + Submit same tex L+R EVERY EndScene (pitch≥2.5° + "
+              "sustain3; ≥600ms hyst); calm dualn=3 + POSEHOLD last stereo; hitch 32");
+        else if (v == static_cast<int>(StereoMode::CleanDualMonoLookHmdEvery))
+          Log("Mode132: MONOLOOK-HMD-EVERY default → Window0; cover refine + stereoscale 135; "
+              "look→identical BB both eyes (pitch≥2.5° + sustain3; ≥600ms hyst; "
+              "BB→both EVERY EndScene); calm dualn=3 + POSEHOLD last stereo; hitch 32");
+        else if (v == static_cast<int>(StereoMode::CleanDualMonoLookPitch))
+          Log("Mode131: MONOLOOK-PITCH default → Window0; cover refine + stereoscale 135; "
+              "look→identical BB both eyes (pitch≥2.5° + sustain3; ≥600ms hyst; "
+              "BB refresh every 3); calm dualn=3 + POSEHOLD last stereo; hitch 32");
+        else if (v == static_cast<int>(StereoMode::CleanDualMonoLook))
+          Log("Mode130: MONOLOOK default → Window0; cover refine + stereoscale 135; "
+              "look→identical BB both eyes ≥350ms hyst; calm dualn=3 HOLD; "
+              "pose extends mono; hitch 32; no LOOK-FORCE dual");
+        else if (v == static_cast<int>(StereoMode::CleanDualLrSync))
+          Log("Mode129: L/R SYNC default → Window0; cover refine + stereoscale 135; "
+              "look→force same-tick dual; calm dualn=3 HOLD; pose→mono BB ≥200ms "
+              "hyst; hitch 32; no mismatched HOLD pair");
+        else if (v == static_cast<int>(StereoMode::CleanDualFpsHoldStereo))
+          Log("Mode128: FPS NO-LIVELOOK default → Window0; cover refine + "
+              "stereoscale 135; POSEHOLD≥12ms/5 + HARD≥24ms/8 HOLD last stereo; "
+              "dualn=3; hitch 32; no look-rate LIVELOOK");
+        else if (v == static_cast<int>(StereoMode::CleanDualFpsPoseTight))
+          Log("Mode127: FPS+LIVELOOK TIGHT default → Window0; cover refine + "
+              "stereoscale 135; POSEHOLD≥12ms/5 + HARD≥24ms/8; dualn=3; hitch 32");
+        else
+          Log("Mode126: FPS+LIVELOOK default → Window0 (fovadd=0); cover refine + "
+              "stereoscale 135; POSEHOLD; live BB both eyes on look");
+      } else if (v == static_cast<int>(StereoMode::CleanDualFillMatch) ||
+                 v == static_cast<int>(StereoMode::CleanDualPerfFillCombo)) {
+        ApplyWorldScalePreset(7, false);  // MatchH6 — ~100%h cover on G2
+        Log("Mode%d: FILLMATCH default → MatchH6 (fovadd=6 stereoscale=130); "
+            "cover refine via TryApplyCoverMatchedFovAdd",
+            v);
+      } else if (v == static_cast<int>(StereoMode::CleanDualZoomScale)) {
+        ApplyWorldScalePreset(7, false);  // start dezoom zone (MatchH6)
+        Log("Mode124: ZOOMSCALE default → MatchH6; F7 still cycles full ladder "
+            "(DEZOOM = lower fovadd)");
+      } else if (v == static_cast<int>(StereoMode::CleanDualLateLatch)) {
+        Log("Mode136: LATE-LATCH → Mode120 content (dualn=2 HOLD, no monolook); "
+            "every Submit TextureWithPose pose sampled immediately before Submit; "
+            "kill=120");
+      }
+    } else
+      ReloadStereoScale();
   } else {
     ReloadIpdScale();
     ReloadWorldScale();
-    ReloadStereoScale();
+    if (IsCleanDualLookMove(static_cast<StereoMode>(v))) {
+      ReloadWorldScaleVisual();
+      if (v == static_cast<int>(StereoMode::CleanDualFpsLiveLook) ||
+          v == static_cast<int>(StereoMode::CleanDualFpsPoseTight) ||
+          v == static_cast<int>(StereoMode::CleanDualFpsHoldStereo) ||
+          v == static_cast<int>(StereoMode::CleanDualLrSync) ||
+          v == static_cast<int>(StereoMode::CleanDualMonoLook) ||
+          v == static_cast<int>(StereoMode::CleanDualMonoLookPitch) ||
+          v == static_cast<int>(StereoMode::CleanDualMonoLookHmdEvery) ||
+          v == static_cast<int>(StereoMode::CleanDualMonoLookHmdCheap) ||
+          v == static_cast<int>(StereoMode::CleanDualMonoLookBack132) ||
+          v == static_cast<int>(StereoMode::CleanDualAlwaysFresh))
+        ApplyWorldScalePreset(9, false);
+      else if (v == static_cast<int>(StereoMode::CleanDualFillMatch) ||
+               v == static_cast<int>(StereoMode::CleanDualPerfFillCombo))
+        ApplyWorldScalePreset(7, false);
+      else if (v == static_cast<int>(StereoMode::CleanDualZoomScale))
+        ApplyWorldScalePreset(7, false);
+      // Mode 136: keep Mode120 worldscale visual (no Window0 / cover force).
+    } else
+      ReloadStereoScale();
   }
 }
 
 void WriteStereoModeFile(int mode) {
-  if (mode < 0 || mode > 53)
+  if (mode < 0 || (mode > 53 && !IsCleanDualLookMove(static_cast<StereoMode>(mode))))
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -395,10 +604,14 @@ bool UsesAngleCorrectCanvas(StereoMode mode) {
          mode == StereoMode::HeadOwnedCamStereoAlways ||
          mode == StereoMode::HeadOwnedCamStereoAer ||
          mode == StereoMode::HeadOwnedCamStereoSwap ||
-         mode == StereoMode::HeadOwnedCamStereoSoftGuard;
+         mode == StereoMode::HeadOwnedCamStereoSoftGuard ||
+         IsCleanDualLookMove(mode);
 }
 
 bool UsesMotionGuardStereo(StereoMode mode) {
+  // Mode 120/121: motion-guard OFF (tight guard killed FPS with StretchRects).
+  if (IsCleanDualLookMove(mode))
+    return false;
   return mode == StereoMode::FovCanvasMotionGuard ||
          mode == StereoMode::ReplayCallChainProbe ||
          mode == StereoMode::ReplayOwnerCountProbe ||
@@ -412,6 +625,7 @@ bool UsesMotionGuardStereo(StereoMode mode) {
 }
 
 bool UsesStereoAlwaysDistinct(StereoMode mode) {
+  // Mode 120 is same-frame dual, not AER temporal always-distinct.
   return mode == StereoMode::HeadOwnedCamStereoAlways ||
          mode == StereoMode::HeadOwnedCamStereoAer ||
          mode == StereoMode::HeadOwnedCamStereoSwap ||
@@ -419,18 +633,25 @@ bool UsesStereoAlwaysDistinct(StereoMode mode) {
 }
 
 bool UsesAerPoseSubmit(StereoMode mode) {
+  // Mode 120: real WaitGetPoses+Submit_Default. Mode 136 uses late-latch path
+  // (IsCleanDualLateLatch) separately — still Submit_TextureWithPose, but pose
+  // is sampled immediately before Submit, not capture-time AER.
   return mode == StereoMode::AerPoseSubmit ||
          mode == StereoMode::HeadOwnedCamStereoAer ||
          mode == StereoMode::HeadOwnedCamStereoSoftGuard;
 }
 
 bool UsesPedCoupledYaw(StereoMode mode) {
+  // Mode 120: pedCoupled OFF — look_move owns body facing; cam is pure HMD.
+  if (IsCleanDualLookMove(mode))
+    return false;
   return mode == StereoMode::HeadOwnedCamPedCoupled || UsesStereoAlwaysDistinct(mode);
 }
 
 bool UsesPreCaptureCamRefresh(StereoMode mode) {
   return mode == StereoMode::HeadOwnedCamPitchStable ||
-         mode == StereoMode::HeadOwnedCamPedCoupled || UsesStereoAlwaysDistinct(mode);
+         mode == StereoMode::HeadOwnedCamPedCoupled || UsesStereoAlwaysDistinct(mode) ||
+         IsCleanDualLookMove(mode);
 }
 
 bool UsesRtLockFovGate(StereoMode mode) {
@@ -439,7 +660,160 @@ bool UsesRtLockFovGate(StereoMode mode) {
          mode == StereoMode::HeadOwnedCamFullPose ||
          mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
          mode == StereoMode::HeadOwnedCamPitchStable ||
-         mode == StereoMode::HeadOwnedCamPedCoupled || UsesStereoAlwaysDistinct(mode);
+         mode == StereoMode::HeadOwnedCamPedCoupled || UsesStereoAlwaysDistinct(mode) ||
+         IsCleanDualLookMove(mode);
+}
+
+bool IsCleanDualLookMove(StereoMode mode) {
+  return mode == StereoMode::CleanDualLookMove ||
+         mode == StereoMode::CleanDualLookMoveDualN3 ||
+         mode == StereoMode::CleanDualPerfLookHold ||
+         mode == StereoMode::CleanDualFillMatch ||
+         mode == StereoMode::CleanDualZoomScale ||
+         mode == StereoMode::CleanDualPerfFillCombo ||
+         mode == StereoMode::CleanDualFpsLiveLook ||
+         mode == StereoMode::CleanDualFpsPoseTight ||
+         mode == StereoMode::CleanDualFpsHoldStereo ||
+         mode == StereoMode::CleanDualLrSync ||
+         mode == StereoMode::CleanDualMonoLook ||
+         mode == StereoMode::CleanDualMonoLookPitch ||
+         mode == StereoMode::CleanDualMonoLookHmdEvery ||
+         mode == StereoMode::CleanDualMonoLookHmdCheap ||
+         mode == StereoMode::CleanDualMonoLookBack132 ||
+         mode == StereoMode::CleanDualAlwaysFresh ||
+         mode == StereoMode::CleanDualLateLatch;
+}
+
+bool IsCleanDualPerfLookHold(StereoMode mode) {
+  return mode == StereoMode::CleanDualPerfLookHold ||
+         mode == StereoMode::CleanDualPerfFillCombo;
+}
+
+bool IsCleanDualFillMatch(StereoMode mode) {
+  return mode == StereoMode::CleanDualFillMatch ||
+         mode == StereoMode::CleanDualPerfFillCombo ||
+         mode == StereoMode::CleanDualFpsLiveLook ||
+         mode == StereoMode::CleanDualFpsPoseTight ||
+         mode == StereoMode::CleanDualFpsHoldStereo ||
+         mode == StereoMode::CleanDualLrSync ||
+         mode == StereoMode::CleanDualMonoLook ||
+         mode == StereoMode::CleanDualMonoLookPitch ||
+         mode == StereoMode::CleanDualMonoLookHmdEvery ||
+         mode == StereoMode::CleanDualMonoLookHmdCheap ||
+         mode == StereoMode::CleanDualMonoLookBack132 ||
+         mode == StereoMode::CleanDualAlwaysFresh;
+}
+
+bool IsCleanDualZoomScale(StereoMode mode) {
+  return mode == StereoMode::CleanDualZoomScale;
+}
+
+bool IsCleanDualPerfFillCombo(StereoMode mode) {
+  return mode == StereoMode::CleanDualPerfFillCombo;
+}
+
+bool IsCleanDualFpsLiveLook(StereoMode mode) {
+  return mode == StereoMode::CleanDualFpsLiveLook ||
+         mode == StereoMode::CleanDualFpsPoseTight;
+}
+
+bool IsCleanDualFpsPoseTight(StereoMode mode) {
+  return mode == StereoMode::CleanDualFpsPoseTight ||
+         mode == StereoMode::CleanDualFpsHoldStereo ||
+         mode == StereoMode::CleanDualLrSync ||
+         mode == StereoMode::CleanDualMonoLook ||
+         mode == StereoMode::CleanDualMonoLookPitch ||
+         mode == StereoMode::CleanDualMonoLookHmdEvery ||
+         mode == StereoMode::CleanDualMonoLookHmdCheap ||
+         mode == StereoMode::CleanDualMonoLookBack132 ||
+         mode == StereoMode::CleanDualAlwaysFresh;
+}
+
+bool IsCleanDualFpsHoldStereo(StereoMode mode) {
+  return mode == StereoMode::CleanDualFpsHoldStereo;
+}
+
+bool IsCleanDualLrSync(StereoMode mode) {
+  return mode == StereoMode::CleanDualLrSync;
+}
+
+bool IsCleanDualMonoLook(StereoMode mode) {
+  return mode == StereoMode::CleanDualMonoLook;
+}
+
+bool IsCleanDualMonoLookPitch(StereoMode mode) {
+  return mode == StereoMode::CleanDualMonoLookPitch;
+}
+
+bool IsCleanDualMonoLookHmdEvery(StereoMode mode) {
+  // Mode 134 = explicit 132 twin (BB→L+R every; never same-tex).
+  return mode == StereoMode::CleanDualMonoLookHmdEvery ||
+         mode == StereoMode::CleanDualMonoLookBack132;
+}
+
+bool IsCleanDualMonoLookHmdCheap(StereoMode mode) {
+  return mode == StereoMode::CleanDualMonoLookHmdCheap;
+}
+
+bool IsCleanDualMonoLookBack132(StereoMode mode) {
+  return mode == StereoMode::CleanDualMonoLookBack132;
+}
+
+bool IsCleanDualAlwaysFresh(StereoMode mode) {
+  return mode == StereoMode::CleanDualAlwaysFresh;
+}
+
+bool IsCleanDualLateLatch(StereoMode mode) {
+  return mode == StereoMode::CleanDualLateLatch;
+}
+
+// Mode 123: once HMD cover FOV is known, pick fovadd so published gameTanH ≈ coverH.
+// Inverse of PublishGameFovFromCCamDegrees (kEng=58.7/45). Assumes live CCam base ≈45°
+// (FusionFix FOV=0); clamps 0..18 so we never re-enter Crop/Mild zoom-IN.
+void TryApplyCoverMatchedFovAdd() {
+  if (!IsCleanDualFillMatch(GetStereoMode()))
+    return;
+  static std::atomic<bool> s_done{false};
+  if (s_done.load())
+    return;
+  float coverH = 0.f, coverV = 0.f;
+  if (!GetCoverFovTangents(&coverH, &coverV) || !(coverH > 0.05f))
+    return;
+  const float aspect = GetBackbufferAspect();
+  const float a = (aspect > 0.5f && aspect < 3.f) ? aspect : (16.f / 9.f);
+  // Want tanH_game ≈ coverH → tanV = coverH/aspect → vDeg → ccamDeg.
+  constexpr float kEng = 58.7f / 45.f;
+  const float tanV = coverH / a;
+  if (!(tanV > 0.05f) || !(tanV < 5.f))
+    return;
+  const float vDeg = 2.f * std::atan(tanV) * (180.f / 3.14159265f);
+  const float targetCcam = vDeg / kEng;
+  constexpr float kBaseCcam = 45.f;  // FusionFix FieldOfView=0 typical CE baseline
+  float add = targetCcam - kBaseCcam;
+  if (add < 0.f)
+    add = 0.f;
+  if (add > 18.f)
+    add = 18.f;  // never Mild18+ crop zone for Vollbild path
+  SetFovAddDegrees(add);
+  SaveFovAddFile(static_cast<int>(add + 0.5f));
+  // Mode 126–135: stereoscale 135 (smaller world / dezoom feel). Others stay at 130 cap.
+  const StereoMode cur = GetStereoMode();
+  const int stereoPct =
+      (IsCleanDualFpsLiveLook(cur) || IsCleanDualFpsHoldStereo(cur) || IsCleanDualLrSync(cur) ||
+       IsCleanDualMonoLook(cur) || IsCleanDualMonoLookPitch(cur) || IsCleanDualMonoLookHmdEvery(cur) ||
+       IsCleanDualMonoLookHmdCheap(cur) || IsCleanDualMonoLookBack132(cur) ||
+       IsCleanDualAlwaysFresh(cur))
+          ? 135
+          : 130;
+  SetStereoScalePercent(stereoPct);
+  SaveStereoScaleFile(stereoPct);
+  s_done.store(true);
+  const float fillH = 100.f;  // by construction (H-match)
+  const float gameTanV = tanV;
+  const float fillV = (coverV > 0.05f) ? (gameTanV / coverV) * 100.f : 0.f;
+  Log("Mode%d: COVER-MATCH fovadd=%.0f stereoscale=%d coverTan=(%.3f,%.3f) "
+      "target fill≈%.0f%%h/%.0f%%v (V bars expected on 16:9→G2; no SoftInset)",
+      static_cast<int>(GetStereoMode()), add, stereoPct, coverH, coverV, fillH, fillV);
 }
 
 float GetStereoSepMeters() {
@@ -617,8 +991,7 @@ bool GetFovPatchConfig(int* offsetBytes, float* scale) {
 }
 
 float GetFovAddDegrees() {
-  static std::atomic<float> s_add{-1.f};
-  if (s_add.load() < 0.f) {
+  if (!g_fovAddLoaded.load()) {
     char buf[16]{};
     int deg = 0;
     float add = 0.f;
@@ -626,14 +999,15 @@ float GetFovAddDegrees() {
         sscanf_s(buf, "%d", &deg) == 1 && deg >= 0 && deg <= 40) {
       add = static_cast<float>(deg);
       Log("Config: fovadd=%.0f deg (gtaiv_dxvk_vr.fovadd) — ADD at CCam+0x60 after recompute; "
-          "kill: delete file or set 0",
+          "F7 cycles visual WorldScale; kill: delete file or set 0",
           add);
     } else {
-      Log("Config: fovadd=0 (absent) — Mode 35 FOV site READ-ONLY log");
+      Log("Config: fovadd=0 (absent) — Mode 35 FOV site READ-ONLY until F7/worldscale");
     }
-    s_add.store(add);
+    g_fovAdd.store(add);
+    g_fovAddLoaded.store(true);
   }
-  return s_add.load();
+  return g_fovAdd.load();
 }
 
 void PollWorldScaleHotkey() {
@@ -641,24 +1015,12 @@ void PollWorldScaleHotkey() {
   if (!KeyPressedEdge(VK_F7, &wasF7))
     return;
 
-  // 6DoF only — does not multiply stereo IPD.
-  static const int kPresets[] = {50, 75, 100, 125, 150, 200, 300};
-  constexpr int kN = 7;
-  const int curPct = static_cast<int>(g_worldScale.load() * 100.f + 0.5f);
-  int idx = 0;
-  int best = 999;
-  for (int i = 0; i < kN; ++i) {
-    const int d = kPresets[i] > curPct ? kPresets[i] - curPct : curPct - kPresets[i];
-    if (d < best) {
-      best = d;
-      idx = i;
-    }
-  }
-  idx = (idx + 1) % kN;
-  const int pct = kPresets[idx];
-  SetWorldScalePercent(pct);
-  SaveScaleFile(pct);
-  Log("WorldScale: %.2f (F7) — 6DoF only; HIGHER = smaller feel from head move", pct / 100.f);
+  // Visual world size (fovadd + stereoscale). Live — no RT recreate, no SoftInset.
+  int idx = g_worldScalePreset.load();
+  if (idx < 0 || idx >= kWorldScalePresetN)
+    idx = kWorldScaleDefaultIdx;
+  idx = (idx + 1) % kWorldScalePresetN;
+  ApplyWorldScalePreset(idx, true);
 }
 
 void PollStereoScaleHotkey() {

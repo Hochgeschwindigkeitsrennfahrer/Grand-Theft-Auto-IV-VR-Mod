@@ -69,10 +69,9 @@ if ($deployed.LastWriteTime -lt $built.LastWriteTime.AddSeconds(-2)) {
 }
 Write-Host ("Deploy verified: {0} bytes @ {1:HH:mm:ss}" -f $deployed.Length, $deployed.LastWriteTime)
 
-# Remove stale log so wait cannot match old MonoSubmit lines
-if (Test-Path -LiteralPath $log) {
-  Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
-}
+# Do NOT delete the log here — ASI LogInit archives non-empty session files to
+# gtaiv_dxvk_vr.log.m{mode}.{YYYYMMDD-HHMMSS} then truncates. Wait below matches
+# the new ASI_BUILD_ID, so stale MonoSubmit lines cannot false-pass.
 
 if ($NoStart) {
   Write-Host "Deploy done (-NoStart). buildId=$buildId"
