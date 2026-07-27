@@ -99,6 +99,7 @@ Nuclear fallback: Steam → Verify files → then redeploy ASI/DXVK/FusionFix.
    - `.\scripts\restart-gtaiv.ps1 -NoPause`
 2. Do **not** use Steam Play / `-applaunch` for restarts — that is what left Steam on **LAUNCHING**.
 3. Keep Steam + SteamVR already running; script only kills GTAIV/PlayGTAIV.
-4. Optional: RGLess (`install-rgless.ps1`) if Rockstar login still blocks DirectExe.
-5. Fallback only: `.\scripts\restart-gtaiv.ps1 -SteamLaunch -NoPause`
-6. No downgrade.
+4. **CE episode chooser** (intro → DLC/main → confirm): stock CE UI. Skip it with **FusionFix Skip Menu** (`plugins\GTAIV.EFLC.FusionFix.asi`, `SkipMenu=1` in `.cfg`). Restoring `update\` alone does not skip it. DirectExe ≠ skip chooser.
+5. Optional: RGLess (`install-rgless.ps1`) if Rockstar login still blocks DirectExe.
+6. Fallback only: `.\scripts\restart-gtaiv.ps1 -SteamLaunch -NoPause`
+7. No downgrade.

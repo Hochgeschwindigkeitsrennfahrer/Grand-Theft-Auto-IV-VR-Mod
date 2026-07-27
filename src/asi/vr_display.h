@@ -27,9 +27,20 @@ bool IsGameFovFromCCamActive();
 // Monotonic counter bumped when gameTan changes from CCam (StereoCanvas re-logs).
 uint32_t GetGameFovPublishGeneration();
 
+// Mode 80/88 FOVPROOF gate: canvas stays letterbox-safe until drawn proj proves FOV.
+void SetDrawnFovProven(bool proven);
+bool IsDrawnFovProven();
+uint32_t GetDrawnFovProofGeneration();
+float GetPendingCcamFovDegrees();
+bool GetDrawnMeasuredTangents(float* tanHalfH, float* tanHalfV);
+void PublishGameFovFromDrawnSy(float sx, float sy, float aspectWH);
+
 // Last backbuffer aspect (W/H); updated by UpdateGameFovFromDevice / EndScene.
 void SetBackbufferAspect(float aspectWH);
 float GetBackbufferAspect();
+
+// Mode 85/86 A/B: SteamVR recommended eye RT size (not Mode88 default).
+bool GetRecommendedEyeRtSize(uint32_t* outW, uint32_t* outH);
 
 // Mode 13: game BB aspect + optional center-square crop (Luke Ross style) + HMD inset.
 // Does NOT render at SteamVR recommended res — Submit uses the game backbuffer as-is.

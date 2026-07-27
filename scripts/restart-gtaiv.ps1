@@ -3,6 +3,10 @@
 # DEFAULT: kill game processes → start GTAIV.exe DIRECTLY (working dir = game dir)
 # while Steam stays running. Verified on this CE machine: GTAIV appears in ~1s.
 #
+# Episode/DLC chooser (Rockstar intro → select game): that is stock CE UI.
+# Skipping it needs FusionFix Skip Menu (plugins\GTAIV.EFLC.FusionFix.asi +
+# SkipMenu=1 in GTAIV.EFLC.FusionFix.cfg) — DirectExe alone does NOT skip it.
+#
 # Steam -applaunch / steam://rungameid often leave Steam stuck on LAUNCHING
 # (PlayGTAIV + Rockstar pipeline). Use -SteamLaunch only if DirectExe fails.
 #
