@@ -1535,6 +1535,7 @@ uint32_t g_openXrValidFrames = 0u;
 bool g_openXrGameplayArmed = false;
 bool g_openXrArmAttempted = false;
 bool g_openXrPoseLostLogged = false;
+bool g_openXrOpenVrLoadedLogged = false;
 }
 
 VrBackend GetVrBackend()
@@ -1589,6 +1590,24 @@ bool IsOpenVrBridgeRequested()
 
 void PublishOpenXrFrame(IDirect3DDevice9* device)
 {
+    const auto openVrLoaded = [] {
+        if (!GetModuleHandleW(L"openvr_api.dll"))
+            return false;
+        if (!g_openXrOpenVrLoadedLogged)
+        {
+            g_openXrOpenVrLoadedLogged = true;
+            Log(
+                "OpenXRBridge: FAIL-CLOSED - openvr_api.dll was loaded while "
+                "backend=openxr; camera and frame publication disabled");
+        }
+        g_openXrGameplayArmed = false;
+        g_openXrArmAttempted = true;
+        SetCamMatrixGameplayActive(false);
+        return true;
+    };
+    if (openVrLoaded())
+        return;
+
     gtaiv_xr_bridge::PoseBridge pose {};
     if (!GetLatestOpenXrPoseBridge(&pose))
     {
@@ -1658,11 +1677,11 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
             return;
         }
         UpdatePedHeadHide();
-        LogVrDisplayInfo();
         g_openXrGameplayArmed = true;
         Log(
             "OpenXRBridge: GTA camera/stereo armed after 360 fresh host "
-            "samples; OpenVR remains uninitialized");
+            "samples; display FOV comes from OpenXR and OpenVR remains "
+            "uninitialized");
     }
     else
     {
@@ -1670,6 +1689,8 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
     }
 
     StereoRenderOnDevice(device);
+    if (openVrLoaded())
+        return;
     UpdateGameFovFromDevice(device);
     PollCamHotkeys();
     PollIpdScaleHotkey();

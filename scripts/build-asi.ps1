@@ -10,6 +10,21 @@ if (-not (Test-Path "$Root\thirdparty\openvr\headers\openvr.h")) {
   throw "OpenVR missing - run: git clone --depth 1 https://github.com/ValveSoftware/openvr.git thirdparty/openvr"
 }
 
+$openXrSource = Get-Content -LiteralPath "$Root\src\asi\openxr_bridge.cpp" -Raw
+foreach ($forbidden in @(
+  "LogVrDisplayInfo(",
+  "GetCoverFovTangents(",
+  "GetEyeRawProjection(",
+  "GetNativeFovInsetBounds(",
+  "vr::",
+  "VR_Init("
+)) {
+  if ($openXrSource.Contains($forbidden)) {
+    throw "OpenXR isolation check failed: openxr_bridge.cpp contains '$forbidden'"
+  }
+}
+Write-Host "OpenXR isolation source check: PASS (no OpenVR API/display calls)"
+
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found" }
 

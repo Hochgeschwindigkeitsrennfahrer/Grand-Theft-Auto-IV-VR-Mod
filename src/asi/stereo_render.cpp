@@ -11,6 +11,7 @@
 #include "ui_state.h"
 #include "vr_display.h"
 
+#include "../bridge/gtaiv_xr_fov_math.h"
 #include "../../thirdparty/dxvk/d3d9_vk_interop.h"
 #include "../../thirdparty/minhook/include/MinHook.h"
 
@@ -679,11 +680,35 @@ constexpr uint32_t kCanvasMaxDim = 2048;
 // Mode 37 comfort: tighter cap for StretchRect/Submit cost after true-FOV fill.
 constexpr uint32_t kCanvasMaxDimComfort = 1536;
 
+bool GetCanvasCoverFovTangents(float* horizontal, float* vertical) {
+  if (GetStereoMode() != StereoMode::OpenXrSameFrameWvp)
+    return GetCoverFovTangents(horizontal, vertical);
+
+  gtaiv_xr_bridge::PoseBridge pose{};
+  if (!GetLatestOpenXrPoseBridge(&pose) ||
+      (pose.flags & gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
+      !gtaiv_xr_bridge::ComputeOpenXrCoverTangents(
+          pose.eyeFovs, horizontal, vertical)) {
+    return false;
+  }
+
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    Log(
+        "StereoCanvasSize: OpenXR cover tangents=(%.3f,%.3f); "
+        "no OpenVR display query",
+        *horizontal,
+        *vertical);
+  }
+  return true;
+}
+
 void ComputeCanvasSize(uint32_t bbW, uint32_t bbH, uint32_t* outW, uint32_t* outH) {
   *outW = bbW;
   *outH = bbH;
   float coverH = 0.f, coverV = 0.f;
-  if (!GetCoverFovTangents(&coverH, &coverV))
+  if (!GetCanvasCoverFovTangents(&coverH, &coverV))
     return;
   float gameH = 0.f, gameV = 0.f;
   GetGameFovTangents(&gameH, &gameV);

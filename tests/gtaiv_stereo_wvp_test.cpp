@@ -1,6 +1,7 @@
 #include "../src/asi/shader_ctab.h"
 #include "../src/asi/stereo_draw_patch.h"
 #include "../src/asi/stereo_wvp_math.h"
+#include "../src/bridge/gtaiv_xr_fov_math.h"
 
 #include <algorithm>
 #include <cmath>
@@ -263,6 +264,25 @@ bool TestPairAuditRejectsLooseStereo() {
   return !asi::IsVerifiedStereoDrawPatchAudit(rejected);
 }
 
+bool TestOpenXrCoverFovMath() {
+  gtaiv_xr_bridge::EyeFov fovs[2] = {
+      {-0.9425f, 0.6981f, 0.7679f, -0.9599f},
+      {-0.6981f, 0.9425f, 0.7679f, -0.9599f},
+  };
+  float horizontal = 0.0f;
+  float vertical = 0.0f;
+  if (!gtaiv_xr_bridge::ComputeOpenXrCoverTangents(
+          fovs, &horizontal, &vertical) ||
+      !Near(horizontal, std::tan(0.9425), 1.0e-5) ||
+      !Near(vertical, -std::tan(-0.9599), 1.0e-5)) {
+    return false;
+  }
+
+  fovs[0].angleLeft = std::numeric_limits<float>::quiet_NaN();
+  return !gtaiv_xr_bridge::ComputeOpenXrCoverTangents(
+      fovs, &horizontal, &vertical);
+}
+
 }  // namespace
 
 int main() {
@@ -278,6 +298,7 @@ int main() {
       {"large-translation", &TestLargeTranslationResidual},
       {"synthetic-ctab", &TestSyntheticCtab},
       {"strict-pair-audit", &TestPairAuditRejectsLooseStereo},
+      {"openxr-cover-fov", &TestOpenXrCoverFovMath},
   };
   for (const Test& test : tests) {
     if (!test.run()) {
@@ -287,8 +308,9 @@ int main() {
   }
   std::printf(
       "StereoWvpTest: PASS math=%u ctab=%u pairAudit=%u "
-      "runtimeUntouched=1\n",
+      "openxrFov=%u runtimeUntouched=1\n",
       5u,
+      1u,
       1u,
       1u);
   return 0;
