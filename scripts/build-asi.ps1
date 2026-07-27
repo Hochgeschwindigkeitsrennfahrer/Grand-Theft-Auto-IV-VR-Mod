@@ -25,6 +25,17 @@ foreach ($forbidden in @(
 }
 Write-Host "OpenXR isolation source check: PASS (no OpenVR API/display calls)"
 
+$stereoRenderSource = Get-Content -LiteralPath "$Root\src\asi\stereo_render.cpp" -Raw
+if (-not $stereoRenderSource.Contains(
+    "ComputeOpenXrEyeRawTangents(")) {
+  throw "OpenXR stereo isolation check failed: Mode54 has no OpenXR per-eye FOV path"
+}
+if ($stereoRenderSource.Contains(
+    "if (!GetEyeRawProjection(eye, &l, &r, &t, &b)")) {
+  throw "OpenXR stereo isolation check failed: canvas still calls OpenVR projection directly"
+}
+Write-Host "OpenXR stereo isolation source check: PASS (per-eye FOV comes from PoseBridge)"
+
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found" }
 

@@ -269,6 +269,27 @@ bool TestOpenXrCoverFovMath() {
       {-0.9425f, 0.6981f, 0.7679f, -0.9599f},
       {-0.6981f, 0.9425f, 0.7679f, -0.9599f},
   };
+  float left = 0.0f;
+  float right = 0.0f;
+  float top = 0.0f;
+  float bottom = 0.0f;
+  if (!gtaiv_xr_bridge::ComputeOpenXrEyeRawTangents(
+          fovs, 0u, &left, &right, &top, &bottom) ||
+      !Near(left, std::tan(-0.9425), 1.0e-5) ||
+      !Near(right, std::tan(0.6981), 1.0e-5) ||
+      !Near(top, -std::tan(0.7679), 1.0e-5) ||
+      !Near(bottom, -std::tan(-0.9599), 1.0e-5)) {
+    return false;
+  }
+  if (!gtaiv_xr_bridge::ComputeOpenXrEyeRawTangents(
+          fovs, 1u, &left, &right, &top, &bottom) ||
+      !Near(left, std::tan(-0.6981), 1.0e-5) ||
+      !Near(right, std::tan(0.9425), 1.0e-5) ||
+      gtaiv_xr_bridge::ComputeOpenXrEyeRawTangents(
+          fovs, 2u, &left, &right, &top, &bottom)) {
+    return false;
+  }
+
   float horizontal = 0.0f;
   float vertical = 0.0f;
   if (!gtaiv_xr_bridge::ComputeOpenXrCoverTangents(
@@ -308,8 +329,9 @@ int main() {
   }
   std::printf(
       "StereoWvpTest: PASS math=%u ctab=%u pairAudit=%u "
-      "openxrFov=%u runtimeUntouched=1\n",
+      "openxrFov=%u openxrEyeRaw=%u runtimeUntouched=1\n",
       5u,
+      1u,
       1u,
       1u,
       1u);

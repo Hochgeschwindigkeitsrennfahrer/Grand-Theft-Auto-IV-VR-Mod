@@ -649,12 +649,16 @@ Offline implementation status (2026-07-26):
   from the same frame, preserving the source aspect inside the existing GPU texture;
 - `UiQuad` intentionally displays only one selected source image identically to both
   eyes; the protocol does not impose the world-stereo same-tick rule on UI;
-- the x64 host renders that image to a 16:9 swapchain and submits a core
+- the x64 host currently renders that image to a 16:9 swapchain and submits a core
   `XrCompositionLayerQuad` in `XR_REFERENCE_SPACE_TYPE_VIEW`, 1.8 m forward;
+- headset feedback on 2026-07-26 rejected that face-locked placement; the accepted
+  target is a stationary local-space screen placed in front of the user when the UI
+  opens, which remains fixed while the head turns or translates;
 - world mode remains strict: same source frame, pose sequence, and rendered
   `XrTime`, with exact retained pose/FOV or black.
 
-This is compiled and protocol-self-tested only; it is not yet a headset result.
+The head-locked quad reached the headset, but stationary placement remains a separate
+unimplemented behavior gate.
 
 OpenXR actions:
 

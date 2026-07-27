@@ -704,6 +704,34 @@ bool GetCanvasCoverFovTangents(float* horizontal, float* vertical) {
   return true;
 }
 
+bool GetCanvasEyeRawProjection(vr::EVREye eye,
+                               float* left,
+                               float* right,
+                               float* top,
+                               float* bottom) {
+  if (GetStereoMode() != StereoMode::OpenXrSameFrameWvp)
+    return GetEyeRawProjection(eye, left, right, top, bottom);
+
+  gtaiv_xr_bridge::PoseBridge pose{};
+  const uint32_t eyeIndex =
+      eye == vr::Eye_Right ? 1u : 0u;
+  if (!GetLatestOpenXrPoseBridge(&pose) ||
+      (pose.flags & gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
+      !gtaiv_xr_bridge::ComputeOpenXrEyeRawTangents(
+          pose.eyeFovs, eyeIndex, left, right, top, bottom)) {
+    return false;
+  }
+
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    Log(
+        "StereoCanvasEye: OpenXR per-eye tangents active; "
+        "no OpenVR projection query");
+  }
+  return true;
+}
+
 void ComputeCanvasSize(uint32_t bbW, uint32_t bbH, uint32_t* outW, uint32_t* outH) {
   *outW = bbW;
   *outH = bbH;
@@ -898,7 +926,8 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
     return false;
 
   float l = 0.f, r = 0.f, t = 0.f, b = 0.f;
-  if (!GetEyeRawProjection(eye, &l, &r, &t, &b) || !(r > l) || !(b > t))
+  if (!GetCanvasEyeRawProjection(eye, &l, &r, &t, &b) ||
+      !(r > l) || !(b > t))
     return CopyBbToEye(dev, tex);
   float gameH = 0.f, gameV = 0.f;
   if (!GetLatchedGameFovTangents(&gameH, &gameV))

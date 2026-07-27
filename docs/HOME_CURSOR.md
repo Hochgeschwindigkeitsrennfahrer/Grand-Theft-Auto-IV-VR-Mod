@@ -6,9 +6,12 @@
 > The x64 calibration host is now implemented; its exact headset steps are in
 > [`OPENXR_QUEST3_TEST.md`](OPENXR_QUEST3_TEST.md).
 >
-> **Current safety hold (2026-07-26):** do not run a GTA/OpenXR headset test yet.
-> Mode 54 is built offline but not deployed or live-validated; the installed backend
-> remains `off`, and `scripts/run-openxr-gta.ps1` is intentionally preflight-only.
+> **Current safety hold (2026-07-26 23:19 PT):** do not run another GTA/OpenXR
+> headset test without fresh explicit authorization. The guarded 23:11 test kept
+> SteamVR absent but exposed a final OpenVR projection dependency in Mode 54, so
+> gameplay remained mono. That dependency is fixed and built offline but has not
+> been live-tested. The installed backend remains `off`, and
+> `scripts/run-openxr-gta.ps1` is intentionally preflight-only.
 > The SteamVR steps later in this legacy guide apply only to the explicit OpenVR/G2
 > fallback, not the direct Quest/OpenXR route.
 
