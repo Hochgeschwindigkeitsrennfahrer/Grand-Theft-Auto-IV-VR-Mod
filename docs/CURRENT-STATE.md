@@ -1,6 +1,6 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-26 22:55 PT
+**As of:** 2026-07-26 23:09 PT
 
 ## Direct Quest/OpenXR integration — Meta host verified; GTA bridge still gated
 
@@ -13,11 +13,29 @@ The candidate ASI never reached a new in-game session, so this was **not** a Mod
 GPU-transport, stereo, menu, or controller result. All test processes were stopped
 and the original installed ASI plus `backend=off` / `stereo=0` were restored.
 
-The exact historical SteamVR trigger was also found: `scripts/restart-gtaiv.ps1`
-called the `vrmonitor://debugcommands/system_dashboard_toggle` URI by default after
-GTA appeared. That URI can wake SteamVR. It is now explicit opt-in only and refuses
-to run unless a SteamVR process is already present. Normal GTA Steam authentication
-and SteamVR are separate; GTA app 12210 has no `-vr` Steam launch option.
+**Second controlled result, 2026-07-26 22:57 PT:** normal Steam/Rockstar
+authentication successfully started the candidate ASI in GTA with `backend=OpenXR`,
+Mode 54, Quest pose samples, Touch-to-XInput ready, and all six WVP draw hooks ready.
+Before a world transaction was produced, SteamVR started. The run was terminated,
+including SteamVR's first respawn, and all game files/settings were restored.
+
+The logs proved two independent SteamVR triggers:
+
+- the historical restart script called
+  `vrmonitor://debugcommands/system_dashboard_toggle` by default;
+- the new OpenXR path still called the shared OpenVR `LogVrDisplayInfo()` helper,
+  and Mode 54 canvas sizing could call `GetCoverFovTangents()`. Steam's
+  `vrclient_GTAIV.txt` recorded GTA as `VRApplication_Scene` and started
+  `vrserver` for app 12210.
+
+Both are fixed offline. The restart dashboard URI is explicit opt-in only and is
+refused unless SteamVR already exists. Commit `400294e` removes OpenVR display calls
+from the OpenXR path, computes canvas cover tangents from the Quest OpenXR
+`PoseBridge` FOV, and fails closed if `openvr_api.dll` is ever loaded while
+`backend=openxr`. The supervised launcher adds two operational guards: it creates
+the existing OpenVR disable sentinel and temporarily removes/backups
+`openvr_api.dll`, restoring both after the run. The replacement has **not** been
+launched after this fix.
 
 Upstream `origin/master` at `01f355b` (Modes 50–53) is merged into
 `codex/openxr-sidecar-integration`. The direct path keeps all GTA-loaded code x86 and
@@ -68,12 +86,12 @@ signature. The newest FusionFix pause signature itself is absent from this disk 
 so the verified 1.2.0.59 form is retained as an explicit fallback.
 
 Both builds pass offline checks: ASI PE32/x86; host PE32+/x64. The new x86 test reports
-`StereoWvpTest: PASS math=5 ctab=1 pairAudit=1 runtimeUntouched=1`; the host reports
+`StereoWvpTest: PASS math=5 ctab=1 pairAudit=1 openxrFov=1 runtimeUntouched=1`; the host reports
 `protocol=v4 worldStrict=1 wvpProof=1 uiQuad=1 runtimeUntouched=1`.
-Clean build from code commit `d333bfa`: ASI SHA-256
-`3718F466A3F3CDED888DD633CD08EA8926A8087CC323C47DB9939D506C221F61`;
+Clean build from code commit `400294e`: ASI SHA-256
+`8E1D8F984348C01D76804AACF6A14AAEE29F105BDAF961FE457BE3AE57ACB67F`;
 x64 host SHA-256
-`93B2C326D69460CD40D28787C71F1E32EF21BCD347A274E84EA8707F55011EC3`.
+`ED4170BADC71380810096EBB3B109746A426C8BD09EB1245829BD3CC80991521`.
 
 **Important:** Mode 54 is compiled and guarded, but true same-frame world
 stereo/parallax is **not yet a live result**. We have not proved that DXVK's replay
@@ -82,13 +100,13 @@ right-eye constant change reaches the GPU command consumed by each draw. Do not 
 this full stereo until the logs pass and the headset confirms fusion, near/far
 parallax, correct eye order, and no temporal jump.
 
-**Safety:** the installed game remains `backend=off`; the latest installed game log
-confirms `Backend: off` and that neither compositor was initialized.
+**Safety:** the installed game is restored to the original ASI, `backend=off`, and
+`stereo=0`. GTA, Steam, Rockstar, Meta host, and SteamVR processes are absent.
 `scripts/run-openxr-gta.ps1` is preflight-only and cannot start GTA, the OpenXR host,
-Steam, or SteamVR. Do not repeat the rejected direct-executable route. The next GTA
-test needs a launch path that allows the game's normal authentication while
-hard-blocking SteamVR, or a separately approved offline/RGLess setup.
-**Do not put on the headset yet.** Mode 54 still has no in-game live result.
+Steam, or SteamVR. The next GTA test must use
+`scripts/run-openxr-gta-steam-safe.ps1`, including its OpenVR DLL removal and disable
+sentinel, and requires a new explicit authorization.
+**Do not put on the headset yet.** The post-fix Mode 54 build has no live result.
 **Last OpenVR baseline (not running; backend is now `off`):** stereo **`51`**
 (Mode-50 always-distinct L/R + **`Submit_TextureWithPose`**
 AER) + **`fovadd=18`**, **`ipd=3`**, scale **`100`**, stereoscale **`125`**. Mode **50**

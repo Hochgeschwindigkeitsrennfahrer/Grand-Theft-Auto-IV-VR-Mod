@@ -10,6 +10,17 @@ actions ready. The subsequent argument-free `GTAIV.exe` process exited into
 in-game log. The route was stopped, SteamVR remained absent, and the installed
 files/settings were restored. This is not a GTA stereo/input pass.
 
+A second authorized run used normal Steam authentication. GTA reached a fresh
+OpenXR/Mode-54 ASI session and logged Quest poses, Touch-to-XInput, and all six WVP
+draw hooks. SteamVR then started because shared OpenVR display helpers were still
+reachable from the Mode-54 path. It was stopped and the install was restored before
+any verified world transaction.
+
+Commit `400294e` removes those OpenVR calls, uses OpenXR `PoseBridge` FOV for canvas
+sizing, and fails closed if `openvr_api.dll` loads. The supervised launcher also
+creates `gtaiv_dxvk_vr.disable` and temporarily removes/backups `openvr_api.dll`.
+These post-fix guards pass offline checks but have not been live-tested.
+
 ## Safe checks now
 
 These commands compile and self-test only:
