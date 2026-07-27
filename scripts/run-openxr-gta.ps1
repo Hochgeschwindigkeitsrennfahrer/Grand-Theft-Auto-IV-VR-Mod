@@ -1,7 +1,14 @@
 param(
   [string]$GameDir = "",
   [switch]$Build,
+  # Direct GTAIV.exe is the safe default for the Quest/Meta route. Keep this
+  # alias so existing notes using -DirectExe continue to work.
   [switch]$DirectExe,
+  # Explicit opt-in only. Steam's app launcher can start SteamVR through a
+  # per-app setting, so it must never be the default for this script.
+  [switch]$LaunchViaSteam,
+  # Validate the route without copying files, starting the host, or launching GTA.
+  [switch]$Preflight,
   [switch]$AllowSteamVR
 )
 
@@ -61,6 +68,9 @@ if (-not $runtime -or -not (Test-Path $runtime)) {
   throw "The active x64 OpenXR runtime manifest is missing: $runtime"
 }
 $isMetaRuntime = $runtime -match "Oculus|Meta"
+if (-not $isMetaRuntime -and -not $AllowSteamVR) {
+  throw "Active x64 OpenXR runtime is not Meta Quest Link: $runtime. Refusing to launch because it could start SteamVR. In Meta Quest Link, set Meta Quest Link as the active OpenXR runtime, then retry."
+}
 if ($isMetaRuntime) {
   $ovrService = Get-Service -Name OVRService -ErrorAction SilentlyContinue
   if (-not $ovrService -or $ovrService.Status -ne "Running") {
@@ -68,9 +78,21 @@ if ($isMetaRuntime) {
   }
 }
 
-$steamVr = Get-Process -Name vrmonitor,vrserver -ErrorAction SilentlyContinue
-if ($isMetaRuntime -and $steamVr -and -not $AllowSteamVR) {
-  throw "SteamVR is running. Close it for direct Meta OpenXR, or pass -AllowSteamVR."
+$steamVr = Get-Process -Name vrmonitor,vrserver,vrcompositor -ErrorAction SilentlyContinue
+if ($steamVr -and -not $AllowSteamVR) {
+  throw "SteamVR is running. Close it before the direct Meta OpenXR test; this script will not launch GTA while it is running."
+}
+if ($LaunchViaSteam -and -not $AllowSteamVR) {
+  throw "-LaunchViaSteam is blocked for the safe Quest test because Steam can start SteamVR. Use the default direct GTAIV.exe launch instead."
+}
+if ($Preflight) {
+  Write-Host "OPENXR GTA PREFLIGHT PASS"
+  Write-Host "Runtime: $runtime"
+  Write-Host "GTA:     $(Join-Path $GameDir 'GTAIV.exe') (x86)"
+  Write-Host "ASI:     $Asi (x86)"
+  Write-Host "Host:    $HostExe (x64)"
+  Write-Host "Launch:  nothing started; Steam was not invoked"
+  return
 }
 
 Get-Process -Name GTAIV,gtaiv_xr_host -ErrorAction SilentlyContinue |
@@ -121,21 +143,23 @@ if ($xrHostProcess.HasExited) {
 }
 
 $gtaExe = Join-Path $GameDir "GTAIV.exe"
-if ($DirectExe) {
-  Start-Process -FilePath $gtaExe -WorkingDirectory $GameDir
-}
-else {
+if ($LaunchViaSteam) {
   $steamExe = "C:\Program Files (x86)\Steam\steam.exe"
   if (-not (Test-Path $steamExe)) {
-    throw "steam.exe was not found. Rerun with -DirectExe if offline launch is configured."
+    throw "steam.exe was not found. Use the default direct GTAIV.exe launch instead."
   }
   Start-Process -FilePath $steamExe -ArgumentList @("-applaunch", "12210")
+}
+else {
+  # -DirectExe is intentionally redundant: direct launch is the safe default.
+  Start-Process -FilePath $gtaExe -WorkingDirectory $GameDir
 }
 
 Write-Host "OPENXR GTA TEST STARTED"
 Write-Host "Runtime: $runtime"
 Write-Host ("Host:    pid {0}, x64, --game" -f $xrHostProcess.Id)
 Write-Host "GTA:     $gtaExe (x86)"
+Write-Host $(if ($LaunchViaSteam) { "Launch:  Steam opt-in" } else { "Launch:  direct GTAIV.exe (Steam not invoked)" })
 Write-Host "ASI log: $(Join-Path $GameDir 'gtaiv_dxvk_vr.log')"
 Write-Host "XR log:  $(Join-Path $Root 'out-openxr\gtaiv_xr_host.log')"
 Write-Host "In Quest Link, resume the GTA IV OpenXR app. Stay in singleplayer."

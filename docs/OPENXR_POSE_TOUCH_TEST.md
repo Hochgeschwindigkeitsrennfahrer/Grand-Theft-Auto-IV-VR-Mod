@@ -15,8 +15,19 @@ prove that the x64 host and x86 ASI see the same fresh HMD and Quest Touch sampl
 Open PowerShell in `D:\code\gta-iv` and run:
 
 ```powershell
-.\scripts\run-openxr-gta.ps1 -GameDir "C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV" -Build
+.\scripts\run-openxr-gta.ps1 -Build -Preflight
 ```
+
+This safely confirms the Meta route but starts nothing. It uses the script's detected
+GTA folder and does **not** invoke Steam or SteamVR. If it reports `PREFLIGHT PASS`,
+run the actual direct test:
+
+```powershell
+.\scripts\run-openxr-gta.ps1
+```
+
+The actual test launches `GTAIV.exe` directly, never `steam.exe`. If it refuses to
+start, leave it stopped and paste the one-line error rather than using a Steam launch.
 
 In the headset, start GTA as usual. Move both Touch controllers, squeeze each grip,
 pull each trigger, move and click both sticks, press X/Y and A/B, and press the left

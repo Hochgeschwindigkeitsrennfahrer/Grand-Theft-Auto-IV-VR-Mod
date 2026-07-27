@@ -24,10 +24,12 @@ delayed fallback import, so this route does not load `openvr_api.dll` or start S
 
 ```powershell
 cd D:\code\gta-iv
-.\scripts\run-openxr-gta.ps1 -GameDir "C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV" -Build
+.\scripts\run-openxr-gta.ps1 -Build -Preflight
 ```
 
-Close SteamVR first, start Quest Link, and stay offline/singleplayer. The script adds
+`PREFLIGHT PASS` starts no process and changes no game file. After it passes, run
+`.\scripts\run-openxr-gta.ps1` for the actual direct `GTAIV.exe` launch. Close SteamVR
+first, start Quest Link, and stay offline/singleplayer. The script adds
 `-windowed` to the parent `commandline.txt` when needed and saves its previous copy as
 `commandline.txt.before-openxr`. This is a **mono transport test**: it shows the same
 GTA image in both eyes, not accepted stereo or HMD-driven camera motion yet.
