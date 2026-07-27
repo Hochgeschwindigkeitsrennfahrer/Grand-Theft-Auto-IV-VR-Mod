@@ -17,6 +17,7 @@ struct OpenXrStereoPair {
   int64_t renderedDisplayTime[2] = {};
   bool sameSimulationTick = false;
   bool poseStamped = false;
+  bool verifiedWvpStereo = false;
 };
 
 bool InstallStereoRenderHooks();

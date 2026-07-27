@@ -310,6 +310,17 @@ public:
             publishHeartbeat();
             return;
         }
+        if (!uiState
+            && (!lease.pair.sameSimulationTick
+                || !lease.pair.verifiedWvpStereo))
+        {
+            logRateLimited(
+                "OpenXRBridge: world pair lacks same-frame WVP proof; "
+                "GPU transaction withheld",
+                lastPairWaitLogTick_);
+            publishHeartbeat();
+            return;
+        }
         if (lease.pair.pairId == lastPairId_)
         {
             if (!uiState)
@@ -381,11 +392,12 @@ public:
         {
             Log(
                 "OpenXRBridge: stereo transaction=%llu slot=%u pair=%llu "
-                "sameTick=%d pose=%llu/%llu source=%llu/%llu",
+                "sameTick=%d wvpProof=%d pose=%llu/%llu source=%llu/%llu",
                 static_cast<unsigned long long>(transaction),
                 slotIndex,
                 static_cast<unsigned long long>(lease.pair.pairId),
                 lease.pair.sameSimulationTick ? 1 : 0,
+                lease.pair.verifiedWvpStereo ? 1 : 0,
                 static_cast<unsigned long long>(lease.pair.poseSequence[0]),
                 static_cast<unsigned long long>(lease.pair.poseSequence[1]),
                 static_cast<unsigned long long>(lease.pair.sourceFrameId[0]),
@@ -1062,7 +1074,7 @@ private:
         if (!mapping_)
         {
             Log(
-                "OpenXRBridge: CreateFileMapping(v3) failed win32=%lu",
+                "OpenXRBridge: CreateFileMapping(v4) failed win32=%lu",
                 static_cast<unsigned long>(GetLastError()));
             return false;
         }
@@ -1075,7 +1087,7 @@ private:
         if (!shared_)
         {
             Log(
-                "OpenXRBridge: MapViewOfFile(v3) failed win32=%lu",
+                "OpenXRBridge: MapViewOfFile(v4) failed win32=%lu",
                 static_cast<unsigned long>(GetLastError()));
             return false;
         }
@@ -1355,6 +1367,8 @@ private:
             value.flags |= gtaiv_xr_bridge::TemporalStereo;
         if (lastPair_.poseStamped)
             value.flags |= gtaiv_xr_bridge::PoseStamped;
+        if (lastPair_.verifiedWvpStereo)
+            value.flags |= gtaiv_xr_bridge::VerifiedWvpStereo;
         value.currentSlot = currentSlot_;
         value.resourceGeneration = resourceGeneration_;
         value.transactionId = nextTransaction_;
@@ -1600,6 +1614,16 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
         if (g_openXrArmAttempted)
             return;
         g_openXrArmAttempted = true;
+        ReloadStereoMode();
+        if (GetStereoMode() != StereoMode::OpenXrSameFrameWvp)
+        {
+            Log(
+                "OpenXRBridge: direct world presentation requires stereo mode "
+                "54 (verified same-frame WVP); current mode=%d, so no GTA "
+                "camera, controller, or frame hooks were armed",
+                static_cast<int>(GetStereoMode()));
+            return;
+        }
         if (!InstallUiStateProbe())
         {
             Log(
@@ -1616,7 +1640,6 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
             return;
         }
         SetCamMatrixGameplayActive(true);
-        ReloadStereoMode();
         const bool stereoReady = InstallStereoRenderHooks();
         if (!stereoReady)
         {

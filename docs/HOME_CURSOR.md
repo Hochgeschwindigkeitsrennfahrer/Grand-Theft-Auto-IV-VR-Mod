@@ -5,6 +5,12 @@
 > [`FULL_VR_PLAN.md`](FULL_VR_PLAN.md) before starting a new implementation session.
 > The x64 calibration host is now implemented; its exact headset steps are in
 > [`OPENXR_QUEST3_TEST.md`](OPENXR_QUEST3_TEST.md).
+>
+> **Current safety hold (2026-07-26):** do not run a GTA/OpenXR headset test yet.
+> Mode 54 is built offline but not deployed or live-validated; the installed backend
+> remains `off`, and `scripts/run-openxr-gta.ps1` is intentionally preflight-only.
+> The SteamVR steps later in this legacy guide apply only to the explicit OpenVR/G2
+> fallback, not the direct Quest/OpenXR route.
 
 This document is enough to continue **gtaiv-dxvk-vr** at home on your own.  
 No programming required: Cursor writes the code; you install tools, run builds, and test with the headset.

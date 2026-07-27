@@ -256,11 +256,11 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  // Two-digit modes 10..53. Mode 46 is remapped to protected Mode 45 below:
+  // Two-digit modes 10..54. Mode 46 is remapped to protected Mode 45 below:
   // its direct full-basis camera write froze after loading in a headset test.
   if (n >= 2 && buf[0] >= '1' && buf[0] <= '5' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 53)
+    if (v <= 54)
       return v;
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
@@ -293,7 +293,7 @@ void ReloadStereoMode() {
     Log("StereoMode: requested 46 is DISABLED (post-load freeze); using protected mode 45");
   }
   int prev = g_mode.load();
-  if (v >= 0 && v <= 53) {
+  if (v >= 0 && v <= 54) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -330,7 +330,8 @@ void ReloadStereoMode() {
                            v == static_cast<int>(StereoMode::HeadOwnedCamStereoAlways) ||
                            v == static_cast<int>(StereoMode::HeadOwnedCamStereoAer) ||
                            v == static_cast<int>(StereoMode::HeadOwnedCamStereoSwap) ||
-                           v == static_cast<int>(StereoMode::HeadOwnedCamStereoSoftGuard))) {
+                           v == static_cast<int>(StereoMode::HeadOwnedCamStereoSoftGuard) ||
+                           v == static_cast<int>(StereoMode::OpenXrSameFrameWvp))) {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadWorldScale();
@@ -343,7 +344,7 @@ void ReloadStereoMode() {
 }
 
 void WriteStereoModeFile(int mode) {
-  if (mode < 0 || mode > 53)
+  if (mode < 0 || mode > 54)
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -395,7 +396,8 @@ bool UsesAngleCorrectCanvas(StereoMode mode) {
          mode == StereoMode::HeadOwnedCamStereoAlways ||
          mode == StereoMode::HeadOwnedCamStereoAer ||
          mode == StereoMode::HeadOwnedCamStereoSwap ||
-         mode == StereoMode::HeadOwnedCamStereoSoftGuard;
+         mode == StereoMode::HeadOwnedCamStereoSoftGuard ||
+         mode == StereoMode::OpenXrSameFrameWvp;
 }
 
 bool UsesMotionGuardStereo(StereoMode mode) {

@@ -6,9 +6,11 @@
 `codex/openxr-sidecar-integration` branch
 
 **Status:** implementation plan, not a claim that the OpenXR product path is complete.
-The replacement GPU-only ABI-v3 frame bridge, exact pose/FOV flow, Touch/XInput and
-haptics, and UI quad now compile and pass offline self-tests. None is a live acceptance
-result. True same-frame GTA world stereo remains unresolved.
+The replacement GPU-only ABI-v4 frame bridge, exact pose/FOV flow, Touch/XInput and
+haptics, UI quad, and guarded Mode 54 same-frame WVP candidate now compile and pass
+offline self-tests. None is a live acceptance result. True same-frame GTA world
+stereo remains unresolved until Mode 54's runtime draw audit and headset fusion tests
+pass.
 
 **Primary headset:** Meta Quest 3
 
@@ -364,9 +366,10 @@ The replacement keeps stock DXVK 3.0.2:
    D3D11 resources, GPU-copies the selected slot to private textures, signals release,
    and never aliases L/R views.
 
-The pointer-free ABI v3 publishes a complete transaction only after both eye copies
-are queued. A slot cannot be reused until the release fence reaches its transaction.
-No CPU image path exists.
+The pointer-free ABI v4 publishes a complete transaction only after both eye copies
+are queued. World transactions additionally require the producer's
+`VerifiedWvpStereo` proof; UI quads do not. A slot cannot be reused until the release
+fence reaches its transaction. No CPU image path exists.
 
 Offline status on 2026-07-26: x86 and x64 builds pass; the x64 self-test verifies
 strict world-pair rejection and UI-quad acceptance without touching OpenXR. The GPU
@@ -561,6 +564,14 @@ Pass:
 
 ### Gate 7 - exact WVP surgery if Mode 24 fails
 
+Offline implementation update (2026-07-26): Mode 54 now parses the active shader's
+embedded CTAB, clusters exact `gWorld`/`gWorldViewProj` camera factors, patches only
+the dominant gameplay factor at each right-eye `Draw*`, restores constants
+immediately, and compares complete L/R draw sequences. Missing CTAB, ambiguous
+factors, partial patch coverage, changed constants, or failed restore invalidates the
+pair. ABI v4 carries that proof to both producer and host. This is a candidate, not a
+gate pass: runtime hook coverage and headset fusion/parallax remain untested.
+
 Use the FNVVR coordinate/WVP proof concept, not its game offsets:
 
 1. Hash each GTA vertex shader bytecode used by world draws.
@@ -629,7 +640,8 @@ all menu state from pixels.
 
 Offline implementation status (2026-07-26):
 
-- frame ABI v3 stamps `WorldStereo` or `UiQuad`, reason flags, and the freshest source
+- frame ABI v4 stamps `WorldStereo` or `UiQuad`, reason flags, the world-WVP proof,
+  and the freshest source
   eye as one GPU transaction;
 - GTA IV CE 1.2.0.59 pause/map, loading, and phone bytes are resolved read-only from
   unique AOB signatures; all probes are required or presentation fails closed;

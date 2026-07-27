@@ -1,6 +1,6 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-26 19:27 PT
+**As of:** 2026-07-26 22:35 PT
 
 ## Direct Quest/OpenXR integration — built offline, not deployed or headset-tested
 
@@ -12,9 +12,25 @@ fallback; `backend=off` is truly flat and initializes no compositor.
 The failed DXVK D3D9 KMT-handle route has been replaced. The x86 ASI now creates
 native D3D11 NT-handle textures and shared fences on DXVK's exact adapter, imports
 them into DXVK's Vulkan device, and GPU-copies a distinct L/R transaction. The x64
-host duplicates and opens those D3D11 handles. The contract is pointer-free ABI v3,
+host duplicates and opens those D3D11 handles. The contract is pointer-free ABI v4,
 triple-buffered, ready/release timeline synchronized, and contains no CPU pixels.
 This replacement compiles but has **not** had a live GTA/headset transport test.
+
+Mode 54 is now the non-default direct-OpenXR same-frame stereo candidate. It keeps
+Mode 23's stable per-phase `Execute`-twice boundary, but intercepts the actual D3D9
+`Draw*` calls during the second pass. The active vertex shader's embedded CTAB must
+declare an exact row-major `gWorldViewProj`; shaders that also declare `gWorld` prove
+the camera factor. The dominant gameplay-camera factor is patched for the right eye;
+other classified WVP factors (for example, auxiliary light/reflection passes) remain
+unchanged. Every patched constant is restored immediately after its draw.
+
+Mode 54 publishes nothing unless the left/right draw counts and rolling sequence
+hashes match, all gameplay WVP draws were patched, a dominant `gWorld` camera factor
+was proved, original constants match, and every Set/restore succeeds. ABI v4 carries
+`VerifiedWvpStereo`; the x86 producer withholds unproved world frames and the x64 host
+rejects them. Missing/malformed CTAB, ambiguous camera factors, temporal pairs, mono
+pairs, and partial coverage therefore produce no world transaction instead of being
+called stereo. UI quads intentionally do not require the world-WVP proof.
 
 Pose and input are now wired, not merely logged: exact OpenXR eye pose/FOV history is
 matched to accepted world frames; fresh focused Quest Touch actions feed GTA's native
@@ -36,17 +52,25 @@ found exactly one supported pause/map fallback, one loading signature, and one p
 signature. The newest FusionFix pause signature itself is absent from this disk image,
 so the verified 1.2.0.59 form is retained as an explicit fallback.
 
-Both builds pass offline checks: ASI PE32/x86; host PE32+/x64; host self-test reports
-`protocol=v3 worldStrict=1 uiQuad=1 runtimeUntouched=1`.
+Both builds pass offline checks: ASI PE32/x86; host PE32+/x64. The new x86 test reports
+`StereoWvpTest: PASS math=5 ctab=1 pairAudit=1 runtimeUntouched=1`; the host reports
+`protocol=v4 worldStrict=1 wvpProof=1 uiQuad=1 runtimeUntouched=1`.
+Offline artifact SHA-256 values: ASI
+`9EDE0875B269BA9C6534272BBC49D08E40DDDCACD6210D56A2D0FE51E05E1F5B`;
+x64 host `02662FE0AA5379735D3EFC1985C09806205EAE5D2D9454DE0A7CA2B6656FC79A`.
 
-**Important:** true same-frame world stereo/parallax is still not complete. Current
-Mode 51 is temporal and the strict OpenXR host rejects it for world presentation.
-Mode 23 is same-frame but still lacks proven per-eye camera separation/fusion. Do not
-call this full stereo until that gate passes in the headset.
+**Important:** Mode 54 is compiled and guarded, but true same-frame world
+stereo/parallax is **not yet a live result**. We have not proved that DXVK's replay
+reaches these six draw hooks, that all runtime shader families classify, or that the
+right-eye constant change reaches the GPU command consumed by each draw. Do not call
+this full stereo until the logs pass and the headset confirms fusion, near/far
+parallax, correct eye order, and no temporal jump.
 
 **Safety:** the installed game remains `backend=off`.
 `scripts/run-openxr-gta.ps1` is preflight-only and cannot start GTA, the OpenXR host,
 Steam, or SteamVR. No game/runtime/headset process was launched during this work.
+**Do not put on the headset yet.** Mode 54 has not been deployed and no live test is
+authorized by the offline build work.
 **Last OpenVR baseline (not running; backend is now `off`):** stereo **`51`**
 (Mode-50 always-distinct L/R + **`Submit_TextureWithPose`**
 AER) + **`fovadd=18`**, **`ipd=3`**, scale **`100`**, stereoscale **`125`**. Mode **50**

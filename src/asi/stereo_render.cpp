@@ -5,6 +5,7 @@
 #include "log.h"
 #include "openxr_pose_client.h"
 #include "stereo_config.h"
+#include "stereo_draw_patch.h"
 #include "stereo_eye.h"
 #include "stereo_proj.h"
 #include "ui_state.h"
@@ -115,6 +116,7 @@ OpenXrCaptureStamp g_holdOpenXrStamp[2]{};
 OpenXrCaptureStamp g_submitOpenXrStamp[2]{};
 std::atomic<uint64_t> g_openXrPairId{0};
 bool g_openXrPairSameTick = false;
+bool g_openXrPairVerifiedWvp = false;
 
 OpenXrCaptureStamp CaptureOpenXrStamp() {
   OpenXrCaptureStamp stamp{};
@@ -132,13 +134,16 @@ OpenXrCaptureStamp CaptureOpenXrStamp() {
 }
 
 void CompleteOpenXrPair(const OpenXrCaptureStamp& left,
-                        const OpenXrCaptureStamp& right) {
+                        const OpenXrCaptureStamp& right,
+                        bool verifiedWvpStereo = false) {
   g_submitOpenXrStamp[0] = left;
   g_submitOpenXrStamp[1] = right;
   g_openXrPairSameTick =
       left.valid && right.valid &&
       left.sourceFrameId == right.sourceFrameId &&
       left.poseSequence == right.poseSequence;
+  g_openXrPairVerifiedWvp =
+      g_openXrPairSameTick && verifiedWvpStereo;
   g_openXrPairId.fetch_add(1u, std::memory_order_release);
 }
 
@@ -473,6 +478,7 @@ void ReleaseEyeRts() {
   g_submitOpenXrStamp[0] = {};
   g_submitOpenXrStamp[1] = {};
   g_openXrPairSameTick = false;
+  g_openXrPairVerifiedWvp = false;
 }
 
 bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
@@ -1047,7 +1053,9 @@ bool IsBuildExecDualMode(StereoMode mode) {
 }
 
 bool IsExecViewPhaseMode(StereoMode mode) {
-  return mode == StereoMode::ExecViewPhaseDual || mode == StereoMode::ExecViewConstDual;
+  return mode == StereoMode::ExecViewPhaseDual ||
+         mode == StereoMode::ExecViewConstDual ||
+         mode == StereoMode::OpenXrSameFrameWvp;
 }
 
 bool NeedsExecHooks(StereoMode mode) {
@@ -3090,15 +3098,33 @@ bool RunExecViewPhaseDualGuarded(void* edx) {
     float* posB = reinterpret_cast<float*>(base + kMgrCamPosRvaB);
     float dx = 0.f, dy = 0.f, dz = 0.f;
     float cx = 0.f, cy = 0.f, cz = 0.f;
-    const bool sane = GetStereoEyeRightDeltaWorld(&dx, &dy, &dz) &&
-                      GetLastStereoCamPos(&cx, &cy, &cz) && std::fabs(posA[0] - cx) < 2.f &&
-                      std::fabs(posA[1] - cy) < 2.f && std::fabs(posA[2] - cz) < 2.f;
+    const StereoMode mode = GetStereoMode();
+    const bool wvpMode = mode == StereoMode::OpenXrSameFrameWvp;
+    const bool haveDelta = GetStereoEyeRightDeltaWorld(&dx, &dy, &dz);
+    const bool haveCamera = GetLastStereoCamPos(&cx, &cy, &cz);
+    const bool sane =
+        haveDelta &&
+        (wvpMode ||
+         (haveCamera && std::fabs(posA[0] - cx) < 2.f &&
+          std::fabs(posA[1] - cy) < 2.f &&
+          std::fabs(posA[2] - cz) < 2.f));
     if (!sane) {
       ++g_execViewSkips;
       RunExecuteEyePass(edx);
       return true;
     }
-    const StereoMode mode = GetStereoMode();
+    const float rightEyeDelta[3] = {dx, dy, dz};
+    bool wvpAuditStarted = false;
+    if (wvpMode) {
+      g_haveL = g_haveR = false;
+      wvpAuditStarted =
+          BeginStereoDrawPatchPair(g_device, rightEyeDelta);
+      if (!wvpAuditStarted) {
+        ++g_execViewSkips;
+        RunExecuteEyePass(edx);
+        return true;
+      }
+    }
     // Mode 30: force Left CCam bookkeeping so we do NOT stack CCam+VS (double IPD).
     if (mode == StereoMode::PhaseDualDeviceVs) {
       SetStereoEye(StereoEye::Left);
@@ -3114,7 +3140,9 @@ bool RunExecViewPhaseDualGuarded(void* edx) {
     const float ax = posA[0], ay = posA[1], az = posA[2];
     const float bx = posB[0], by = posB[1], bz = posB[2];
     // Mode 23/24: manager matrices (proven inert for fusion). Mode 30: skip — VS only.
-    if (mode != StereoMode::PhaseDualDeviceVs) {
+    const bool shiftManagerMatrices =
+        mode != StereoMode::PhaseDualDeviceVs && !wvpMode;
+    if (shiftManagerMatrices) {
       posA[0] = ax + dx;
       posA[1] = ay + dy;
       posA[2] = az + dz;
@@ -3138,15 +3166,25 @@ bool RunExecViewPhaseDualGuarded(void* edx) {
       devPatched = PushDeviceVsEyeTranslate(g_device, cam, delta);
       g_mode30DevPatches.fetch_add(static_cast<uint32_t>(devPatched));
     }
+    bool wvpRightStarted = true;
+    if (wvpMode)
+      wvpRightStarted = BeginStereoDrawPatchRightPass();
     g_execViewStage = 5;  // exec pass 2
     RunExecuteEyePass(edx);
     g_vsPatchOn.store(false);
+    StereoDrawPatchAudit wvpAudit{};
+    if (wvpMode) {
+      if (wvpRightStarted)
+        wvpAudit = EndStereoDrawPatchPair();
+      else
+        CancelStereoDrawPatchPair();
+    }
     g_execViewStage = 6;  // capture R
     capturedRight = CopyCurrentRtToEyeCanvas(g_device, g_texR, vr::Eye_Right);
     if (capturedRight)
       g_haveR = true;
     g_execViewStage = 7;  // restore
-    if (mode != StereoMode::PhaseDualDeviceVs) {
+    if (shiftManagerMatrices) {
       posA[0] = ax;
       posA[1] = ay;
       posA[2] = az;
@@ -3154,9 +3192,38 @@ bool RunExecViewPhaseDualGuarded(void* edx) {
       posB[1] = by;
       posB[2] = bz;
     }
-    if (capturedLeft && capturedRight) {
+    const bool verifiedWvpPair =
+        !wvpMode || (wvpRightStarted && wvpAudit.verified);
+    if (capturedLeft && capturedRight && verifiedWvpPair) {
       const OpenXrCaptureStamp stamp = CaptureOpenXrStamp();
-      CompleteOpenXrPair(stamp, stamp);
+      CompleteOpenXrPair(stamp, stamp, wvpMode);
+    } else if (wvpMode) {
+      g_haveL = g_haveR = false;
+    }
+    if (wvpMode) {
+      const uint32_t nextPair = g_execViewDualCount.load() + 1u;
+      if (nextPair <= 8u || nextPair % 120u == 0u ||
+          !verifiedWvpPair) {
+        Log(
+            "StereoWvp: pair=%u verified=%d draws=%u/%u "
+            "eligible=%u patched=%u trusted=%u factorOnly=%u auxWvp=%u "
+            "pass=%u failures=%u "
+            "sequence=%s",
+            nextPair,
+            verifiedWvpPair ? 1 : 0,
+            wvpAudit.leftDraws,
+            wvpAudit.rightDraws,
+            wvpAudit.eligibleDraws,
+            wvpAudit.patchedDraws,
+            wvpAudit.trustedCameraDraws,
+            wvpAudit.factorOnlyDraws,
+            wvpAudit.auxiliaryWvpDraws,
+            wvpAudit.passthroughDraws,
+            wvpAudit.failures,
+            wvpAudit.leftSequenceHash == wvpAudit.rightSequenceHash
+                ? "match"
+                : "MISMATCH");
+      }
     }
     if (mode == StereoMode::PhaseDualDeviceVs && (g_execViewDualCount.load() < 6 ||
                                                    (g_execViewDualCount.load() % 300) == 0))
@@ -3164,6 +3231,7 @@ bool RunExecViewPhaseDualGuarded(void* edx) {
           GetStereoSepMeters() * 100.f);
     return true;
   } __except (ExecViewFilter(GetExceptionInformation())) {
+    CancelStereoDrawPatchPair();
     return false;
   }
 }
@@ -5664,7 +5732,14 @@ bool InstallStereoRenderHooks() {
     g_execViewSkips.store(0);
     g_vsPatchOn.store(false);
     g_ok = InstallAllThreePhases();
-    if (mode == StereoMode::ExecViewConstDual)
+    if (mode == StereoMode::OpenXrSameFrameWvp)
+      Log(
+          "StereoRender: mode 54 OPENXR SAME-FRAME WVP candidate "
+          "(Mode23 Execute x2 + exact CTAB gWorldViewProj patch at Draw*; "
+          "six draw hooks arm on the real GTA device; mismatches publish blank) "
+          "phaseOk=%d",
+          g_ok.load() ? 1 : 0);
+    else if (mode == StereoMode::ExecViewConstDual)
       Log("StereoRender: mode 24 EXEC-VIEW CONST dual (mode 23 + SetVSConstF view-translate "
           "in the R pass; look for 'VsPatch:' lines) ok=%d",
           g_ok.load() ? 1 : 0);
@@ -5672,7 +5747,12 @@ bool InstallStereoRenderHooks() {
       Log("StereoRender: mode 23 EXEC-VIEW PHASE dual (per-phase Execute x2 like mode 10 + "
           "cam matrices @0x%X/0x%X shifted between passes) ok=%d",
           kMgrCamPosRvaA, kMgrCamPosRvaB, g_ok.load() ? 1 : 0);
-    Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 26 or 0 if freeze");
+    if (mode == StereoMode::OpenXrSameFrameWvp)
+      Log(
+          "StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 0 "
+          "(Mode54 is non-default and OpenXR-only)");
+    else
+      Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 26 or 0 if freeze");
     return g_ok.load();
   }
 
@@ -5746,6 +5826,9 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
   g_frameSeq.fetch_add(1);
 
   const StereoMode mode = GetStereoMode();
+  const bool mode54DrawReady =
+      mode != StereoMode::OpenXrSameFrameWvp ||
+      InstallStereoDrawPatchHooks(device);
   if (GetUiPresentationState()) {
     if (!CaptureOpenXrUiPair(device)) {
       static uint64_t lastFailureTick = 0u;
@@ -5756,6 +5839,18 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
             "not be refreshed");
         lastFailureTick = now;
       }
+    }
+    return;
+  }
+  if (!mode54DrawReady) {
+    g_haveL = g_haveR = false;
+    static uint64_t lastMode54HookFailureLogTick = 0u;
+    const uint64_t now = GetTickCount64();
+    if (lastMode54HookFailureLogTick == 0u ||
+        now - lastMode54HookFailureLogTick >= 2000u) {
+      Log(
+          "StereoWvp: draw hooks unavailable; world transaction stays blank");
+      lastMode54HookFailureLogTick = now;
     }
     return;
   }
@@ -6050,6 +6145,7 @@ bool StereoAcquireOpenXrPair(OpenXrStereoPair* output) {
   output->sameSimulationTick = g_openXrPairSameTick;
   output->poseStamped =
       g_submitOpenXrStamp[0].valid && g_submitOpenXrStamp[1].valid;
+  output->verifiedWvpStereo = g_openXrPairVerifiedWvp;
   return true;
 }
 

@@ -2370,8 +2370,8 @@ int main(int argc, char** argv)
                     + protocolFailure);
             }
             logger->write(
-                "SelfTest: PASS pointerBits=64 shaders=ok protocol=v3 "
-                "worldStrict=1 uiQuad=1 runtimeUntouched=1");
+                "SelfTest: PASS pointerBits=64 shaders=ok protocol=v4 "
+                "worldStrict=1 wvpProof=1 uiQuad=1 runtimeUntouched=1");
             return 0;
         }
 

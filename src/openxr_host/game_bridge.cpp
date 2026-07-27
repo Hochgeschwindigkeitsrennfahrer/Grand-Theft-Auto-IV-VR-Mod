@@ -94,6 +94,8 @@ TransactionQuality assessTransactionQuality(
     const bool worldStereo =
         value.presentationMode
             == gtaiv_xr_bridge::PresentationMode::WorldStereo;
+    const bool verifiedWvpStereo =
+        (value.flags & gtaiv_xr_bridge::VerifiedWvpStereo) != 0u;
     result.uiQuad =
         value.presentationMode
             == gtaiv_xr_bridge::PresentationMode::UiQuad;
@@ -112,6 +114,11 @@ TransactionQuality assessTransactionQuality(
             && value.uiReasonFlags == gtaiv_xr_bridge::UiReasonNone))
     {
         result.rejection = "invalid presentation mode";
+        return result;
+    }
+    if (worldStereo && !verifiedWvpStereo)
+    {
+        result.rejection = "missing verified same-frame WVP proof";
         return result;
     }
     if (worldStereo && !result.sameTick && !allowTemporalStereo)
@@ -286,7 +293,7 @@ struct GameBridge::Implementation
                 lastMappingLogTick);
             return false;
         }
-        log("GameBridge: GTA stereo descriptor v3 found");
+        log("GameBridge: GTA stereo descriptor v4 found");
         return true;
     }
 
@@ -798,7 +805,8 @@ bool GameBridgeProtocolSelfTest(std::string& failure)
         | gtaiv_xr_bridge::Stereo
         | gtaiv_xr_bridge::EyesDistinct
         | gtaiv_xr_bridge::PoseStamped
-        | gtaiv_xr_bridge::SameSimulationTick;
+        | gtaiv_xr_bridge::SameSimulationTick
+        | gtaiv_xr_bridge::VerifiedWvpStereo;
     value.presentationMode =
         gtaiv_xr_bridge::PresentationMode::WorldStereo;
     value.sourceFrameId[0] = 10u;
@@ -814,6 +822,13 @@ bool GameBridgeProtocolSelfTest(std::string& failure)
         return false;
     }
 
+    value.flags &= ~gtaiv_xr_bridge::VerifiedWvpStereo;
+    if (assessTransactionQuality(value, false).accepted)
+    {
+        failure = "unverified same-tick world pair was accepted";
+        return false;
+    }
+    value.flags |= gtaiv_xr_bridge::VerifiedWvpStereo;
     value.flags &= ~gtaiv_xr_bridge::SameSimulationTick;
     value.flags |= gtaiv_xr_bridge::TemporalStereo;
     value.sourceFrameId[1] = 11u;
@@ -827,6 +842,7 @@ bool GameBridgeProtocolSelfTest(std::string& failure)
 
     value.presentationMode =
         gtaiv_xr_bridge::PresentationMode::UiQuad;
+    value.flags &= ~gtaiv_xr_bridge::VerifiedWvpStereo;
     value.uiReasonFlags = gtaiv_xr_bridge::UiReasonPauseOrMap;
     value.uiEye = 1u;
     const TransactionQuality uiQuality =

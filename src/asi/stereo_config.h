@@ -253,6 +253,13 @@ enum class StereoMode : int {
   // Mode 51 + soft motion guard: 8°/6cm → keep distinct L/R + AER (no flatten);
   // 15°/12cm → full mono fallback. Kill: 51/50/49/45.
   HeadOwnedCamStereoSoftGuard = 53,
+  // Direct-OpenXR same-frame candidate. Reuses Mode 23's stable per-phase
+  // Execute x2 boundary, but patches only CTAB-declared gWorldViewProj at each
+  // RIGHT-eye Draw* call. Every constant is restored after that draw. The pair
+  // is publishable only when L/R draw sequences match exactly, every declared
+  // WVP contract is accounted for, and at least one gWorld factor proves the
+  // camera transform. This mode is non-default and fail-closed.
+  OpenXrSameFrameWvp = 54,
 };
 
 // Mode 40–49: rapid HMD delta → temporary mono pair. Mode 50+ never flattens.

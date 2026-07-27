@@ -18,17 +18,18 @@ GTAIV.exe (x86) EndScene
     -> distinct DXVK Vulkan L/R images through ID3D9VkInterop*
     -> Vulkan GPU copy into native D3D11 NT-handle textures
     -> shared D3D11 ready/release timeline fences
-    -> pointer-free frame descriptor ABI v3
+    -> pointer-free frame descriptor ABI v4 + VerifiedWvpStereo gate
     -> gtaiv_xr_host.exe (x64) D3D11 copy
     -> OpenXR projection swapchains or a head-locked UI quad
 ```
 
 The host's generated calibration scene passed its Quest test. The new GTA bridge
 compiles but still needs its first replacement-transport headset result. World frames
-are accepted only when L/R have one source frame, pose sequence, and rendered
-`XrTime`; exact retained pose/FOV is used for submission. Pause/map, loading, and
-phone explicitly use one fresh image on a view-space quad. The host protocol test
-passes offline, but true same-frame GTA camera separation remains a later gate.
+are accepted only when L/R have one source frame, pose sequence, rendered `XrTime`,
+and Mode 54's exact draw/WVP proof flag; exact retained pose/FOV is used for
+submission. Pause/map, loading, and phone explicitly use one fresh image on a
+view-space quad and do not claim world stereo. The host protocol and x86 WVP tests
+pass offline, but live GTA fusion/parallax remains an open gate.
 
 ## Runtime
 

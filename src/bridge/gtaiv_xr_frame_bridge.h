@@ -8,9 +8,9 @@
 // consumer from producerPid before they are opened.
 namespace gtaiv_xr_bridge
 {
-constexpr wchar_t MappingName[] = L"Local\\GTAIV_XR_FrameBridge_v3";
+constexpr wchar_t MappingName[] = L"Local\\GTAIV_XR_FrameBridge_v4";
 constexpr uint32_t Magic = 0x46525847u;  // "GXRF" in little-endian memory.
-constexpr uint32_t Version = 3u;
+constexpr uint32_t Version = 4u;
 constexpr uint32_t EyeCount = 2u;
 constexpr uint32_t SlotCount = 3u;
 
@@ -31,6 +31,7 @@ enum FrameFlags : uint32_t
     SameSimulationTick = 1u << 4u,
     PoseStamped = 1u << 5u,
     TemporalStereo = 1u << 6u,
+    VerifiedWvpStereo = 1u << 7u,
 };
 
 enum class PresentationMode : uint32_t
