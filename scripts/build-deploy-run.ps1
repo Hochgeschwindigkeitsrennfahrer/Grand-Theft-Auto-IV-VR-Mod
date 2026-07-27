@@ -79,10 +79,10 @@ if ($NoStart) {
   exit 0
 }
 
-Write-Host "=== start GTA IV (only after deploy verified; auto-close SteamVR dashboard) ==="
+Write-Host "=== start GTA IV (only after deploy verified; SteamVR untouched) ==="
 $restartArgs = @{ NoPause = $true }
 if ($DirectExe) { $restartArgs.DirectExe = $true }
-# restart-gtaiv kills any leftover GTAIV, starts the game, then closes dashboard.
+# restart-gtaiv kills any leftover GTAIV and starts the game. SteamVR stays untouched.
 & "$PSScriptRoot\restart-gtaiv.ps1" @restartArgs
 
 Write-Host "Waiting for NEW ASI session (ASI loaded + buildId=$buildId)..."

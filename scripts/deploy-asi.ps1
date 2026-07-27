@@ -38,5 +38,6 @@ if ($Launch) {
   if ($DirectExe) { $args.DirectExe = $true }
   & "$PSScriptRoot\restart-gtaiv.ps1" @args
 } else {
-  Write-Host "Checklist: SteamVR running, DXVK 3.0.2 d3d9.dll - or use -Launch / build-deploy-run.ps1"
+  Write-Host "Checklist: DXVK 3.0.2 d3d9.dll and an explicit backend."
+  Write-Host "OpenXR uses the Meta x64 host; SteamVR is only for an explicit OpenVR fallback test."
 }

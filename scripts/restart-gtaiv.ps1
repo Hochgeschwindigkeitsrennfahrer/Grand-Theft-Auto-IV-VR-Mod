@@ -1,11 +1,12 @@
 ﻿# Quick restart after GTA IV crash.
-# Default: kill game/crash processes → Steam-launch → auto-close SteamVR dashboard
-# once GTAIV is up (IsDashboardVisible toggle). ASI also closes dashboard after
-# VR_Init if still open. See docs/STARTUP_SPEED.md for offline / RGLess / DirectExe.
+# Default: kill game/crash processes, then use the normal Steam authentication route.
+# SteamVR is untouched. Its dashboard URI requires an explicit opt-in and is refused
+# unless SteamVR is already running. See docs/STARTUP_SPEED.md for DirectExe.
 param(
   [switch]$NoStart,
   [switch]$NoPause,
-  [switch]$NoCloseDashboard,  # skip dashboard toggle after game is up
+  [switch]$NoCloseDashboard,  # legacy compatibility; default is already no toggle
+  [switch]$CloseSteamVrDashboard,  # explicit OpenVR-fallback-only opt-in
   [switch]$KillRockstarStack,  # opt-in: also kill Launcher (can stick Steam on LAUNCHING)
   [switch]$DirectExe  # start GTAIV.exe directly (needs RGLess / offline auth; skips steam -applaunch)
 )
@@ -29,6 +30,13 @@ function Stop-NamedProcesses([string[]]$names) {
 }
 
 function Invoke-DashboardToggle {
+  $steamVr = @(
+    Get-Process -Name "vrmonitor", "vrserver", "vrcompositor" -ErrorAction SilentlyContinue
+  )
+  if ($steamVr.Count -eq 0) {
+    Write-Host "SteamVR is absent; refusing the dashboard URI because it could start SteamVR."
+    return
+  }
   try {
     Start-Process -FilePath "cmd.exe" -ArgumentList @(
       "/c", "start", "", "vrmonitor://debugcommands/system_dashboard_toggle"
@@ -104,10 +112,12 @@ if (-not $ready) {
   Write-Host "Do NOT use -KillRockstarStack unless cleaning a crash dialog."
 }
 
-if ($ready -and -not $NoCloseDashboard) {
-  Write-Host "Closing SteamVR dashboard (after GTAIV up; use -NoCloseDashboard to skip)..."
+if ($ready -and $CloseSteamVrDashboard -and -not $NoCloseDashboard) {
+  Write-Host "Closing the dashboard of an already-running SteamVR session..."
   Start-Sleep -Seconds 2
   Invoke-DashboardToggle
+} elseif ($ready) {
+  Write-Host "SteamVR untouched (dashboard toggle requires -CloseSteamVrDashboard)."
 }
 
 if (-not $NoPause) {

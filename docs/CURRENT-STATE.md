@@ -1,8 +1,23 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-26 22:35 PT
+**As of:** 2026-07-26 22:55 PT
 
-## Direct Quest/OpenXR integration — built offline, not deployed or headset-tested
+## Direct Quest/OpenXR integration — Meta host verified; GTA bridge still gated
+
+**Controlled launch result, 2026-07-26 22:46 PT:** the x64 host used the Oculus
+OpenXR runtime, identified Meta Quest 3 and the RTX 4070 SUPER, created the D3D11
+session, initialized Touch actions, and reached `FOCUSED`. A direct, argument-free
+`GTAIV.exe` start then exited into the Steam/`PlayGTAIV.exe` authentication route.
+The attempt was stopped instead of following that route. SteamVR did not start.
+The candidate ASI never reached a new in-game session, so this was **not** a Mode 54,
+GPU-transport, stereo, menu, or controller result. All test processes were stopped
+and the original installed ASI plus `backend=off` / `stereo=0` were restored.
+
+The exact historical SteamVR trigger was also found: `scripts/restart-gtaiv.ps1`
+called the `vrmonitor://debugcommands/system_dashboard_toggle` URI by default after
+GTA appeared. That URI can wake SteamVR. It is now explicit opt-in only and refuses
+to run unless a SteamVR process is already present. Normal GTA Steam authentication
+and SteamVR are separate; GTA app 12210 has no `-vr` Steam launch option.
 
 Upstream `origin/master` at `01f355b` (Modes 50–53) is merged into
 `codex/openxr-sidecar-integration`. The direct path keeps all GTA-loaded code x86 and
@@ -67,11 +82,13 @@ right-eye constant change reaches the GPU command consumed by each draw. Do not 
 this full stereo until the logs pass and the headset confirms fusion, near/far
 parallax, correct eye order, and no temporal jump.
 
-**Safety:** the installed game remains `backend=off`.
+**Safety:** the installed game remains `backend=off`; the latest installed game log
+confirms `Backend: off` and that neither compositor was initialized.
 `scripts/run-openxr-gta.ps1` is preflight-only and cannot start GTA, the OpenXR host,
-Steam, or SteamVR. No game/runtime/headset process was launched during this work.
-**Do not put on the headset yet.** Mode 54 has not been deployed and no live test is
-authorized by the offline build work.
+Steam, or SteamVR. Do not repeat the rejected direct-executable route. The next GTA
+test needs a launch path that allows the game's normal authentication while
+hard-blocking SteamVR, or a separately approved offline/RGLess setup.
+**Do not put on the headset yet.** Mode 54 still has no in-game live result.
 **Last OpenVR baseline (not running; backend is now `off`):** stereo **`51`**
 (Mode-50 always-distinct L/R + **`Submit_TextureWithPose`**
 AER) + **`fovadd=18`**, **`ipd=3`**, scale **`100`**, stereoscale **`125`**. Mode **50**
