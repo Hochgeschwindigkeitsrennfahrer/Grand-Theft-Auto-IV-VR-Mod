@@ -407,11 +407,9 @@ void ApplyHmdToCam(Matrix44* mat) {
 
     // Optional EyeToHead forward (OpenVR col2 translation) like L4D2 m_EyeZ.
     float eyeZ = 0.f;
-    if (vr::VRSystem()) {
-      const vr::HmdMatrix34_t e2h =
-          vr::VRSystem()->GetEyeToHeadTransform(rightEye ? vr::Eye_Right : vr::Eye_Left);
-      eyeZ = e2h.m[2][3];
-    }
+    EyeOffset eyeOffset{};
+    if (GetCachedEyeOffset(rightEye, &eyeOffset))
+      eyeZ = eyeOffset.z;
 
     // WorldScale (F7) = 6DoF only. StereoScale (F6, default 1.15, cap 1.30) =
     // soft disparity for size-without-fusion-break. Raw WorldScale×IPD at 1.5

@@ -21,6 +21,7 @@ enum PoseBridgeFlags : uint32_t
     PoseBridgeHmdValid = 1u << 3u,
     PoseBridgeLeftControllerValid = 1u << 4u,
     PoseBridgeRightControllerValid = 1u << 5u,
+    PoseBridgeInputFocused = 1u << 6u,
 };
 
 enum ControllerActiveFlags : uint32_t

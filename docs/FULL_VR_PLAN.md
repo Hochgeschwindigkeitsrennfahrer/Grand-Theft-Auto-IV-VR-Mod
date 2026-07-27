@@ -6,8 +6,9 @@
 `codex/openxr-sidecar-integration` branch
 
 **Status:** implementation plan, not a claim that the OpenXR product path is complete.
-An x86-to-x64 GPU mono-frame bridge now compiles, but it is not an acceptance result:
-it still needs a Quest run and lacks the fixed pose/stereo transaction described below.
+The replacement GPU-only ABI-v3 frame bridge, exact pose/FOV flow, Touch/XInput and
+haptics, and UI quad now compile and pass offline self-tests. None is a live acceptance
+result. True same-frame GTA world stereo remains unresolved.
 
 **Primary headset:** Meta Quest 3
 
@@ -339,42 +340,38 @@ OpenXR calls never occur in `CopyMat`, a GTA render-phase hook, or a second game
 This is the highest-risk part of the OpenXR migration. Prove it outside GTA before
 adding it to the ASI.
 
-### Route A - preferred: DXVK D3D9 shared target to D3D11
+### Route A — rejected on this machine: DXVK D3D9 KMT handle to D3D11
 
-Adapt the FNVVR transport shape:
+The first live direct-GTA attempt proved that DXVK's legacy D3D9 shared handle cannot
+be opened as a native D3D11 resource here: `OpenSharedResource` returned
+`E_INVALIDARG`. That route is retired and must not be retried every `EndScene`.
 
-1. An x86 test producer loads stock DXVK 3.0.2 and creates a D3D9 render-target texture
-   with a shared handle.
-2. An x86 D3D11 device on the same adapter opens that D3D9 shared resource.
-3. It copies into an NT-handle D3D11 texture suitable for cross-process use.
-4. It signals an `ID3D11Fence` with a shared NT handle.
-5. An x64 test consumer opens the texture and fence, verifies a changing checkerboard
-entirely on the GPU, and acknowledges resource reuse.
+### Route B — selected and built offline: native D3D11 NT resources imported by Vulkan
 
-The harness directory contains the x86 DXVK `d3d9.dll` only. It must not place DXVK's
-`d3d11.dll` beside the executable, because the producer needs the native Windows
-D3D11 device to test the actual cross-API route.
+The replacement keeps stock DXVK 3.0.2:
 
-Only after this passes is the producer added to GTA's eye-capture path.
+1. The x86 ASI obtains DXVK's Vulkan instance, physical device, device, queue, source
+   eye `VkImage`, image layout, and adapter LUID through `ID3D9VkInterop*`.
+2. A native x86 D3D11 device is created on that exact LUID.
+3. It creates three slots of distinct L/R D3D11 NT-handle textures plus shared D3D11
+   ready/release fences.
+4. Those D3D11 textures and fences are imported into DXVK's Vulkan device using
+   `VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT` and
+   `VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D11_FENCE_BIT`.
+5. On DXVK's locked submission queue, Vulkan transitions external ownership, copies
+   the captured L/R images, and signals the ready timeline value.
+6. The x64 host duplicates handles from the verified producer process, opens them as
+   D3D11 resources, GPU-copies the selected slot to private textures, signals release,
+   and never aliases L/R views.
 
-Why the two-stage D3D11 copy exists: DXVK's D3D9 shared handle is a KMT-style resource
-handle. The x86 process opens it locally, then publishes normal D3D11 NT handles and a
-shared fence to the x64 process.
+The pointer-free ABI v3 publishes a complete transaction only after both eye copies
+are queued. A slot cannot be reused until the release fence reaches its transaction.
+No CPU image path exists.
 
-### Route B - fallback: Vulkan external memory
-
-If Route A fails under stock DXVK:
-
-1. Query `VK_KHR_external_memory_win32`, external image format support, device LUID,
-   and compatible handle types through the existing `ID3D9VkInteropDevice`.
-2. Create dedicated export/import-capable eye bridge images, not exports of arbitrary
-   DXVK backbuffers.
-3. Copy the captured DXVK image into those bridge images on the locked DXVK submission
-   queue.
-4. Synchronize with an exportable fence/semaphore contract that the x64 consumer can
-   validate.
-
-Do this first in the same standalone x86/x64 harness.
+Offline status on 2026-07-26: x86 and x64 builds pass; the x64 self-test verifies
+strict world-pair rejection and UI-quad acceptance without touching OpenXR. The GPU
+transport is still **not a live pass** until a separately authorized headset test
+proves adapter import, synchronization, changing pixels, and clean shutdown.
 
 ### Route C - last resort: minimal DXVK 3.0.2 patch
 
@@ -488,10 +485,12 @@ capability-queried Meta extensions.
 
 ### Gate 3 - fixed shared ABI and pose flow
 
-Implementation update (2026-07-26): a first `PoseBridge` ABI and Quest Touch action
-publisher now build, with an x86 **log-only** consumer. This is not a pass until the
-headset test records fresh HMD/eye/controller values and validates host-loss behavior.
-It intentionally does not apply camera or input changes yet.
+Implementation update (2026-07-26): the fixed `PoseBridge` ABI, exact eye pose/FOV
+history, Quest Touch action publisher, x86 camera consumer, XInput mapping, and reverse
+haptic bridge all build offline. Input is valid only while the OpenXR session is
+focused and the packet is fresh; otherwise GTA falls through to the real physical
+XInput device. This is not a live pass until a headset test validates pose, controls,
+haptics, and host-loss behavior.
 
 Add the protocol and its x86/x64 tests. Then:
 
@@ -522,7 +521,8 @@ Pass:
 - no CPU image transfer or per-frame handle recreation;
 - 10,000 transactions complete without a stale/torn frame or leaked handle.
 
-Choose Route A, B, or C only from this evidence.
+Route B is selected in source, but this gate remains open until its first controlled
+live GPU-transport test produces the evidence above.
 
 ### Gate 5 - GTA mono through OpenXR, no SteamVR
 
@@ -627,6 +627,23 @@ Presentation modes:
 Add a read-only GTA UI-state probe before suppressing or moving any draw. Do not infer
 all menu state from pixels.
 
+Offline implementation status (2026-07-26):
+
+- frame ABI v3 stamps `WorldStereo` or `UiQuad`, reason flags, and the freshest source
+  eye as one GPU transaction;
+- GTA IV CE 1.2.0.59 pause/map, loading, and phone bytes are resolved read-only from
+  unique AOB signatures; all probes are required or presentation fails closed;
+- at `EndScene`, UI mode copies the unwarped GTA backbuffer into two distinct textures
+  from the same frame, preserving the source aspect inside the existing GPU texture;
+- `UiQuad` intentionally displays only one selected source image identically to both
+  eyes; the protocol does not impose the world-stereo same-tick rule on UI;
+- the x64 host renders that image to a 16:9 swapchain and submits a core
+  `XrCompositionLayerQuad` in `XR_REFERENCE_SPACE_TYPE_VIEW`, 1.8 m forward;
+- world mode remains strict: same source frame, pose sequence, and rendered
+  `XrTime`, with exact retained pose/FOV or black.
+
+This is compiled and protocol-self-tested only; it is not yet a headset result.
+
 OpenXR actions:
 
 - standard left/right aim and grip poses;
@@ -642,6 +659,20 @@ Input sub-gates:
 3. menu pointer ray and normal mouse click;
 4. phone/map/pause navigation;
 5. weapon/aim integration later.
+
+Current Touch-to-XInput mapping:
+
+| Touch | GTA/XInput |
+|---|---|
+| left/right sticks | left/right sticks |
+| triggers | LT/RT |
+| squeezes | LB/RB |
+| X/Y and A/B | X/Y and A/B |
+| stick clicks | L3/R3 |
+| left Menu | Start |
+| Menu + L3 | Back |
+| L3 + left-stick direction | D-pad |
+| XInput vibration | left/right OpenXR haptics |
 
 HUD is a separate problem from world projection. Never shrink the whole angle-correct
 world canvas to pull the radar inward. First classify HUD draws; then either reposition
@@ -768,7 +799,7 @@ Game log examples:
 Build: asi=... git=... machine=x86 backend=openxr
 Bridge: hostEpoch=... abi=... heartbeatAgeMs=...
 Pose: seq=... ageMs=... predictedTime=... valid=...
-GpuBridge: route=d3d9-d3d11 adapterLuid=... sets=3
+GpuBridge: route=d3d11-nt-imported-vulkan adapterLuid=... sets=3
 StereoPair: sourceFrame=... tick=... pose=... L=1 R=1 sameTick=1
 StereoReject: reason=...
 ```
@@ -827,15 +858,13 @@ Do these in order. Stop after each headset result and update
 1. Mode 24 OpenVR test and decision.
 2. Quest 3 x64 OpenXR calibration-grid host, SteamVR closed.
 3. Cross-architecture protocol tests.
-4. Host pose publication to x86 log-only reader.
-5. GTA orientation-only consume test.
-6. Standalone x86-to-x64 GPU bridge test.
-7. GTA mono GPU frame through OpenXR.
-8. Same-frame stereo pair through OpenXR while standing.
-9. Moving/turning/driving stereo test.
-10. Camera translation and head/body decoupling.
-11. UI-state probe, then flat UI quad transition.
-12. Quest Touch action logging, then locomotion.
+4. Replacement x86-to-x64 GPU bridge live test.
+5. Same-frame stereo pair through OpenXR while standing.
+6. Moving/turning/driving stereo test.
+7. Exact camera pose/FOV and translation test.
+8. Quest Touch/XInput and haptic test.
+9. UI-state probe plus pause/map/loading/phone quad transition.
+10. Head/body decoupling and aim-camera test.
 13. Wired Quest performance pass, then Air Link pass.
 14. Reverb G2 OpenVR regression; SteamVR OpenXR/Oasis best-effort test when hardware is
     available.

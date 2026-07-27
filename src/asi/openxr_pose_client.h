@@ -1,9 +1,15 @@
 #pragma once
 
+#include "../bridge/gtaiv_xr_pose_bridge.h"
+
 namespace asi
 {
-// Reads the x64 host's fixed ABI and logs validated samples. This deliberately
-// does not move the GTA camera or inject input in the first hardware gate.
+// Reads and validates the x64 host's fixed ABI.
 void PollOpenXrPoseBridge();
+
+// Returns the newest stable, fresh host sample. The caller gets a value copy;
+// no pointer into the cross-process mapping escapes this module.
+bool GetLatestOpenXrPoseBridge(gtaiv_xr_bridge::PoseBridge* output);
+
 void ShutdownOpenXrPoseBridge();
 }

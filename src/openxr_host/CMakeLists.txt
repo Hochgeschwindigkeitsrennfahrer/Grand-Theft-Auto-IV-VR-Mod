@@ -40,6 +40,7 @@ set(GTAIV_XR_BUILD_ID "dev" CACHE STRING "Build identity written to the host log
 add_executable(gtaiv_xr_host
   main.cpp
   game_bridge.cpp
+  haptic_bridge.cpp
   pose_bridge.cpp)
 target_compile_definitions(gtaiv_xr_host PRIVATE
   WIN32_LEAN_AND_MEAN

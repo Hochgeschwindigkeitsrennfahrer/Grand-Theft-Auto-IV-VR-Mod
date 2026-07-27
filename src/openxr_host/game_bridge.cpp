@@ -37,7 +37,7 @@ DXGI_FORMAT dxgiFormat(gtaiv_xr_bridge::PixelFormat format)
         case gtaiv_xr_bridge::PixelFormat::B8G8R8A8Unorm:
             return DXGI_FORMAT_B8G8R8A8_UNORM;
         case gtaiv_xr_bridge::PixelFormat::B8G8R8X8Unorm:
-            return DXGI_FORMAT_B8G8R8X8_UNORM;
+            return DXGI_FORMAT_B8G8R8A8_UNORM;
         case gtaiv_xr_bridge::PixelFormat::R8G8B8A8Unorm:
             return DXGI_FORMAT_R8G8B8A8_UNORM;
         default:
@@ -58,9 +58,8 @@ bool stableSnapshot(const FrameBridge* shared, FrameBridge& output)
 {
     if (!shared)
         return false;
-
     const int32_t first = shared->publicationSequence;
-    if ((first & 1) != 0)
+    if (first == 0 || (first & 1) != 0)
         return false;
     MemoryBarrier();
     std::memcpy(&output, shared, sizeof(output));
@@ -68,12 +67,80 @@ bool stableSnapshot(const FrameBridge* shared, FrameBridge& output)
     const int32_t second = shared->publicationSequence;
     return first == second && (second & 1) == 0;
 }
+
+struct TransactionQuality
+{
+    bool accepted = false;
+    bool sameTick = false;
+    bool uiQuad = false;
+    const char* rejection = nullptr;
+};
+
+TransactionQuality assessTransactionQuality(
+    const FrameBridge& value,
+    bool allowTemporalStereo)
+{
+    TransactionQuality result {};
+    result.sameTick =
+        (value.flags & gtaiv_xr_bridge::SameSimulationTick) != 0u
+        && value.sourceFrameId[0] != 0u
+        && value.sourceFrameId[0] == value.sourceFrameId[1]
+        && value.poseSequence[0] != 0u
+        && value.poseSequence[0] == value.poseSequence[1]
+        && value.renderedDisplayTime[0] != 0
+        && value.renderedDisplayTime[0]
+            == value.renderedDisplayTime[1];
+
+    const bool worldStereo =
+        value.presentationMode
+            == gtaiv_xr_bridge::PresentationMode::WorldStereo;
+    result.uiQuad =
+        value.presentationMode
+            == gtaiv_xr_bridge::PresentationMode::UiQuad;
+    constexpr uint32_t KnownUiReasons =
+        gtaiv_xr_bridge::UiReasonPauseOrMap
+        | gtaiv_xr_bridge::UiReasonLoading
+        | gtaiv_xr_bridge::UiReasonPhone;
+    const bool reasonsValid =
+        (value.uiReasonFlags & ~KnownUiReasons) == 0u;
+    if ((!worldStereo && !result.uiQuad)
+        || value.uiEye >= gtaiv_xr_bridge::EyeCount
+        || !reasonsValid
+        || (worldStereo
+            && value.uiReasonFlags != gtaiv_xr_bridge::UiReasonNone)
+        || (result.uiQuad
+            && value.uiReasonFlags == gtaiv_xr_bridge::UiReasonNone))
+    {
+        result.rejection = "invalid presentation mode";
+        return result;
+    }
+    if (worldStereo && !result.sameTick && !allowTemporalStereo)
+    {
+        result.rejection = "not one simulation tick/pose";
+        return result;
+    }
+    if (value.poseSequence[0] == 0u
+        || value.poseSequence[1] == 0u
+        || value.renderedDisplayTime[value.uiEye] == 0
+        || value.sourceFrameId[value.uiEye] == 0u)
+    {
+        result.rejection = "missing pose/source stamp";
+        return result;
+    }
+    result.accepted = true;
+    return result;
+}
 }
 
 struct GameBridge::Implementation
 {
-    explicit Implementation(LogFunction function)
+    using SharedTextureSet = std::array<
+        std::array<ComPtr<ID3D11Texture2D>, gtaiv_xr_bridge::EyeCount>,
+        gtaiv_xr_bridge::SlotCount>;
+
+    explicit Implementation(LogFunction function, bool allowTemporal)
         : logger(std::move(function))
+        , allowTemporalStereo(allowTemporal)
     {
     }
 
@@ -88,7 +155,22 @@ struct GameBridge::Implementation
             logger(value);
     }
 
-    bool initialize(ID3D11Device* sourceDevice, ID3D11DeviceContext* sourceContext)
+    void logRateLimited(
+        const std::string& message,
+        uint64_t& lastTick,
+        uint64_t interval = 5000u)
+    {
+        const uint64_t now = GetTickCount64();
+        if (lastTick == 0u || now - lastTick >= interval)
+        {
+            log(message);
+            lastTick = now;
+        }
+    }
+
+    bool initialize(
+        ID3D11Device* sourceDevice,
+        ID3D11DeviceContext* sourceContext)
     {
         if (!sourceDevice || !sourceContext)
             return false;
@@ -102,7 +184,10 @@ struct GameBridge::Implementation
             resetAll();
             return false;
         }
-        log("GameBridge: waiting for GTAIV.exe GPU frames");
+        log(
+            allowTemporalStereo
+                ? "GameBridge: waiting for GTA stereo; TEMPORAL diagnostic explicitly allowed"
+                : "GameBridge: waiting for strict same-tick GTA stereo");
         return true;
     }
 
@@ -123,12 +208,17 @@ struct GameBridge::Implementation
 
     void releaseResources()
     {
-        privateView.Reset();
-        privateTexture.Reset();
+        for (ComPtr<ID3D11ShaderResourceView>& view : privateViews)
+            view.Reset();
+        for (ComPtr<ID3D11Texture2D>& texture : privateTextures)
+            texture.Reset();
+        for (auto& slot : sharedTextures)
+        {
+            for (ComPtr<ID3D11Texture2D>& texture : slot)
+                texture.Reset();
+        }
         releaseFence.Reset();
         readyFence.Reset();
-        for (ComPtr<ID3D11Texture2D>& texture : sharedTextures)
-            texture.Reset();
         if (producerProcess)
         {
             CloseHandle(producerProcess);
@@ -136,10 +226,10 @@ struct GameBridge::Implementation
         }
         connectedPid = 0u;
         connectedEpoch = 0u;
+        connectedResourceSet = 0u;
         connectedGeneration = 0u;
-        lastFrameId = 0u;
-        privateWidth = 0u;
-        privateHeight = 0u;
+        lastTransaction = 0u;
+        current = {};
     }
 
     void releaseMapping()
@@ -170,7 +260,6 @@ struct GameBridge::Implementation
     {
         if (mapping && shared)
             return true;
-
         releaseMapping();
         mapping = OpenFileMappingW(
             FILE_MAP_READ,
@@ -179,9 +268,8 @@ struct GameBridge::Implementation
         if (!mapping)
         {
             logRateLimited(
-                "GameBridge: GTA frame bridge is not running yet",
-                lastMappingLogTick,
-                5000u);
+                "GameBridge: GTA stereo descriptor is not running yet",
+                lastMappingLogTick);
             return false;
         }
         shared = static_cast<const FrameBridge*>(MapViewOfFile(
@@ -194,26 +282,12 @@ struct GameBridge::Implementation
         {
             releaseMapping();
             logRateLimited(
-                "GameBridge: could not map GTA frame descriptor",
-                lastMappingLogTick,
-                5000u);
+                "GameBridge: could not map GTA stereo descriptor",
+                lastMappingLogTick);
             return false;
         }
-        log("GameBridge: GTA frame descriptor found");
+        log("GameBridge: GTA stereo descriptor v3 found");
         return true;
-    }
-
-    void logRateLimited(
-        const char* message,
-        uint64_t& lastTick,
-        uint64_t interval)
-    {
-        const uint64_t now = GetTickCount64();
-        if (lastTick == 0u || now - lastTick >= interval)
-        {
-            log(message);
-            lastTick = now;
-        }
     }
 
     bool producerActive(uint32_t expectedPid)
@@ -226,9 +300,7 @@ struct GameBridge::Implementation
             && exitCode == STILL_ACTIVE;
     }
 
-    bool duplicateHandle(
-        uint64_t sourceValue,
-        HANDLE& destination)
+    bool duplicateHandle(uint64_t sourceValue, HANDLE& destination)
     {
         destination = nullptr;
         if (!rawHandleValid(sourceValue))
@@ -262,15 +334,12 @@ struct GameBridge::Implementation
             && description.Usage == D3D11_USAGE_DEFAULT
             && (description.BindFlags & D3D11_BIND_SHADER_RESOURCE) != 0u
             && (description.MiscFlags
-                & (D3D11_RESOURCE_MISC_SHARED_NTHANDLE
-                    | D3D11_RESOURCE_MISC_SHARED))
-                == (D3D11_RESOURCE_MISC_SHARED_NTHANDLE
-                    | D3D11_RESOURCE_MISC_SHARED)
+                & D3D11_RESOURCE_MISC_SHARED_NTHANDLE) != 0u
             && (description.MiscFlags
                 & D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX) == 0u;
     }
 
-    bool createPrivateTexture(const FrameBridge& value)
+    bool createPrivateTextures(const FrameBridge& value)
     {
         D3D11_TEXTURE2D_DESC description {};
         description.Width = value.width;
@@ -281,49 +350,65 @@ struct GameBridge::Implementation
         description.SampleDesc.Count = 1u;
         description.Usage = D3D11_USAGE_DEFAULT;
         description.BindFlags = D3D11_BIND_SHADER_RESOURCE;
-
-        if (FAILED(device->CreateTexture2D(
-                &description,
-                nullptr,
-                &privateTexture))
-            || !privateTexture
-            || FAILED(device->CreateShaderResourceView(
-                privateTexture.Get(),
-                nullptr,
-                &privateView))
-            || !privateView)
+        for (uint32_t eye = 0u;
+             eye < gtaiv_xr_bridge::EyeCount;
+             ++eye)
         {
-            return false;
+            if (FAILED(device->CreateTexture2D(
+                    &description,
+                    nullptr,
+                    &privateTextures[eye]))
+                || !privateTextures[eye]
+                || FAILED(device->CreateShaderResourceView(
+                    privateTextures[eye].Get(),
+                    nullptr,
+                    &privateViews[eye]))
+                || !privateViews[eye])
+            {
+                return false;
+            }
         }
-        privateWidth = value.width;
-        privateHeight = value.height;
-        return true;
+        return privateViews[0].Get() != privateViews[1].Get();
     }
 
     bool openResourceSet(const FrameBridge& value)
     {
         releaseResources();
+        const uint32_t requiredFlags =
+            gtaiv_xr_bridge::Running
+            | gtaiv_xr_bridge::GpuD3D11NtHandles
+            | gtaiv_xr_bridge::Stereo
+            | gtaiv_xr_bridge::EyesDistinct
+            | gtaiv_xr_bridge::PoseStamped;
         if (value.adapterLuid != adapterLuid
             || value.width == 0u
             || value.height == 0u
             || dxgiFormat(value.format) == DXGI_FORMAT_UNKNOWN
+            || (value.flags & requiredFlags) != requiredFlags
             || !rawHandleValid(value.readyFenceHandle)
             || !rawHandleValid(value.releaseFenceHandle))
         {
             std::ostringstream message;
             message << "GameBridge: producer descriptor rejected; hostLuid="
                     << std::hex << adapterLuid
-                    << " producerLuid=" << value.adapterLuid;
-            logRateLimited(
-                message.str().c_str(),
-                lastOpenFailureLogTick,
-                5000u);
+                    << " producerLuid=" << value.adapterLuid
+                    << " flags=0x" << value.flags;
+            logRateLimited(message.str(), lastOpenFailureLogTick);
             return false;
         }
-        for (const gtaiv_xr_bridge::FrameSlot& slot : value.slots)
+        for (const gtaiv_xr_bridge::ResourceSlot& slot : value.slots)
         {
-            if (!rawHandleValid(slot.textureHandle))
+            const uint64_t left = slot.eyes[0].textureHandle;
+            const uint64_t right = slot.eyes[1].textureHandle;
+            if (!rawHandleValid(left)
+                || !rawHandleValid(right)
+                || left == right)
+            {
+                logRateLimited(
+                    "GameBridge: aliased or invalid L/R resource handles rejected",
+                    lastOpenFailureLogTick);
                 return false;
+            }
         }
 
         constexpr DWORD access =
@@ -333,22 +418,31 @@ struct GameBridge::Implementation
         {
             logRateLimited(
                 "GameBridge: GTA producer process is unavailable",
-                lastOpenFailureLogTick,
-                5000u);
+                lastOpenFailureLogTick);
             releaseResources();
             return false;
         }
 
-        std::array<HANDLE, gtaiv_xr_bridge::SlotCount> textureHandles {};
+        using RawHandleSet = std::array<
+            std::array<HANDLE, gtaiv_xr_bridge::EyeCount>,
+            gtaiv_xr_bridge::SlotCount>;
+        RawHandleSet textureHandles {};
         HANDLE readyHandle = nullptr;
         HANDLE releaseHandle = nullptr;
         bool duplicated = true;
-        for (uint32_t slot = 0u; slot < gtaiv_xr_bridge::SlotCount; ++slot)
+        for (uint32_t slot = 0u;
+             slot < gtaiv_xr_bridge::SlotCount;
+             ++slot)
         {
-            duplicated = duplicated
-                && duplicateHandle(
-                    value.slots[slot].textureHandle,
-                    textureHandles[slot]);
+            for (uint32_t eye = 0u;
+                 eye < gtaiv_xr_bridge::EyeCount;
+                 ++eye)
+            {
+                duplicated = duplicated
+                    && duplicateHandle(
+                        value.slots[slot].eyes[eye].textureHandle,
+                        textureHandles[slot][eye]);
+            }
         }
         duplicated = duplicated
             && duplicateHandle(value.readyFenceHandle, readyHandle)
@@ -358,16 +452,21 @@ struct GameBridge::Implementation
         if (opened)
         {
             for (uint32_t slot = 0u;
-                 slot < gtaiv_xr_bridge::SlotCount;
+                 slot < gtaiv_xr_bridge::SlotCount && opened;
                  ++slot)
             {
-                if (FAILED(device5->OpenSharedResource1(
-                        textureHandles[slot],
-                        IID_PPV_ARGS(&sharedTextures[slot])))
-                    || !sharedTextures[slot])
+                for (uint32_t eye = 0u;
+                     eye < gtaiv_xr_bridge::EyeCount;
+                     ++eye)
                 {
-                    opened = false;
-                    break;
+                    if (FAILED(device5->OpenSharedResource1(
+                            textureHandles[slot][eye],
+                            IID_PPV_ARGS(&sharedTextures[slot][eye])))
+                        || !sharedTextures[slot][eye])
+                    {
+                        opened = false;
+                        break;
+                    }
                 }
             }
         }
@@ -384,10 +483,13 @@ struct GameBridge::Implementation
                 && releaseFence;
         }
 
-        for (HANDLE handle : textureHandles)
+        for (const auto& slot : textureHandles)
         {
-            if (handle)
-                CloseHandle(handle);
+            for (HANDLE handle : slot)
+            {
+                if (handle)
+                    CloseHandle(handle);
+            }
         }
         if (readyHandle)
             CloseHandle(readyHandle);
@@ -397,153 +499,227 @@ struct GameBridge::Implementation
         if (!opened)
         {
             logRateLimited(
-                "GameBridge: opening GTA shared GPU resources failed",
-                lastOpenFailureLogTick,
-                5000u);
+                "GameBridge: opening Vulkan-imported D3D11 resources failed",
+                lastOpenFailureLogTick);
             releaseResources();
             return false;
         }
-        for (const ComPtr<ID3D11Texture2D>& texture : sharedTextures)
+        for (const auto& slot : sharedTextures)
         {
-            if (!textureDescriptionMatches(texture.Get(), value))
+            for (const ComPtr<ID3D11Texture2D>& texture : slot)
             {
-                logRateLimited(
-                    "GameBridge: GTA shared texture description mismatch",
-                    lastOpenFailureLogTick,
-                    5000u);
-                releaseResources();
-                return false;
+                if (!textureDescriptionMatches(texture.Get(), value))
+                {
+                    logRateLimited(
+                        "GameBridge: shared eye texture description mismatch",
+                        lastOpenFailureLogTick);
+                    releaseResources();
+                    return false;
+                }
             }
         }
-        if (!createPrivateTexture(value))
+        if (!createPrivateTextures(value))
         {
             logRateLimited(
-                "GameBridge: private host texture creation failed",
-                lastOpenFailureLogTick,
-                5000u);
+                "GameBridge: private L/R textures could not be created",
+                lastOpenFailureLogTick);
             releaseResources();
             return false;
         }
 
         connectedPid = value.producerPid;
         connectedEpoch = value.producerEpoch;
+        connectedResourceSet = value.resourceSetId;
         connectedGeneration = value.resourceGeneration;
         std::ostringstream message;
-        message << "GameBridge: CONNECTED to GTAIV.exe pid=" << connectedPid
+        message << "GameBridge: CONNECTED stereo pid=" << connectedPid
                 << " source=" << value.width << 'x' << value.height
-                << " adapterLuid=" << std::hex << value.adapterLuid;
+                << " adapterLuid=" << std::hex << value.adapterLuid
+                << " resourceSet=" << value.resourceSetId;
         log(message.str());
         return true;
     }
 
-    bool descriptorValid(const FrameBridge& value) const
+    bool descriptorHeaderValid(const FrameBridge& value) const
     {
+        const uint64_t now = GetTickCount64();
         return value.magic == gtaiv_xr_bridge::Magic
             && value.version == gtaiv_xr_bridge::Version
             && value.structBytes == sizeof(FrameBridge)
+            && value.mappingBytes == sizeof(FrameBridge)
             && value.slotCount == gtaiv_xr_bridge::SlotCount
             && value.producerPid != 0u
             && value.producerEpoch != 0u
+            && value.resourceSetId != 0u
+            && value.heartbeatTickMs != 0u
+            && now >= value.heartbeatTickMs
+            && now - value.heartbeatTickMs <= 1000u
             && (value.flags & gtaiv_xr_bridge::Running) != 0u;
     }
 
-    GameFrameView currentView() const
+    bool drainRejectedTransaction(
+        const FrameBridge& value,
+        const char* reason)
     {
-        return {
-            privateView.Get(),
-            privateWidth,
-            privateHeight,
-            lastFrameId,
-        };
+        if (value.currentSlot >= gtaiv_xr_bridge::SlotCount
+            || value.transactionId == 0u
+            || value.slots[value.currentSlot].transactionId
+                != value.transactionId)
+        {
+            return false;
+        }
+        HRESULT result = context4->Wait(
+            readyFence.Get(),
+            value.transactionId);
+        if (SUCCEEDED(result))
+        {
+            result = context4->Signal(
+                releaseFence.Get(),
+                value.transactionId);
+            context->Flush();
+        }
+        std::ostringstream message;
+        message << "GameBridge: transaction " << value.transactionId
+                << " rejected (" << reason << ')';
+        logRateLimited(message.str(), lastQualityRejectLogTick, 2000u);
+        if (SUCCEEDED(result))
+        {
+            lastTransaction = value.transactionId;
+            current = {};
+        }
+        return SUCCEEDED(result);
     }
 
     GameFrameView update()
     {
         if (!ensureMapping())
-            return currentView();
+            return current;
 
         FrameBridge value {};
         if (!stableSnapshot(shared, value))
-            return currentView();
-        if (!descriptorValid(value))
+            return current;
+        if (!descriptorHeaderValid(value))
         {
             if (connectedPid != 0u)
             {
-                log("GameBridge: GTA producer stopped; waiting for GTAIV.exe");
+                log("GameBridge: GTA producer stopped; waiting for a new descriptor");
                 releaseResources();
             }
-            return currentView();
+            return current;
         }
 
         const bool changed =
             connectedPid != value.producerPid
             || connectedEpoch != value.producerEpoch
+            || connectedResourceSet != value.resourceSetId
             || connectedGeneration != value.resourceGeneration;
         if (changed && !openResourceSet(value))
-            return currentView();
+            return current;
         if (!producerActive(value.producerPid))
         {
             log("GameBridge: GTAIV.exe exited; waiting for restart");
             releaseResources();
             releaseMapping();
-            return currentView();
+            return current;
         }
-        if (value.frameId == 0u || value.frameId == lastFrameId)
-            return currentView();
-        if (value.currentSlot >= gtaiv_xr_bridge::SlotCount)
-            return currentView();
+        if (value.transactionId == 0u
+            || value.transactionId == lastTransaction)
+        {
+            return current;
+        }
+        if (value.transactionId < lastTransaction
+            || value.currentSlot >= gtaiv_xr_bridge::SlotCount
+            || value.slots[value.currentSlot].transactionId
+                != value.transactionId)
+        {
+            logRateLimited(
+                "GameBridge: stale or incomplete transaction rejected",
+                lastConsumeFailureLogTick);
+            return current;
+        }
 
-        const gtaiv_xr_bridge::FrameSlot& slot =
-            value.slots[value.currentSlot];
-        if (slot.readyValue == 0u)
-            return currentView();
+        const TransactionQuality quality =
+            assessTransactionQuality(value, allowTemporalStereo);
+        if (!quality.accepted)
+        {
+            drainRejectedTransaction(value, quality.rejection);
+            return current;
+        }
 
-        // If this value was already released, the producer is allowed to
-        // overwrite its slot. Wait for a fresh publication instead.
-        if (releaseFence->GetCompletedValue() >= slot.readyValue)
-            return currentView();
-
-        HRESULT result = context4->Wait(readyFence.Get(), slot.readyValue);
+        HRESULT result = context4->Wait(
+            readyFence.Get(),
+            value.transactionId);
         if (FAILED(result))
         {
             logRateLimited(
-                "GameBridge: GPU wait for GTA frame failed",
-                lastConsumeFailureLogTick,
-                5000u);
-            return currentView();
+                "GameBridge: GPU wait for stereo transaction failed",
+                lastConsumeFailureLogTick);
+            return current;
         }
-        context->CopyResource(
-            privateTexture.Get(),
-            sharedTextures[value.currentSlot].Get());
-        result = context4->Signal(releaseFence.Get(), slot.readyValue);
+        for (uint32_t eye = 0u;
+             eye < gtaiv_xr_bridge::EyeCount;
+             ++eye)
+        {
+            context->CopyResource(
+                privateTextures[eye].Get(),
+                sharedTextures[value.currentSlot][eye].Get());
+        }
+        result = context4->Signal(
+            releaseFence.Get(),
+            value.transactionId);
         if (FAILED(result))
         {
             logRateLimited(
                 "GameBridge: GPU release signal failed",
-                lastConsumeFailureLogTick,
-                5000u);
-            return currentView();
+                lastConsumeFailureLogTick);
+            return current;
         }
         context->Flush();
         if (device->GetDeviceRemovedReason() != S_OK)
         {
             log("GameBridge: host D3D11 device was removed");
             releaseResources();
-            return currentView();
+            return current;
         }
 
-        lastFrameId = value.frameId;
-        if (lastFrameId == 1u || lastFrameId % 120u == 0u)
+        lastTransaction = value.transactionId;
+        current = {};
+        current.eyeViews[0] = privateViews[0].Get();
+        current.eyeViews[1] = privateViews[1].Get();
+        current.width = value.width;
+        current.height = value.height;
+        current.transactionId = value.transactionId;
+        current.sameSimulationTick = quality.sameTick;
+        current.presentationMode = value.presentationMode;
+        current.uiReasonFlags = value.uiReasonFlags;
+        current.uiEye = value.uiEye;
+        for (uint32_t eye = 0u;
+             eye < gtaiv_xr_bridge::EyeCount;
+             ++eye)
+        {
+            current.sourceFrameId[eye] = value.sourceFrameId[eye];
+            current.poseSequence[eye] = value.poseSequence[eye];
+            current.renderedDisplayTime[eye] =
+                value.renderedDisplayTime[eye];
+        }
+        if (lastTransaction == 1u || lastTransaction % 120u == 0u)
         {
             std::ostringstream message;
-            message << "GameBridge: GTA frame acquired frame=" << lastFrameId
-                    << " slot=" << value.currentSlot;
+            message << "GameBridge: stereo acquired transaction="
+                    << lastTransaction
+                    << " slot=" << value.currentSlot
+                    << " sameTick=" << (quality.sameTick ? 1 : 0)
+                    << " presentation="
+                    << (quality.uiQuad ? "ui-quad" : "world-stereo")
+                    << " pose=" << value.poseSequence[0]
+                    << '/' << value.poseSequence[1];
             log(message.str());
         }
-        return currentView();
+        return current;
     }
 
     LogFunction logger;
+    const bool allowTemporalStereo = false;
     ComPtr<ID3D11Device> device;
     ComPtr<ID3D11Device5> device5;
     ComPtr<ID3D11DeviceContext> context;
@@ -553,22 +729,26 @@ struct GameBridge::Implementation
     HANDLE mapping = nullptr;
     const FrameBridge* shared = nullptr;
     HANDLE producerProcess = nullptr;
-    std::array<ComPtr<ID3D11Texture2D>, gtaiv_xr_bridge::SlotCount>
-        sharedTextures;
+    SharedTextureSet sharedTextures;
     ComPtr<ID3D11Fence> readyFence;
     ComPtr<ID3D11Fence> releaseFence;
-    ComPtr<ID3D11Texture2D> privateTexture;
-    ComPtr<ID3D11ShaderResourceView> privateView;
+    std::array<
+        ComPtr<ID3D11Texture2D>,
+        gtaiv_xr_bridge::EyeCount> privateTextures;
+    std::array<
+        ComPtr<ID3D11ShaderResourceView>,
+        gtaiv_xr_bridge::EyeCount> privateViews;
+    GameFrameView current {};
 
     uint32_t connectedPid = 0u;
     uint64_t connectedEpoch = 0u;
+    uint64_t connectedResourceSet = 0u;
     uint32_t connectedGeneration = 0u;
-    uint64_t lastFrameId = 0u;
-    uint32_t privateWidth = 0u;
-    uint32_t privateHeight = 0u;
+    uint64_t lastTransaction = 0u;
     uint64_t lastMappingLogTick = 0u;
     uint64_t lastOpenFailureLogTick = 0u;
     uint64_t lastConsumeFailureLogTick = 0u;
+    uint64_t lastQualityRejectLogTick = 0u;
 };
 
 GameBridge::GameBridge() = default;
@@ -581,10 +761,13 @@ GameBridge::~GameBridge()
 bool GameBridge::initialize(
     ID3D11Device* device,
     ID3D11DeviceContext* context,
-    LogFunction logger)
+    LogFunction logger,
+    bool allowTemporalStereo)
 {
     reset();
-    implementation_ = new (std::nothrow) Implementation(std::move(logger));
+    implementation_ = new (std::nothrow) Implementation(
+        std::move(logger),
+        allowTemporalStereo);
     if (!implementation_)
         return false;
     if (!implementation_->initialize(device, context))
@@ -604,5 +787,63 @@ void GameBridge::reset()
 {
     delete implementation_;
     implementation_ = nullptr;
+}
+
+bool GameBridgeProtocolSelfTest(std::string& failure)
+{
+    FrameBridge value {};
+    value.flags =
+        gtaiv_xr_bridge::Running
+        | gtaiv_xr_bridge::GpuD3D11NtHandles
+        | gtaiv_xr_bridge::Stereo
+        | gtaiv_xr_bridge::EyesDistinct
+        | gtaiv_xr_bridge::PoseStamped
+        | gtaiv_xr_bridge::SameSimulationTick;
+    value.presentationMode =
+        gtaiv_xr_bridge::PresentationMode::WorldStereo;
+    value.sourceFrameId[0] = 10u;
+    value.sourceFrameId[1] = 10u;
+    value.poseSequence[0] = 20u;
+    value.poseSequence[1] = 20u;
+    value.renderedDisplayTime[0] = 30;
+    value.renderedDisplayTime[1] = 30;
+    value.uiEye = 0u;
+    if (!assessTransactionQuality(value, false).accepted)
+    {
+        failure = "strict same-tick world pair was rejected";
+        return false;
+    }
+
+    value.flags &= ~gtaiv_xr_bridge::SameSimulationTick;
+    value.flags |= gtaiv_xr_bridge::TemporalStereo;
+    value.sourceFrameId[1] = 11u;
+    value.poseSequence[1] = 21u;
+    value.renderedDisplayTime[1] = 31;
+    if (assessTransactionQuality(value, false).accepted)
+    {
+        failure = "temporal world pair was accepted";
+        return false;
+    }
+
+    value.presentationMode =
+        gtaiv_xr_bridge::PresentationMode::UiQuad;
+    value.uiReasonFlags = gtaiv_xr_bridge::UiReasonPauseOrMap;
+    value.uiEye = 1u;
+    const TransactionQuality uiQuality =
+        assessTransactionQuality(value, false);
+    if (!uiQuality.accepted || !uiQuality.uiQuad)
+    {
+        failure = "valid temporal UI quad transaction was rejected";
+        return false;
+    }
+
+    value.uiReasonFlags = gtaiv_xr_bridge::UiReasonNone;
+    if (assessTransactionQuality(value, false).accepted)
+    {
+        failure = "reasonless UI quad transaction was accepted";
+        return false;
+    }
+    failure.clear();
+    return true;
 }
 }

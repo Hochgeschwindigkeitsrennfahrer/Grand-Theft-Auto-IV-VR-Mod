@@ -1,23 +1,25 @@
-# Quest 3 pose and Touch-controller log test
+# Quest 3 pose, Touch, haptics, and menu gate
 
-This direct GTA/OpenXR test is **quarantined** after a failed GPU-handle transport
-test. The launcher is now preflight-only and starts no game, host, Steam, or SteamVR
-process.
+This direct GTA/OpenXR test remains **quarantined**. The replacement GPU transport,
+camera pose path, Touch-to-XInput mapping, haptics, and menu quad now build offline,
+but none of those changes has been deployed or headset-tested.
 
-## Before starting
+## Safe checks now
 
-1. Start **Meta Quest Link** and enter the Link dashboard in the headset.
-2. Close **SteamVR** completely.
-3. Keep GTA IV offline/singleplayer.
-
-## Run
-
-Open PowerShell in `D:\code\gta-iv` and run:
+These commands compile and self-test only:
 
 ```powershell
+cd D:\code\gta-iv
+.\scripts\build-asi.ps1
+.\scripts\build-openxr-host.ps1
 .\scripts\run-openxr-gta.ps1 -Build
 ```
 
-This safely confirms the Meta route but starts nothing. It uses the script's detected
-GTA folder and does **not** invoke Steam or SteamVR. Do not attempt a direct GTA/OpenXR
-launch until a replacement transport is reviewed and explicitly re-enabled.
+The last command is preflight-only. It cannot start GTA, the OpenXR host, Steam, or
+SteamVR and does not deploy a game file.
+
+## Live gate
+
+Do not run a live test yet. It requires a separate explicit authorization and one
+behavior change at a time: GPU transport first, then same-frame world stereo, then
+camera, controls/haptics, and finally pause/map/loading/phone quad transitions.

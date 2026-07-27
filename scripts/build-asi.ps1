@@ -4,6 +4,7 @@ $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
 
 & "$PSScriptRoot\fetch-minhook.ps1"
+& "$PSScriptRoot\fetch-vulkan-headers.ps1"
 
 if (-not (Test-Path "$Root\thirdparty\openvr\headers\openvr.h")) {
   throw "OpenVR missing - run: git clone --depth 1 https://github.com/ValveSoftware/openvr.git thirdparty/openvr"
@@ -24,6 +25,7 @@ $src = @(
   "src\asi\log.cpp",
   "src\asi\hooks.cpp",
   "src\asi\openxr_bridge.cpp",
+  "src\asi\openxr_controller.cpp",
   "src\asi\openxr_pose_client.cpp",
   "src\asi\openvr_mono.cpp",
   "src\asi\hmd_look.cpp",
@@ -37,6 +39,7 @@ $src = @(
   "src\asi\stereo_config.cpp",
   "src\asi\stereo_render.cpp",
   "src\asi\stereo_proj.cpp",
+  "src\asi\ui_state.cpp",
   "thirdparty\minhook\src\buffer.c",
   "thirdparty\minhook\src\hook.c",
   "thirdparty\minhook\src\trampoline.c",
@@ -46,6 +49,7 @@ $src = @(
 $includes = @(
   "/I$Root\src\asi",
   "/I$Root\thirdparty\dxvk",
+  "/I$Root\thirdparty\vulkan-headers\include",
   "/I$Root\thirdparty\minhook\include",
   "/I$Root\thirdparty\minhook\src",
   "/I$Root\thirdparty\openvr\headers"
@@ -68,4 +72,18 @@ Set-Content -Path $bat -Value $cmd -Encoding ASCII
 cmd /c $bat
 if ($LASTEXITCODE -ne 0) { throw "ASI build failed" }
 
-Write-Host "OK: $outDir\gtaiv_dxvk_vr.asi + openvr_api.dll"
+$AsiPath = Join-Path $outDir "gtaiv_dxvk_vr.asi"
+$bytes = [IO.File]::ReadAllBytes($AsiPath)
+if ($bytes.Length -lt 256) {
+  throw "Built ASI is not a valid PE file: $AsiPath"
+}
+$peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+$machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+if ($machine -ne 0x014c) {
+  throw ("Built ASI machine is 0x{0:X4}; expected x86 0x014C." -f $machine)
+}
+$hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $AsiPath).Hash
+
+Write-Host "OK: $AsiPath + openvr_api.dll"
+Write-Host ("PE:  0x{0:X4} (x86)" -f $machine)
+Write-Host "SHA256: $hash"

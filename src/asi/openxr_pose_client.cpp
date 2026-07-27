@@ -38,16 +38,15 @@ public:
             || now - snapshot.heartbeatTickMs > kMaxHeartbeatAgeMs)
         {
             logUnavailableOnce("host stopped, packet invalid, or heartbeat stale");
-            haveValidSample_ = false;
+            setLatest(nullptr);
             closeMapping();
             return;
         }
 
         unavailableLogged_ = false;
-        if (!haveValidSample_ || hostEpoch_ != snapshot.producerEpoch)
+        if (hostEpoch_ != snapshot.producerEpoch)
         {
             hostEpoch_ = snapshot.producerEpoch;
-            haveValidSample_ = true;
             Log(
                 "OpenXRPose: host connected epoch=%llu pid=%lu abi=%u bytes=%u",
                 static_cast<unsigned long long>(snapshot.producerEpoch),
@@ -55,6 +54,7 @@ public:
                 snapshot.version,
                 snapshot.structBytes);
         }
+        setLatest(&snapshot);
 
         ++sampleCount_;
         const bool controllerChanged = controllerChangedEnough(snapshot);
@@ -92,14 +92,51 @@ public:
         closeMapping();
         sampleCount_ = 0u;
         hostEpoch_ = 0u;
-        haveValidSample_ = false;
+        setLatest(nullptr);
         unavailableLogged_ = false;
         haveControllerSample_ = false;
+    }
+
+    bool latest(PoseBridge& output) const
+    {
+        AcquireSRWLockShared(&latestLock_);
+        if (!haveValidSample_)
+        {
+            ReleaseSRWLockShared(&latestLock_);
+            return false;
+        }
+        const uint64_t now = GetTickCount64();
+        if (latest_.heartbeatTickMs == 0u
+            || now - latest_.heartbeatTickMs > kMaxHeartbeatAgeMs
+            || (latest_.flags & gtaiv_xr_bridge::PoseBridgeHostRunning) == 0u)
+        {
+            ReleaseSRWLockShared(&latestLock_);
+            return false;
+        }
+        output = latest_;
+        ReleaseSRWLockShared(&latestLock_);
+        return true;
     }
 
 private:
     static constexpr uint64_t kMappingRetryMs = 1000u;
     static constexpr uint64_t kMaxHeartbeatAgeMs = 250u;
+
+    void setLatest(const PoseBridge* value)
+    {
+        AcquireSRWLockExclusive(&latestLock_);
+        if (value)
+        {
+            latest_ = *value;
+            haveValidSample_ = true;
+        }
+        else
+        {
+            latest_ = {};
+            haveValidSample_ = false;
+        }
+        ReleaseSRWLockExclusive(&latestLock_);
+    }
 
     void closeMapping()
     {
@@ -218,6 +255,8 @@ private:
     uint64_t sampleCount_ = 0u;
     uint64_t hostEpoch_ = 0u;
     PoseBridge lastControllerSample_ {};
+    PoseBridge latest_ {};
+    mutable SRWLOCK latestLock_ = SRWLOCK_INIT;
     bool haveValidSample_ = false;
     bool unavailableLogged_ = false;
     bool haveControllerSample_ = false;
@@ -229,6 +268,13 @@ PoseBridgeClient g_client;
 void PollOpenXrPoseBridge()
 {
     g_client.poll();
+}
+
+bool GetLatestOpenXrPoseBridge(gtaiv_xr_bridge::PoseBridge* output)
+{
+    if (!output)
+        return false;
+    return g_client.latest(*output);
 }
 
 void ShutdownOpenXrPoseBridge()

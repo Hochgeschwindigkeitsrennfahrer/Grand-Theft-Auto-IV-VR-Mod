@@ -1,27 +1,54 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-24 ~22:18
-**Integration update (2026-07-26):** upstream `origin/master` at `01f355b` (Modes
-50–53) is merged into `codex/openxr-sidecar-integration`. The new direct Quest path
-builds as an x86 DXVK/D3D11 GPU-frame producer plus `gtaiv_xr_host.exe` x64 OpenXR
-host. **Safety update (2026-07-26):** the first live direct-GTA attempt failed at
-`OpenSharedResource` with `E_INVALIDARG`: DXVK's legacy D3D9 shared handle is not a
-native-D3D11 importable resource on this machine. The former producer retried that
-failure every EndScene, and `backend=off` incorrectly fell through to OpenVR. Both are
-fixed: `off` is truly flat/no compositor, the invalid-handle path disables itself for
-the process, the game installation has been restored to `backend=off`, and
-`run-openxr-gta.ps1` is preflight-only. No further direct GTA/OpenXR launch is allowed
-until the transport is replaced and reviewed.
+**As of:** 2026-07-26 19:27 PT
 
-**Pose + Touch gate (built 2026-07-26, not headset-tested):** the x64 host now owns a
-fixed 384-byte, pointer-free `PoseBridge` shared ABI and publishes the exact
-`xrLocateViews` eye poses/FOV plus HMD, Touch grip/aim poses, triggers, squeeze,
-sticks, A/B/X/Y, left Menu, stick clicks, and Touch states. The x86 ASI validates a
-stable fresh packet and logs it only; it does not yet move GTA or inject inputs.
-See [`OPENXR_POSE_TOUCH_TEST.md`](OPENXR_POSE_TOUCH_TEST.md). It remains blocked behind
-a replacement, verified image transport; no camera, controller mapping, or stereo-frame
-change may be tested first.
-**Deployed now:** stereo **`51`** (Mode-50 always-distinct L/R + **`Submit_TextureWithPose`**
+## Direct Quest/OpenXR integration — built offline, not deployed or headset-tested
+
+Upstream `origin/master` at `01f355b` (Modes 50–53) is merged into
+`codex/openxr-sidecar-integration`. The direct path keeps all GTA-loaded code x86 and
+uses a separate x64 `gtaiv_xr_host.exe`. OpenVR/Reverb G2 remains an explicit
+fallback; `backend=off` is truly flat and initializes no compositor.
+
+The failed DXVK D3D9 KMT-handle route has been replaced. The x86 ASI now creates
+native D3D11 NT-handle textures and shared fences on DXVK's exact adapter, imports
+them into DXVK's Vulkan device, and GPU-copies a distinct L/R transaction. The x64
+host duplicates and opens those D3D11 handles. The contract is pointer-free ABI v3,
+triple-buffered, ready/release timeline synchronized, and contains no CPU pixels.
+This replacement compiles but has **not** had a live GTA/headset transport test.
+
+Pose and input are now wired, not merely logged: exact OpenXR eye pose/FOV history is
+matched to accepted world frames; fresh focused Quest Touch actions feed GTA's native
+XInput path; stale/unfocused input falls through to a physical controller; XInput
+rumble is bridged back to OpenXR haptics.
+
+Menus are implemented offline as a separate presentation mode:
+
+- world gameplay: strict same-simulation-tick stereo projection;
+- pause/map, loading, and phone: one fresh GTA image on a view-space, head-locked
+  16:9 OpenXR quad shown identically to both eyes;
+- read-only GTA IV CE 1.2.0.59 UI-state probes are required or the OpenXR path refuses
+  to arm;
+- normal GTA XInput navigation remains active on the Touch sticks/buttons.
+
+Offline signature check against the installed `GTAIV.exe` (file version 1.2.0.59,
+SHA-256 `08759A5516F9837920EA504436236BBAB89D0826A8E4D04FF106345177B5345D`)
+found exactly one supported pause/map fallback, one loading signature, and one phone
+signature. The newest FusionFix pause signature itself is absent from this disk image,
+so the verified 1.2.0.59 form is retained as an explicit fallback.
+
+Both builds pass offline checks: ASI PE32/x86; host PE32+/x64; host self-test reports
+`protocol=v3 worldStrict=1 uiQuad=1 runtimeUntouched=1`.
+
+**Important:** true same-frame world stereo/parallax is still not complete. Current
+Mode 51 is temporal and the strict OpenXR host rejects it for world presentation.
+Mode 23 is same-frame but still lacks proven per-eye camera separation/fusion. Do not
+call this full stereo until that gate passes in the headset.
+
+**Safety:** the installed game remains `backend=off`.
+`scripts/run-openxr-gta.ps1` is preflight-only and cannot start GTA, the OpenXR host,
+Steam, or SteamVR. No game/runtime/headset process was launched during this work.
+**Last OpenVR baseline (not running; backend is now `off`):** stereo **`51`**
+(Mode-50 always-distinct L/R + **`Submit_TextureWithPose`**
 AER) + **`fovadd=18`**, **`ipd=3`**, scale **`100`**, stereoscale **`125`**. Mode **50**
 (motion-guard OFF baseline), **53** (soft guard: 8°/6cm AER-only, 15°/12cm hard mono), and
 **52** (swap-eyes depth test) are built and freeze-tested. Mode **49** remains the full
@@ -483,8 +510,8 @@ CamMatrix with ipd=0 → `ipd=(±0.000…)` → flat image, comfort intact.
 > left/right calibration output, submitted 900 projection frames, and shut down
 > cleanly. The user correctly reported no GTA image: this gate renders generated
 > calibration pixels only. The unchanged OpenVR ASI also regression-builds as x86
-> (`PE 0x14C`). Next implementation gate is the fixed x86/x64 shared ABI and
-> log-only pose flow; GTA pixels do not reach OpenXR until the later GPU bridge gate.
+> (`PE 0x14C`). At that time the next gate was the fixed x86/x64 shared ABI and
+> log-only pose flow; the 2026-07-26 update at the top supersedes that planning note.
 
 ---
 

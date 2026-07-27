@@ -8,6 +8,7 @@
 #include <wrl/client.h>
 
 #include "game_bridge.h"
+#include "haptic_bridge.h"
 #include "pose_bridge.h"
 
 #include <algorithm>
@@ -454,7 +455,7 @@ ComPtr<ID3DBlob> compileShader(const char* entryPoint, const char* target)
     return bytecode;
 }
 
-struct EyeSwapchain
+struct ColorSwapchain
 {
     XrSwapchain handle = XR_NULL_HANDLE;
     int64_t format = 0;
@@ -479,6 +480,7 @@ struct InputActions
     XrAction secondaryTouch = XR_NULL_HANDLE;
     XrAction thumbstickTouch = XR_NULL_HANDLE;
     XrAction thumbrestTouch = XR_NULL_HANDLE;
+    XrAction haptic = XR_NULL_HANDLE;
 };
 
 struct FloatActionSample
@@ -497,6 +499,16 @@ struct BooleanActionSample
 {
     bool value = false;
     bool active = false;
+};
+
+struct LocatedViewSample
+{
+    uint64_t sequence = 0u;
+    int64_t predictedDisplayTime = 0;
+    std::array<XrView, EyeCount> views {
+        XrView { XR_TYPE_VIEW },
+        XrView { XR_TYPE_VIEW }
+    };
 };
 
 class CalibrationHost
@@ -529,6 +541,9 @@ public:
         {
             throw std::runtime_error("The x64 pose bridge could not initialize.");
         }
+        hapticBridge_.initialize([this](const std::string& message) {
+            logger_.write(message);
+        });
     }
 
     int run(uint64_t frameLimit, uint64_t timeoutMilliseconds)
@@ -935,6 +950,11 @@ private:
             "thumbrest_touch",
             "Thumbrest Touch",
             inputActions_.thumbrestTouch);
+        createInputAction(
+            XR_ACTION_TYPE_VIBRATION_OUTPUT,
+            "haptic",
+            "Controller Vibration",
+            inputActions_.haptic);
 
         std::vector<XrActionSuggestedBinding> bindings;
         const auto bind = [this, &bindings](XrAction action, const char* path) {
@@ -965,6 +985,8 @@ private:
         bind(inputActions_.thumbstickTouch, "/user/hand/right/input/thumbstick/touch");
         bind(inputActions_.thumbrestTouch, "/user/hand/left/input/thumbrest/touch");
         bind(inputActions_.thumbrestTouch, "/user/hand/right/input/thumbrest/touch");
+        bind(inputActions_.haptic, "/user/hand/left/output/haptic");
+        bind(inputActions_.haptic, "/user/hand/right/output/haptic");
 
         XrInteractionProfileSuggestedBinding suggested {
             XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
@@ -990,7 +1012,75 @@ private:
             "xrAttachSessionActionSets(GTAIV Touch)");
         inputReady_ = true;
         logger_.write(
-            "XRHost: Touch actions ready (grip/aim, triggers, squeeze, sticks, buttons, touches)");
+            "XRHost: Touch actions ready "
+            "(grip/aim, triggers, squeeze, sticks, buttons, touches, haptics)");
+    }
+
+    void createColorSwapchain(
+        ColorSwapchain& swapchain,
+        int64_t format,
+        uint32_t width,
+        uint32_t height,
+        const char* operation)
+    {
+        swapchain.format = format;
+        swapchain.width = width;
+        swapchain.height = height;
+
+        XrSwapchainCreateInfo createInfo { XR_TYPE_SWAPCHAIN_CREATE_INFO };
+        createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+        createInfo.format = format;
+        createInfo.sampleCount = 1;
+        createInfo.width = width;
+        createInfo.height = height;
+        createInfo.faceCount = 1;
+        createInfo.arraySize = 1;
+        createInfo.mipCount = 1;
+        checkXr(
+            xrCreateSwapchain(session_, &createInfo, &swapchain.handle),
+            operation);
+
+        uint32_t imageCount = 0;
+        checkXr(
+            xrEnumerateSwapchainImages(
+                swapchain.handle,
+                0,
+                &imageCount,
+                nullptr),
+            "xrEnumerateSwapchainImages(count)");
+        swapchain.images.assign(
+            imageCount,
+            XrSwapchainImageD3D11KHR { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
+        checkXr(
+            xrEnumerateSwapchainImages(
+                swapchain.handle,
+                imageCount,
+                &imageCount,
+                reinterpret_cast<XrSwapchainImageBaseHeader*>(
+                    swapchain.images.data())),
+            "xrEnumerateSwapchainImages(list)");
+
+        swapchain.renderTargetViews.reserve(imageCount);
+        for (const XrSwapchainImageD3D11KHR& image : swapchain.images)
+        {
+            D3D11_RENDER_TARGET_VIEW_DESC viewDescription {};
+            viewDescription.Format = static_cast<DXGI_FORMAT>(format);
+            viewDescription.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+            viewDescription.Texture2D.MipSlice = 0;
+
+            ComPtr<ID3D11RenderTargetView> renderTargetView;
+            const HRESULT result = device_->CreateRenderTargetView(
+                image.texture,
+                &viewDescription,
+                &renderTargetView);
+            if (FAILED(result))
+            {
+                throw std::runtime_error(
+                    "CreateRenderTargetView failed: "
+                    + hresultString(result));
+            }
+            swapchain.renderTargetViews.push_back(renderTargetView);
+        }
     }
 
     void createSwapchains()
@@ -1063,63 +1153,38 @@ private:
 
         for (uint32_t eye = 0; eye < EyeCount; ++eye)
         {
-            EyeSwapchain& swapchain = swapchains_[eye];
-            swapchain.format = selectedFormat;
-            swapchain.width = viewConfigurationViews_[eye].recommendedImageRectWidth;
-            swapchain.height = viewConfigurationViews_[eye].recommendedImageRectHeight;
-
-            XrSwapchainCreateInfo createInfo { XR_TYPE_SWAPCHAIN_CREATE_INFO };
-            createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
-            createInfo.format = selectedFormat;
-            createInfo.sampleCount = 1;
-            createInfo.width = swapchain.width;
-            createInfo.height = swapchain.height;
-            createInfo.faceCount = 1;
-            createInfo.arraySize = 1;
-            createInfo.mipCount = 1;
-            checkXr(xrCreateSwapchain(session_, &createInfo, &swapchain.handle), "xrCreateSwapchain");
-
-            uint32_t imageCount = 0;
-            checkXr(
-                xrEnumerateSwapchainImages(swapchain.handle, 0, &imageCount, nullptr),
-                "xrEnumerateSwapchainImages(count)");
-            swapchain.images.assign(
-                imageCount,
-                XrSwapchainImageD3D11KHR { XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR });
-            checkXr(
-                xrEnumerateSwapchainImages(
-                    swapchain.handle,
-                    imageCount,
-                    &imageCount,
-                    reinterpret_cast<XrSwapchainImageBaseHeader*>(swapchain.images.data())),
-                "xrEnumerateSwapchainImages(list)");
-
-            swapchain.renderTargetViews.reserve(imageCount);
-            for (const XrSwapchainImageD3D11KHR& image : swapchain.images)
-            {
-                D3D11_RENDER_TARGET_VIEW_DESC viewDescription {};
-                viewDescription.Format = static_cast<DXGI_FORMAT>(selectedFormat);
-                viewDescription.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-                viewDescription.Texture2D.MipSlice = 0;
-
-                ComPtr<ID3D11RenderTargetView> renderTargetView;
-                const HRESULT result = device_->CreateRenderTargetView(
-                    image.texture,
-                    &viewDescription,
-                    &renderTargetView);
-                if (FAILED(result))
-                {
-                    throw std::runtime_error(
-                        "CreateRenderTargetView failed: " + hresultString(result));
-                }
-                swapchain.renderTargetViews.push_back(renderTargetView);
-            }
+            ColorSwapchain& swapchain = swapchains_[eye];
+            createColorSwapchain(
+                swapchain,
+                selectedFormat,
+                viewConfigurationViews_[eye].recommendedImageRectWidth,
+                viewConfigurationViews_[eye].recommendedImageRectHeight,
+                "xrCreateSwapchain(projection)");
 
             std::ostringstream message;
             message << "XRHost: view[" << eye << "] recommended="
                     << swapchain.width << 'x' << swapchain.height
                     << " samples=" << viewConfigurationViews_[eye].recommendedSwapchainSampleCount
-                    << " swapchainImages=" << imageCount;
+                    << " swapchainImages=" << swapchain.images.size();
+            logger_.write(message.str());
+        }
+
+        if (gameMode_)
+        {
+            const uint32_t uiWidth =
+                viewConfigurationViews_[0].recommendedImageRectWidth;
+            const uint32_t uiHeight =
+                (std::max)(1u, uiWidth * 9u / 16u);
+            createColorSwapchain(
+                uiSwapchain_,
+                selectedFormat,
+                uiWidth,
+                uiHeight,
+                "xrCreateSwapchain(UI quad)");
+            std::ostringstream message;
+            message << "XRHost: head-locked UI swapchain="
+                    << uiSwapchain_.width << 'x' << uiSwapchain_.height
+                    << " swapchainImages=" << uiSwapchain_.images.size();
             logger_.write(message.str());
         }
 
@@ -1483,6 +1548,88 @@ private:
         return valid;
     }
 
+    void stopAllHaptics() noexcept
+    {
+        if (session_ == XR_NULL_HANDLE
+            || inputActions_.haptic == XR_NULL_HANDLE)
+        {
+            hapticActive_ = {};
+            return;
+        }
+        for (uint32_t hand = 0u; hand < EyeCount; ++hand)
+        {
+            if (!hapticActive_[hand])
+                continue;
+            XrHapticActionInfo actionInfo { XR_TYPE_HAPTIC_ACTION_INFO };
+            actionInfo.action = inputActions_.haptic;
+            actionInfo.subactionPath = hands_[hand];
+            xrStopHapticFeedback(session_, &actionInfo);
+            hapticActive_[hand] = false;
+        }
+    }
+
+    void updateHaptics()
+    {
+        const gtaiv_xr_host::HapticCommand command =
+            hapticBridge_.update();
+        const bool active =
+            command.active
+            && sessionState_ == XR_SESSION_STATE_FOCUSED;
+        const std::array<float, EyeCount> amplitudes {
+            active ? command.leftAmplitude : 0.0f,
+            active ? command.rightAmplitude : 0.0f
+        };
+        if (command.producerEpoch == lastHapticEpoch_
+            && command.commandId == lastHapticCommandId_
+            && amplitudes == lastHapticAmplitudes_)
+        {
+            return;
+        }
+
+        for (uint32_t hand = 0u; hand < EyeCount; ++hand)
+        {
+            XrHapticActionInfo actionInfo { XR_TYPE_HAPTIC_ACTION_INFO };
+            actionInfo.action = inputActions_.haptic;
+            actionInfo.subactionPath = hands_[hand];
+            XrResult result = XR_SUCCESS;
+            if (amplitudes[hand] > 0.0f)
+            {
+                XrHapticVibration vibration { XR_TYPE_HAPTIC_VIBRATION };
+                vibration.duration = XR_INFINITE_DURATION;
+                vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+                vibration.amplitude = amplitudes[hand];
+                result = xrApplyHapticFeedback(
+                    session_,
+                    &actionInfo,
+                    reinterpret_cast<const XrHapticBaseHeader*>(
+                        &vibration));
+                hapticActive_[hand] = XR_SUCCEEDED(result);
+            }
+            else
+            {
+                result = xrStopHapticFeedback(session_, &actionInfo);
+                hapticActive_[hand] = false;
+            }
+            if (XR_FAILED(result))
+            {
+                const uint64_t now = GetTickCount64();
+                if (lastHapticErrorLogTick_ == 0u
+                    || now - lastHapticErrorLogTick_ >= 2000u)
+                {
+                    std::ostringstream message;
+                    message << "XRHost: Touch haptic command rejected hand="
+                            << hand
+                            << " result=" << static_cast<int32_t>(result);
+                    logger_.write(message.str());
+                    lastHapticErrorLogTick_ = now;
+                }
+            }
+        }
+        lastHapticEpoch_ = command.producerEpoch;
+        lastHapticCommandId_ = command.commandId;
+        lastHapticAmplitudes_ = amplitudes;
+    }
+
     void publishPoseAndInput(
         const XrFrameState& frameState,
         const std::array<XrView, EyeCount>& views,
@@ -1491,6 +1638,8 @@ private:
         gtaiv_xr_bridge::PoseBridge frame {};
         frame.flags = gtaiv_xr_bridge::PoseBridgeHostRunning
             | gtaiv_xr_bridge::PoseBridgeSessionRunning;
+        if (sessionState_ == XR_SESSION_STATE_FOCUSED)
+            frame.flags |= gtaiv_xr_bridge::PoseBridgeInputFocused;
         frame.frameId = frameCounter_ + 1u;
         frame.predictedDisplayTime = static_cast<int64_t>(frameState.predictedDisplayTime);
         frame.referenceSpaceGeneration = referenceSpaceGeneration_;
@@ -1565,12 +1714,45 @@ private:
         recenterChordDown_ = recenterChord;
 
         poseBridge_.publish(frame);
+        updateHaptics();
         if (!loggedInput_)
         {
             logger_.write(
-                "XRHost: Pose/Input publishing started; GTA reader is log-only until its hardware gate passes");
+                "XRHost: Pose/Input publishing started");
             loggedInput_ = true;
         }
+    }
+
+    void rememberLocatedViews(
+        uint64_t sequence,
+        XrTime predictedDisplayTime,
+        const std::array<XrView, EyeCount>& views)
+    {
+        LocatedViewSample& sample =
+            locatedViewHistory_[sequence % locatedViewHistory_.size()];
+        sample.sequence = sequence;
+        sample.predictedDisplayTime =
+            static_cast<int64_t>(predictedDisplayTime);
+        sample.views = views;
+    }
+
+    bool findRenderedView(
+        uint64_t sequence,
+        int64_t predictedDisplayTime,
+        uint32_t eye,
+        XrView& output) const
+    {
+        if (sequence == 0u || eye >= EyeCount)
+            return false;
+        const LocatedViewSample& sample =
+            locatedViewHistory_[sequence % locatedViewHistory_.size()];
+        if (sample.sequence != sequence
+            || sample.predictedDisplayTime != predictedDisplayTime)
+        {
+            return false;
+        }
+        output = sample.views[eye];
+        return true;
     }
 
     bool renderFrame()
@@ -1610,6 +1792,13 @@ private:
             && locatedViewCount == EyeCount
             && (viewState.viewStateFlags & requiredFlags) == requiredFlags;
 
+        if (viewsValid)
+        {
+            rememberLocatedViews(
+                frameCounter_ + 1u,
+                frameState.predictedDisplayTime,
+                views);
+        }
         publishPoseAndInput(frameState, views, viewsValid);
 
         std::array<XrCompositionLayerProjectionView, EyeCount> projectionViews {
@@ -1618,12 +1807,96 @@ private:
             XrCompositionLayerProjectionView {
                 XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW }
         };
+        XrCompositionLayerProjection projectionLayer {
+            XR_TYPE_COMPOSITION_LAYER_PROJECTION };
+        projectionLayer.space = space_;
+        projectionLayer.viewCount = EyeCount;
+        projectionLayer.views = projectionViews.data();
+
+        XrCompositionLayerQuad uiLayer { XR_TYPE_COMPOSITION_LAYER_QUAD };
+        uiLayer.space = viewSpace_;
+        uiLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        uiLayer.pose.orientation.w = 1.0f;
+        uiLayer.pose.position.z = -1.8f;
+        uiLayer.size.width = 1.8f;
+        uiLayer.size.height =
+            uiLayer.size.width
+            * static_cast<float>(uiSwapchain_.height)
+            / static_cast<float>((std::max)(1u, uiSwapchain_.width));
+        uiLayer.subImage.swapchain = uiSwapchain_.handle;
+        uiLayer.subImage.imageRect.offset = { 0, 0 };
+        uiLayer.subImage.imageRect.extent = {
+            static_cast<int32_t>(uiSwapchain_.width),
+            static_cast<int32_t>(uiSwapchain_.height)
+        };
+        uiLayer.subImage.imageArrayIndex = 0u;
 
         bool rendered = false;
+        const XrCompositionLayerBaseHeader* submittedLayer = nullptr;
         if (viewsValid)
         {
             if (gameMode_)
                 gameFrame_ = gameBridge_.update();
+
+            const bool uiQuad =
+                gameMode_
+                && gameFrame_
+                && gameFrame_.presentationMode
+                    == gtaiv_xr_bridge::PresentationMode::UiQuad;
+            if (gameMode_
+                && gameFrame_
+                && gameFrame_.presentationMode
+                    != lastLoggedPresentationMode_)
+            {
+                std::ostringstream message;
+                message << "XRHost: presentation="
+                        << (uiQuad
+                                ? "head-locked-ui-quad"
+                                : "world-stereo")
+                        << " reasons=0x" << std::hex
+                        << gameFrame_.uiReasonFlags;
+                logger_.write(message.str());
+                lastLoggedPresentationMode_ =
+                    gameFrame_.presentationMode;
+            }
+
+            std::array<XrView, EyeCount> submittedViews = views;
+            gameFramePoseMatched_ =
+                !gameMode_ || !gameFrame_ || uiQuad;
+            if (gameMode_ && gameFrame_ && !uiQuad)
+            {
+                gameFramePoseMatched_ = true;
+                for (uint32_t eye = 0u; eye < EyeCount; ++eye)
+                {
+                    if (!findRenderedView(
+                            gameFrame_.poseSequence[eye],
+                            gameFrame_.renderedDisplayTime[eye],
+                            eye,
+                            submittedViews[eye]))
+                    {
+                        gameFramePoseMatched_ = false;
+                        break;
+                    }
+                }
+                if (!gameFramePoseMatched_)
+                {
+                    const uint64_t now = GetTickCount64();
+                    if (lastPoseMissLogTick_ == 0u
+                        || now - lastPoseMissLogTick_ >= 2000u)
+                    {
+                        std::ostringstream message;
+                        message
+                            << "XRHost: holding black; transaction "
+                            << gameFrame_.transactionId
+                            << " has no exact retained pose/FOV "
+                            << gameFrame_.poseSequence[0] << '/'
+                            << gameFrame_.poseSequence[1];
+                        logger_.write(message.str());
+                        lastPoseMissLogTick_ = now;
+                    }
+                    submittedViews = views;
+                }
+            }
 
             if (!loggedFov_)
             {
@@ -1645,48 +1918,135 @@ private:
                 loggedFov_ = true;
             }
 
-            for (uint32_t eye = 0; eye < EyeCount; ++eye)
+            if (uiQuad)
             {
-                renderEye(
-                    eye,
-                    views[eye],
-                    static_cast<float>(frameCounter_ % 36000) / 90.0f);
+                renderGameTexture(
+                    uiSwapchain_,
+                    gameFrame_.eyeViews[gameFrame_.uiEye]);
+                submittedLayer =
+                    reinterpret_cast<const XrCompositionLayerBaseHeader*>(
+                        &uiLayer);
+            }
+            else
+            {
+                for (uint32_t eye = 0; eye < EyeCount; ++eye)
+                {
+                    renderEye(
+                        eye,
+                        submittedViews[eye],
+                        static_cast<float>(frameCounter_ % 36000) / 90.0f);
 
-                projectionViews[eye].pose = views[eye].pose;
-                projectionViews[eye].fov = views[eye].fov;
-                projectionViews[eye].subImage.swapchain = swapchains_[eye].handle;
-                projectionViews[eye].subImage.imageRect.offset = { 0, 0 };
-                projectionViews[eye].subImage.imageRect.extent = {
-                    static_cast<int32_t>(swapchains_[eye].width),
-                    static_cast<int32_t>(swapchains_[eye].height)
-                };
-                projectionViews[eye].subImage.imageArrayIndex = 0;
+                    projectionViews[eye].pose = submittedViews[eye].pose;
+                    projectionViews[eye].fov = submittedViews[eye].fov;
+                    projectionViews[eye].subImage.swapchain =
+                        swapchains_[eye].handle;
+                    projectionViews[eye].subImage.imageRect.offset = { 0, 0 };
+                    projectionViews[eye].subImage.imageRect.extent = {
+                        static_cast<int32_t>(swapchains_[eye].width),
+                        static_cast<int32_t>(swapchains_[eye].height)
+                    };
+                    projectionViews[eye].subImage.imageArrayIndex = 0;
+                }
+                submittedLayer =
+                    reinterpret_cast<const XrCompositionLayerBaseHeader*>(
+                        &projectionLayer);
             }
             rendered = true;
         }
 
-        XrCompositionLayerProjection projectionLayer {
-            XR_TYPE_COMPOSITION_LAYER_PROJECTION };
-        projectionLayer.space = space_;
-        projectionLayer.viewCount = EyeCount;
-        projectionLayer.views = projectionViews.data();
-
-        const XrCompositionLayerBaseHeader* layers[] = {
-            reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projectionLayer)
-        };
         XrFrameEndInfo endInfo { XR_TYPE_FRAME_END_INFO };
         endInfo.displayTime = frameState.predictedDisplayTime;
         endInfo.environmentBlendMode = environmentBlendMode_;
         endInfo.layerCount = rendered ? 1u : 0u;
-        endInfo.layers = rendered ? layers : nullptr;
+        endInfo.layers = rendered ? &submittedLayer : nullptr;
         checkXr(xrEndFrame(session_, &endInfo), "xrEndFrame");
         ++frameCounter_;
         return rendered;
     }
 
+    void renderGameTexture(
+        ColorSwapchain& swapchain,
+        ID3D11ShaderResourceView* sourceView)
+    {
+        uint32_t imageIndex = 0;
+        XrSwapchainImageAcquireInfo acquireInfo { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
+        checkXr(
+            xrAcquireSwapchainImage(swapchain.handle, &acquireInfo, &imageIndex),
+            "xrAcquireSwapchainImage(game)");
+
+        XrSwapchainImageWaitInfo waitInfo { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+        waitInfo.timeout = SwapchainWaitTimeout;
+        checkXr(
+            xrWaitSwapchainImage(swapchain.handle, &waitInfo),
+            "xrWaitSwapchainImage(game)");
+
+        D3D11_VIEWPORT viewport {};
+        viewport.Width = static_cast<float>(swapchain.width);
+        viewport.Height = static_cast<float>(swapchain.height);
+        viewport.MinDepth = 0.0f;
+        viewport.MaxDepth = 1.0f;
+        context_->RSSetViewports(1, &viewport);
+
+        ID3D11RenderTargetView* renderTarget =
+            swapchain.renderTargetViews.at(imageIndex).Get();
+        context_->OMSetRenderTargets(1, &renderTarget, nullptr);
+        context_->RSSetState(rasterizerState_.Get());
+        context_->IASetInputLayout(nullptr);
+        context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+        const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+        context_->ClearRenderTargetView(renderTarget, black);
+        if (gameFrame_ && sourceView)
+        {
+            GameConstants constants {};
+            constants.sourceAndViewport[0] =
+                static_cast<float>(gameFrame_.width);
+            constants.sourceAndViewport[1] =
+                static_cast<float>(gameFrame_.height);
+            constants.sourceAndViewport[2] =
+                static_cast<float>(swapchain.width);
+            constants.sourceAndViewport[3] =
+                static_cast<float>(swapchain.height);
+            context_->UpdateSubresource(
+                gameConstantBuffer_.Get(),
+                0,
+                nullptr,
+                &constants,
+                0,
+                0);
+
+            context_->VSSetShader(vertexShader_.Get(), nullptr, 0);
+            context_->PSSetShader(gamePixelShader_.Get(), nullptr, 0);
+            ID3D11Buffer* buffers[] = { gameConstantBuffer_.Get() };
+            context_->PSSetConstantBuffers(1, 1, buffers);
+            context_->PSSetShaderResources(0, 1, &sourceView);
+            ID3D11SamplerState* samplers[] = { gameSampler_.Get() };
+            context_->PSSetSamplers(0, 1, samplers);
+            context_->Draw(3, 0);
+
+            ID3D11ShaderResourceView* noView = nullptr;
+            context_->PSSetShaderResources(0, 1, &noView);
+        }
+
+        XrSwapchainImageReleaseInfo releaseInfo {
+            XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
+        checkXr(
+            xrReleaseSwapchainImage(swapchain.handle, &releaseInfo),
+            "xrReleaseSwapchainImage(game)");
+    }
+
     void renderEye(uint32_t eye, const XrView& view, float timeSeconds)
     {
-        EyeSwapchain& swapchain = swapchains_[eye];
+        ColorSwapchain& swapchain = swapchains_[eye];
+        if (gameMode_)
+        {
+            ID3D11ShaderResourceView* sourceView =
+                gameFrame_ && gameFramePoseMatched_
+                    ? gameFrame_.eyeViews[eye]
+                    : nullptr;
+            renderGameTexture(swapchain, sourceView);
+            return;
+        }
 
         uint32_t imageIndex = 0;
         XrSwapchainImageAcquireInfo acquireInfo { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
@@ -1697,67 +2057,6 @@ private:
         XrSwapchainImageWaitInfo waitInfo { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
         waitInfo.timeout = SwapchainWaitTimeout;
         checkXr(xrWaitSwapchainImage(swapchain.handle, &waitInfo), "xrWaitSwapchainImage");
-
-        if (gameMode_)
-        {
-            D3D11_VIEWPORT viewport {};
-            viewport.Width = static_cast<float>(swapchain.width);
-            viewport.Height = static_cast<float>(swapchain.height);
-            viewport.MinDepth = 0.0f;
-            viewport.MaxDepth = 1.0f;
-            context_->RSSetViewports(1, &viewport);
-
-            ID3D11RenderTargetView* renderTarget =
-                swapchain.renderTargetViews.at(imageIndex).Get();
-            context_->OMSetRenderTargets(1, &renderTarget, nullptr);
-            context_->RSSetState(rasterizerState_.Get());
-            context_->IASetInputLayout(nullptr);
-            context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-
-            const float black[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-            context_->ClearRenderTargetView(renderTarget, black);
-            if (gameFrame_)
-            {
-                GameConstants constants {};
-                constants.sourceAndViewport[0] =
-                    static_cast<float>(gameFrame_.width);
-                constants.sourceAndViewport[1] =
-                    static_cast<float>(gameFrame_.height);
-                constants.sourceAndViewport[2] =
-                    static_cast<float>(swapchain.width);
-                constants.sourceAndViewport[3] =
-                    static_cast<float>(swapchain.height);
-                context_->UpdateSubresource(
-                    gameConstantBuffer_.Get(),
-                    0,
-                    nullptr,
-                    &constants,
-                    0,
-                    0);
-
-                context_->VSSetShader(vertexShader_.Get(), nullptr, 0);
-                context_->PSSetShader(gamePixelShader_.Get(), nullptr, 0);
-                ID3D11Buffer* buffers[] = { gameConstantBuffer_.Get() };
-                context_->PSSetConstantBuffers(1, 1, buffers);
-                ID3D11ShaderResourceView* views[] = {
-                    gameFrame_.shaderView
-                };
-                context_->PSSetShaderResources(0, 1, views);
-                ID3D11SamplerState* samplers[] = { gameSampler_.Get() };
-                context_->PSSetSamplers(0, 1, samplers);
-                context_->Draw(3, 0);
-
-                ID3D11ShaderResourceView* noView = nullptr;
-                context_->PSSetShaderResources(0, 1, &noView);
-            }
-
-            XrSwapchainImageReleaseInfo releaseInfo {
-                XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO };
-            checkXr(
-                xrReleaseSwapchainImage(swapchain.handle, &releaseInfo),
-                "xrReleaseSwapchainImage");
-            return;
-        }
 
         const Vec3 right = rotate(view.pose.orientation, { 1.0f, 0.0f, 0.0f });
         const Vec3 up = rotate(view.pose.orientation, { 0.0f, 1.0f, 0.0f });
@@ -1864,6 +2163,7 @@ private:
         destroyAction(inputActions_.secondaryTouch);
         destroyAction(inputActions_.thumbstickTouch);
         destroyAction(inputActions_.thumbrestTouch);
+        destroyAction(inputActions_.haptic);
         if (inputActionSet_ != XR_NULL_HANDLE)
         {
             xrDestroyActionSet(inputActionSet_);
@@ -1883,9 +2183,10 @@ private:
         gameFrame_ = {};
         gameBridge_.reset();
         poseBridge_.reset();
+        stopAllHaptics();
+        hapticBridge_.reset();
 
-        for (EyeSwapchain& swapchain : swapchains_)
-        {
+        const auto destroySwapchain = [](ColorSwapchain& swapchain) {
             swapchain.renderTargetViews.clear();
             swapchain.images.clear();
             if (swapchain.handle != XR_NULL_HANDLE)
@@ -1893,7 +2194,14 @@ private:
                 xrDestroySwapchain(swapchain.handle);
                 swapchain.handle = XR_NULL_HANDLE;
             }
+            swapchain.width = 0u;
+            swapchain.height = 0u;
+        };
+        for (ColorSwapchain& swapchain : swapchains_)
+        {
+            destroySwapchain(swapchain);
         }
+        destroySwapchain(uiSwapchain_);
 
         constantBuffer_.Reset();
         gameConstantBuffer_.Reset();
@@ -1958,16 +2266,25 @@ private:
     ComPtr<ID3D11RasterizerState> rasterizerState_;
     gtaiv_xr_host::GameBridge gameBridge_;
     gtaiv_xr_host::GameFrameView gameFrame_;
+    gtaiv_xr_host::HapticBridge hapticBridge_;
     gtaiv_xr_host::PoseBridgePublisher poseBridge_;
+    std::array<LocatedViewSample, 256u> locatedViewHistory_;
 
     std::vector<XrViewConfigurationView> viewConfigurationViews_;
-    std::array<EyeSwapchain, EyeCount> swapchains_;
+    std::array<ColorSwapchain, EyeCount> swapchains_;
+    ColorSwapchain uiSwapchain_;
     std::array<XrPath, EyeCount> hands_ {};
     std::array<XrSpace, EyeCount> gripSpaces_ {};
     std::array<XrSpace, EyeCount> aimSpaces_ {};
     InputActions inputActions_ {};
     XrActionSet inputActionSet_ = XR_NULL_HANDLE;
     uint64_t frameCounter_ = 0;
+    uint64_t lastPoseMissLogTick_ = 0u;
+    uint64_t lastHapticEpoch_ = 0u;
+    uint64_t lastHapticCommandId_ = 0u;
+    uint64_t lastHapticErrorLogTick_ = 0u;
+    std::array<float, EyeCount> lastHapticAmplitudes_ {};
+    std::array<bool, EyeCount> hapticActive_ {};
     uint32_t referenceSpaceGeneration_ = 1u;
     uint32_t recenterRequestId_ = 0u;
     bool sessionRunning_ = false;
@@ -1977,7 +2294,10 @@ private:
     bool inputReady_ = false;
     bool inputSyncErrorLogged_ = false;
     bool recenterChordDown_ = false;
+    bool gameFramePoseMatched_ = false;
     bool gameMode_ = false;
+    gtaiv_xr_bridge::PresentationMode lastLoggedPresentationMode_ =
+        gtaiv_xr_bridge::PresentationMode::Unknown;
 };
 
 uint64_t parsePositiveArgument(
@@ -2031,7 +2351,7 @@ int main(int argc, char** argv)
             std::cout
                 << "gtaiv_xr_host [--game] [--self-test] [--frames N] [--timeout-ms N]\n"
                 << "  --game       Show live GTAIV.exe frames; black while the game starts.\n"
-                << "  --self-test  Compile all shaders without touching OpenXR.\n"
+                << "  --self-test  Check shaders/protocol without touching OpenXR.\n"
                 << "  --frames N   Exit after N submitted OpenXR frames.\n"
                 << "  --timeout-ms Exit unsuccessfully if the test exceeds N milliseconds.\n";
             return 0;
@@ -2042,7 +2362,16 @@ int main(int argc, char** argv)
             compileShader("vsMain", "vs_5_0");
             compileShader("psMain", "ps_5_0");
             compileShader("psGame", "ps_5_0");
-            logger->write("SelfTest: PASS pointerBits=64 shaders=ok runtimeUntouched=1");
+            std::string protocolFailure;
+            if (!gtaiv_xr_host::GameBridgeProtocolSelfTest(protocolFailure))
+            {
+                throw std::runtime_error(
+                    "Frame bridge protocol self-test failed: "
+                    + protocolFailure);
+            }
+            logger->write(
+                "SelfTest: PASS pointerBits=64 shaders=ok protocol=v3 "
+                "worldStrict=1 uiQuad=1 runtimeUntouched=1");
             return 0;
         }
 

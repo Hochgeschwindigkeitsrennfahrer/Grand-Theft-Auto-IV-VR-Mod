@@ -156,10 +156,10 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
     return;
   }
 
-  VkImage image = nullptr;
+  VkImage image = VK_NULL_HANDLE;
   VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   VkImageCreateInfo info{};
-  info.sType = 14;
+  info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   uint32_t qfiScratch = 0;
   info.queueFamilyIndexCount = 1;
   info.pQueueFamilyIndices = &qfiScratch;
@@ -191,7 +191,7 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   interop->FlushRenderingCommands();
 
   vr::VRVulkanTextureData_t vulkanData{};
-  vulkanData.m_nImage = reinterpret_cast<uint64_t>(image);
+  vulkanData.m_nImage = static_cast<uint64_t>(image);
   vulkanData.m_pDevice = reinterpret_cast<VkDevice_T*>(vkdev);
   vulkanData.m_pPhysicalDevice = reinterpret_cast<VkPhysicalDevice_T*>(phys);
   vulkanData.m_pInstance = reinterpret_cast<VkInstance_T*>(instance);

@@ -12,15 +12,18 @@ cd D:\code\gta-iv
 
 The build fetches the exact Khronos OpenXR SDK `release-1.1.61`, builds
 `out-openxr\gtaiv_xr_host.exe`, verifies PE machine `0x8664`, and runs a shader
-self-test without touching the headset runtime.
+self-test plus ABI-v3 presentation checks without touching the headset runtime.
 
 For the live Quest test, follow [`OPENXR_QUEST3_TEST.md`](OPENXR_QUEST3_TEST.md).
 
 ## Direct GTA-to-Quest image test (no SteamVR)
 
-The x86 ASI publishes the latest GTA backbuffer through a GPU-only D3D9-to-D3D11
-bridge. The x64 host presents it through the active Meta OpenXR runtime. OpenVR is a
-delayed fallback import, so this route does not load `openvr_api.dll` or start SteamVR.
+The x86 ASI publishes distinct GTA eye resources through a GPU-only bridge: native
+D3D11 NT textures/fences are imported into DXVK's Vulkan device for the copy, then
+opened by the x64 host. The host uses stereo projection for an accepted same-tick
+world pair and a head-locked mono quad for pause/map, loading, and phone UI. OpenVR is
+a delayed fallback import, so `backend=openxr` does not load `openvr_api.dll` or start
+SteamVR.
 
 ```powershell
 cd D:\code\gta-iv
@@ -28,8 +31,8 @@ cd D:\code\gta-iv
 ```
 
 `PREFLIGHT PASS` starts no process and changes no game file. Direct GTA/OpenXR launch
-is quarantined after the DXVK-to-native-D3D11 GPU-handle failure; this script cannot
-start Steam, SteamVR, GTA, or the OpenXR host.
+remains quarantined while the replacement transport awaits review and one controlled
+test; this script cannot start Steam, SteamVR, GTA, or the OpenXR host.
 
 ---
 

@@ -3,9 +3,11 @@
 #include "cam_matrix.h"
 #include "hmd_pose.h"
 #include "log.h"
+#include "openxr_pose_client.h"
 #include "stereo_config.h"
 #include "stereo_eye.h"
 #include "stereo_proj.h"
+#include "ui_state.h"
 #include "vr_display.h"
 
 #include "../../thirdparty/dxvk/d3d9_vk_interop.h"
@@ -101,6 +103,44 @@ bool g_holdPoseLValid = false;
 bool g_holdPoseRValid = false;
 bool g_submitPoseLValid = false;
 bool g_submitPoseRValid = false;
+
+struct OpenXrCaptureStamp {
+  uint64_t sourceFrameId = 0;
+  uint64_t poseSequence = 0;
+  int64_t renderedDisplayTime = 0;
+  bool valid = false;
+};
+
+OpenXrCaptureStamp g_holdOpenXrStamp[2]{};
+OpenXrCaptureStamp g_submitOpenXrStamp[2]{};
+std::atomic<uint64_t> g_openXrPairId{0};
+bool g_openXrPairSameTick = false;
+
+OpenXrCaptureStamp CaptureOpenXrStamp() {
+  OpenXrCaptureStamp stamp{};
+  gtaiv_xr_bridge::PoseBridge pose{};
+  if (!GetLatestOpenXrPoseBridge(&pose) ||
+      (pose.flags & gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
+      pose.frameId == 0u) {
+    return stamp;
+  }
+  stamp.sourceFrameId = g_frameSeq.load(std::memory_order_relaxed);
+  stamp.poseSequence = pose.frameId;
+  stamp.renderedDisplayTime = pose.predictedDisplayTime;
+  stamp.valid = true;
+  return stamp;
+}
+
+void CompleteOpenXrPair(const OpenXrCaptureStamp& left,
+                        const OpenXrCaptureStamp& right) {
+  g_submitOpenXrStamp[0] = left;
+  g_submitOpenXrStamp[1] = right;
+  g_openXrPairSameTick =
+      left.valid && right.valid &&
+      left.sourceFrameId == right.sourceFrameId &&
+      left.poseSequence == right.poseSequence;
+  g_openXrPairId.fetch_add(1u, std::memory_order_release);
+}
 
 bool UsesFovComfortPath(StereoMode mode) {
   return mode == StereoMode::FovCanvasComfort || mode == StereoMode::AerPoseSubmit ||
@@ -428,6 +468,11 @@ void ReleaseEyeRts() {
   g_pairAwaitingR = false;
   g_holdPoseLValid = g_holdPoseRValid = false;
   g_submitPoseLValid = g_submitPoseRValid = false;
+  g_holdOpenXrStamp[0] = {};
+  g_holdOpenXrStamp[1] = {};
+  g_submitOpenXrStamp[0] = {};
+  g_submitOpenXrStamp[1] = {};
+  g_openXrPairSameTick = false;
 }
 
 bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
@@ -508,6 +553,7 @@ bool PromoteHoldPair(IDirect3DDevice9* dev) {
     g_submitPoseR = g_holdPoseR;
     g_submitPoseLValid = g_holdPoseLValid;
     g_submitPoseRValid = g_holdPoseRValid;
+    CompleteOpenXrPair(g_holdOpenXrStamp[0], g_holdOpenXrStamp[1]);
     const uint32_t n = ++g_pairPromoteCount;
     if (n <= 4 || (n % 300) == 0)
       Log("StereoPairHold: promoted pair #%u (both eyes update together) poseL=%d poseR=%d", n,
@@ -689,6 +735,126 @@ void ComputeCanvasSize(uint32_t bbW, uint32_t bbH, uint32_t* outW, uint32_t* out
         bbW, bbH, w, h, sx, sy, gameH, gameV, coverH, coverV, fillH * 100.f, fillV * 100.f,
         IsGameFovFromCCamActive() ? 1 : 0, gen, maxDim, (comfort && s_lockW) ? 1 : 0);
   }
+}
+
+bool CopyBbToUiTexture(IDirect3DDevice9* dev, IDirect3DTexture9* texture) {
+  if (!dev || !texture)
+    return false;
+  IDirect3DSurface9* source = nullptr;
+  IDirect3DSurface9* destination = nullptr;
+  if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &source)) || !source)
+    return false;
+  if (FAILED(texture->GetSurfaceLevel(0, &destination)) || !destination) {
+    source->Release();
+    return false;
+  }
+
+  D3DSURFACE_DESC sourceDescription{};
+  D3DSURFACE_DESC destinationDescription{};
+  source->GetDesc(&sourceDescription);
+  destination->GetDesc(&destinationDescription);
+  if (sourceDescription.Width == 0u ||
+      sourceDescription.Height == 0u ||
+      destinationDescription.Width == 0u ||
+      destinationDescription.Height == 0u) {
+    destination->Release();
+    source->Release();
+    return false;
+  }
+  RECT destinationRect{
+      0,
+      0,
+      static_cast<LONG>(destinationDescription.Width),
+      static_cast<LONG>(destinationDescription.Height)};
+  const float sourceAspect =
+      static_cast<float>(sourceDescription.Width) /
+      static_cast<float>((std::max)(1u, sourceDescription.Height));
+  const float destinationAspect =
+      static_cast<float>(destinationDescription.Width) /
+      static_cast<float>((std::max)(1u, destinationDescription.Height));
+  if (destinationAspect > sourceAspect) {
+    const LONG contentWidth = static_cast<LONG>(
+        static_cast<float>(destinationDescription.Height) * sourceAspect + 0.5f);
+    destinationRect.left =
+        (static_cast<LONG>(destinationDescription.Width) - contentWidth) / 2;
+    destinationRect.right = destinationRect.left + contentWidth;
+  } else {
+    const LONG contentHeight = static_cast<LONG>(
+        static_cast<float>(destinationDescription.Width) / sourceAspect + 0.5f);
+    destinationRect.top =
+        (static_cast<LONG>(destinationDescription.Height) - contentHeight) / 2;
+    destinationRect.bottom = destinationRect.top + contentHeight;
+  }
+
+  HRESULT result =
+      dev->ColorFill(destination, nullptr, D3DCOLOR_XRGB(0, 0, 0));
+  if (SUCCEEDED(result)) {
+    result = dev->StretchRect(
+        source,
+        nullptr,
+        destination,
+        &destinationRect,
+        D3DTEXF_LINEAR);
+  }
+  destination->Release();
+  source->Release();
+  return SUCCEEDED(result);
+}
+
+bool CaptureOpenXrUiPair(IDirect3DDevice9* device) {
+  g_haveL = false;
+  g_haveR = false;
+  g_pairAwaitingR = false;
+  g_holdOpenXrStamp[0] = {};
+  g_holdOpenXrStamp[1] = {};
+
+  IDirect3DSurface9* backBuffer = nullptr;
+  if (!device ||
+      FAILED(device->GetBackBuffer(
+          0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) ||
+      !backBuffer) {
+    return false;
+  }
+  D3DSURFACE_DESC description{};
+  const HRESULT descriptionResult = backBuffer->GetDesc(&description);
+  backBuffer->Release();
+  if (FAILED(descriptionResult))
+    return false;
+
+  uint32_t textureWidth = description.Width;
+  uint32_t textureHeight = description.Height;
+  if (UsesAngleCorrectCanvas(GetStereoMode()))
+    ComputeCanvasSize(
+        description.Width,
+        description.Height,
+        &textureWidth,
+        &textureHeight);
+  if (!EnsureEyeRts(device, textureWidth, textureHeight))
+    return false;
+
+  const bool leftReady = CopyBbToUiTexture(device, g_texL);
+  const bool rightReady = CopyBbToUiTexture(device, g_texR);
+  const OpenXrCaptureStamp stamp = CaptureOpenXrStamp();
+  if (!leftReady || !rightReady || !stamp.valid)
+    return false;
+
+  g_haveL = true;
+  g_haveR = true;
+  CompleteOpenXrPair(stamp, stamp);
+  static uint32_t count = 0u;
+  ++count;
+  if (count <= 4u || count % 300u == 0u) {
+    Log(
+        "StereoUI: same-frame aspect-preserved pair #%u source=%ux%u "
+        "texture=%ux%u pose=%llu",
+        count,
+        description.Width,
+        description.Height,
+        textureWidth,
+        textureHeight,
+        static_cast<unsigned long long>(stamp.poseSequence));
+  }
+  return true;
 }
 
 // Mode 14: clear canvas to black, then StretchRect the game backbuffer to the
@@ -2916,6 +3082,8 @@ void RunExecuteDualFromPhaseA(void* edx) {
 // Mode 30: same dual + DEVICE VS push before Right (not upload-hook; not prologues).
 bool RunExecViewPhaseDualGuarded(void* edx) {
   __try {
+    bool capturedLeft = false;
+    bool capturedRight = false;
     g_execViewStage = 1;
     const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
     float* posA = reinterpret_cast<float*>(base + kMgrCamPosRvaA);
@@ -2939,7 +3107,8 @@ bool RunExecViewPhaseDualGuarded(void* edx) {
     g_execViewStage = 2;  // exec pass 1 (LEFT — CCam snapshot is the left eye)
     RunExecuteEyePass(edx);
     g_execViewStage = 3;  // capture L
-    if (CopyCurrentRtToEyeCanvas(g_device, g_texL, vr::Eye_Left))
+    capturedLeft = CopyCurrentRtToEyeCanvas(g_device, g_texL, vr::Eye_Left);
+    if (capturedLeft)
       g_haveL = true;
     g_execViewStage = 4;  // matrix shift to RIGHT eye
     const float ax = posA[0], ay = posA[1], az = posA[2];
@@ -2973,7 +3142,8 @@ bool RunExecViewPhaseDualGuarded(void* edx) {
     RunExecuteEyePass(edx);
     g_vsPatchOn.store(false);
     g_execViewStage = 6;  // capture R
-    if (CopyCurrentRtToEyeCanvas(g_device, g_texR, vr::Eye_Right))
+    capturedRight = CopyCurrentRtToEyeCanvas(g_device, g_texR, vr::Eye_Right);
+    if (capturedRight)
       g_haveR = true;
     g_execViewStage = 7;  // restore
     if (mode != StereoMode::PhaseDualDeviceVs) {
@@ -2983,6 +3153,10 @@ bool RunExecViewPhaseDualGuarded(void* edx) {
       posB[0] = bx;
       posB[1] = by;
       posB[2] = bz;
+    }
+    if (capturedLeft && capturedRight) {
+      const OpenXrCaptureStamp stamp = CaptureOpenXrStamp();
+      CompleteOpenXrPair(stamp, stamp);
     }
     if (mode == StereoMode::PhaseDualDeviceVs && (g_execViewDualCount.load() < 6 ||
                                                    (g_execViewDualCount.load() % 300) == 0))
@@ -4364,10 +4538,10 @@ bool SubmitEyeTexture(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye 
     return false;
   }
 
-  VkImage image = nullptr;
+  VkImage image = VK_NULL_HANDLE;
   VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   VkImageCreateInfo info{};
-  info.sType = 14;
+  info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   uint32_t qfiScratch = 0;
   info.queueFamilyIndexCount = 1;
   info.pQueueFamilyIndices = &qfiScratch;
@@ -4386,7 +4560,7 @@ bool SubmitEyeTexture(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye 
   interop->GetSubmissionQueue(&queue, &qIndex, &qFamily);
 
   vr::VRVulkanTextureData_t vd{};
-  vd.m_nImage = reinterpret_cast<uint64_t>(image);
+  vd.m_nImage = static_cast<uint64_t>(image);
   vd.m_pDevice = reinterpret_cast<VkDevice_T*>(vkdev);
   vd.m_pPhysicalDevice = reinterpret_cast<VkPhysicalDevice_T*>(phys);
   vd.m_pInstance = reinterpret_cast<VkInstance_T*>(instance);
@@ -4548,10 +4722,12 @@ void RunSameFrameDualFromDrawScene(void* drawSelf, void* edx, bool useCurrentRt)
   if (useCurrentRt && g_device)
     StereoProjApplyForCurrentEye(g_device);
   g_origBuild(drawSelf, edx);
+  bool capturedLeft = false;
+  bool capturedRight = false;
   if (g_device) {
-    const bool ok = useCurrentRt ? CopyCurrentColorToEye(g_device, g_texL)
-                                 : CopyBbToEye(g_device, g_texL);
-    if (ok)
+    capturedLeft = useCurrentRt ? CopyCurrentColorToEye(g_device, g_texL)
+                                : CopyBbToEye(g_device, g_texL);
+    if (capturedLeft)
       g_haveL = true;
   }
 
@@ -4563,9 +4739,9 @@ void RunSameFrameDualFromDrawScene(void* drawSelf, void* edx, bool useCurrentRt)
     StereoProjApplyForCurrentEye(g_device);
   RunPhaseTriplet(drawSelf, edx);
   if (g_device) {
-    const bool ok = useCurrentRt ? CopyCurrentColorToEye(g_device, g_texR)
+    capturedRight = useCurrentRt ? CopyCurrentColorToEye(g_device, g_texR)
                                  : CopyBbToEye(g_device, g_texR);
-    if (ok)
+    if (capturedRight)
       g_haveR = true;
   }
 
@@ -4574,6 +4750,10 @@ void RunSameFrameDualFromDrawScene(void* drawSelf, void* edx, bool useCurrentRt)
 
   g_inDual.store(false);
   g_dualDoneThisFrame = true;
+  if (capturedLeft && capturedRight) {
+    const OpenXrCaptureStamp stamp = CaptureOpenXrStamp();
+    CompleteOpenXrPair(stamp, stamp);
+  }
 
   const uint32_t n = ++g_sameFrameCount;
   if (n <= 8 || (n % 120) == 0) {
@@ -4840,12 +5020,14 @@ void TemporalCapturePairHold(IDirect3DDevice9* device) {
       LatchGameFovForPair();
     if (CopyBbToEyeCanvas(device, g_holdL, vr::Eye_Left)) {
       SnapshotHoldPose(false);
+      g_holdOpenXrStamp[0] = CaptureOpenXrStamp();
       g_pairAwaitingR = true;
     }
     SetStereoEye(StereoEye::Right);
   } else {
     if (CopyBbToEyeCanvas(device, g_holdR, vr::Eye_Right) && g_pairAwaitingR) {
       SnapshotHoldPose(true);
+      g_holdOpenXrStamp[1] = CaptureOpenXrStamp();
       float rotDeg = 0.f, moveCm = 0.f;
       bool directSubmitGuard = false;
       const StereoMode sm = GetStereoMode();
@@ -4860,6 +5042,8 @@ void TemporalCapturePairHold(IDirect3DDevice9* device) {
               g_submitPoseL = g_holdPoseR;
               g_submitPoseR = g_holdPoseR;
               g_submitPoseLValid = g_submitPoseRValid = g_holdPoseRValid;
+              CompleteOpenXrPair(
+                  g_holdOpenXrStamp[1], g_holdOpenXrStamp[1]);
               directSubmitGuard = true;
               const uint32_t hardN = ++g_mode53FullMono;
               if (hardN <= 6 || (hardN % 120) == 0)
@@ -4902,6 +5086,8 @@ void TemporalCapturePairHold(IDirect3DDevice9* device) {
             g_submitPoseL = g_holdPoseR;
             g_submitPoseR = g_holdPoseR;
             g_submitPoseLValid = g_submitPoseRValid = g_holdPoseRValid;
+            CompleteOpenXrPair(
+                g_holdOpenXrStamp[1], g_holdOpenXrStamp[1]);
             directSubmitGuard = true;
           }
           const uint32_t guarded = ++g_mode40MonoPairs;
@@ -5560,6 +5746,19 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
   g_frameSeq.fetch_add(1);
 
   const StereoMode mode = GetStereoMode();
+  if (GetUiPresentationState()) {
+    if (!CaptureOpenXrUiPair(device)) {
+      static uint64_t lastFailureTick = 0u;
+      const uint64_t now = GetTickCount64();
+      if (lastFailureTick == 0u || now - lastFailureTick >= 2000u) {
+        Log(
+            "StereoUI: capture unavailable; old world transaction will "
+            "not be refreshed");
+        lastFailureTick = now;
+      }
+    }
+    return;
+  }
 
   if (mode == StereoMode::PhaseProbe) {
     static uint32_t s_end = 0;
@@ -5813,6 +6012,56 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
         static_cast<int>(mode),
         (mode == StereoMode::FusionSwap || mode == StereoMode::HeadOwnedCamStereoSwap) ? 1 : 0);
   return okL && okR;
+}
+
+bool StereoAcquireOpenXrPair(OpenXrStereoPair* output) {
+  if (!output)
+    return false;
+  *output = {};
+  const uint64_t pairId = g_openXrPairId.load(std::memory_order_acquire);
+  if (pairId == 0u || !g_haveL || !g_haveR || !g_texL || !g_texR ||
+      g_texL == g_texR)
+    return false;
+
+  D3DSURFACE_DESC left{};
+  D3DSURFACE_DESC right{};
+  if (FAILED(g_texL->GetLevelDesc(0, &left)) ||
+      FAILED(g_texR->GetLevelDesc(0, &right)) ||
+      left.Width == 0u || left.Height == 0u ||
+      left.Width != right.Width || left.Height != right.Height ||
+      left.Format != right.Format) {
+    return false;
+  }
+
+  g_texL->AddRef();
+  g_texR->AddRef();
+  output->eyes[0] = g_texL;
+  output->eyes[1] = g_texR;
+  output->width = left.Width;
+  output->height = left.Height;
+  output->format = left.Format;
+  output->pairId = pairId;
+  for (uint32_t eye = 0; eye < 2u; ++eye) {
+    output->sourceFrameId[eye] = g_submitOpenXrStamp[eye].sourceFrameId;
+    output->poseSequence[eye] = g_submitOpenXrStamp[eye].poseSequence;
+    output->renderedDisplayTime[eye] =
+        g_submitOpenXrStamp[eye].renderedDisplayTime;
+  }
+  output->sameSimulationTick = g_openXrPairSameTick;
+  output->poseStamped =
+      g_submitOpenXrStamp[0].valid && g_submitOpenXrStamp[1].valid;
+  return true;
+}
+
+void StereoReleaseOpenXrPair(OpenXrStereoPair* pair) {
+  if (!pair)
+    return;
+  for (IDirect3DTexture9*& eye : pair->eyes) {
+    if (eye)
+      eye->Release();
+    eye = nullptr;
+  }
+  *pair = {};
 }
 
 bool StereoInDualPass() {

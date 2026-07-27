@@ -13,12 +13,16 @@ GTAIV.exe (32-bit, D3D9)
 ```
 
 **Status (WIP):** the latest upstream camera/stereo code through Modes **50–53** is
-integrated. The direct OpenXR path now builds as an x86 GPU-frame producer plus x64
-host and does not load or call OpenVR when `backend=openxr`; SteamVR stays closed.
-It currently presents the same GTA frame to both eyes for the first direct-Quest
-test, so it is not yet full pose-driven stereo. See `docs/CURRENT-STATE.md` and the
-full Quest 3 plan in `docs/FULL_VR_PLAN.md`. Daily-driver baseline: stereo mode
-**0** (~90 FPS). Kill-switch file: `gtaiv_dxvk_vr.stereo` → `0`.
+integrated. The direct OpenXR path builds offline as an x86 Vulkan/D3D11 GPU-frame
+producer plus x64 host. It includes exact pose/FOV matching, Quest Touch-to-XInput
+controls and haptics, strict same-tick world transactions, and a head-locked 2D quad
+for pause/map, loading, and phone UI. It does not load or call OpenVR when
+`backend=openxr`.
+
+The replacement GPU transport and UI path are **not deployed or headset-tested**.
+True same-frame world parallax is still unresolved, so this is not yet full stereo.
+The game remains `backend=off`, and `scripts/run-openxr-gta.ps1` is preflight-only:
+it cannot start GTA, the host, Steam, or SteamVR. See `docs/CURRENT-STATE.md`.
 
 The separate x64 OpenXR calibration host now builds and reaches the installed Meta
 Quest 3 runtime. Build it with `.\scripts\build-openxr-host.ps1`, then follow
@@ -42,11 +46,12 @@ This repository is **private**. A link alone is not enough — invite people as 
    .\scripts\fetch-minhook.ps1
    git clone --depth 1 https://github.com/ValveSoftware/openvr.git thirdparty\openvr
    ```
-3. Build + deploy + launch (default game dir is Steam GTAIV):
+3. Build only (no deployment or launch):
    ```powershell
-   .\scripts\build-deploy-run.ps1
+   .\scripts\build-asi.ps1
+   .\scripts\build-openxr-host.ps1
    ```
-4. Requirements: SteamVR running, stock DXVK **3.0.2** `d3d9.dll` in the game folder, FusionFix ASI loader.
+4. No headset runtime is required for these offline builds.
 
 Log file (next to the game EXE): `gtaiv_dxvk_vr.log`
 
@@ -90,8 +95,9 @@ Details: [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md), [`docs/STEREO_EYE_OFF
 |--------|---------|
 | `scripts/build-asi.ps1` | Build `gtaiv_dxvk_vr.asi` (Win32) |
 | `scripts/deploy-asi.ps1` | Copy ASI into game dir (`-Launch` optional) |
-| `scripts/build-deploy-run.ps1` | Build → stop game → deploy → Steam launch |
+| `scripts/build-deploy-run.ps1` | Legacy OpenVR-only build/deploy/Steam launch; never use for direct OpenXR |
 | `scripts/build-openxr-host.ps1` | Fetch pinned Khronos SDK, build and verify the x64 host |
+| `scripts/run-openxr-gta.ps1` | Safe direct-OpenXR preflight only; launches nothing |
 | `scripts/run-openxr-calibration.ps1` | Run the generated Quest/OpenXR eye test |
 | `scripts/fetch-minhook.ps1` | Clone MinHook into `thirdparty/minhook` |
 | `scripts/restart-gtaiv.ps1` | Quick restart via Steam |

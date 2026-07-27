@@ -2,6 +2,10 @@
 
 #include <openvr.h>
 
+namespace gtaiv_xr_bridge {
+struct PoseBridge;
+}
+
 namespace asi {
 
 struct EyeOffset {
@@ -10,6 +14,12 @@ struct EyeOffset {
 
 // Latest HMD pose from WaitGetPoses (game/render thread writes, cam hooks read).
 void UpdateHmdPose(const vr::TrackedDevicePose_t* poses, uint32_t poseCount);
+
+// Converts the standard OpenXR LOCAL-space quaternion/position sample into the
+// same tracking matrix cache used by the established GTA camera code.
+void UpdateHmdPoseFromOpenXr(const gtaiv_xr_bridge::PoseBridge& pose);
+void InvalidateHmdPose();
+
 bool GetHmdPoseMatrix(vr::HmdMatrix34_t* out);
 bool IsHmdPoseValid();
 

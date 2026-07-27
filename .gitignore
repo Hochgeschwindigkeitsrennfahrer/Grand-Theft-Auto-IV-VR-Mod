@@ -27,6 +27,7 @@
 /thirdparty/openvr/
 /thirdparty/minhook/
 /thirdparty/openxr-sdk/
+/thirdparty/vulkan-headers/
 
 # Submodule content is tracked via gitlink; ignore local build artifacts inside dxvk
 /dxvk/build/

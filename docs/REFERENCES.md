@@ -26,7 +26,7 @@ All important external links for this project.
 
 | Item | Link / location |
 |------|------------|
-| FusionFix (GTA IV CE) | https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix |
+| FusionFix (GTA IV CE) | https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix — latest reviewed `e5d53963cce44c38eacbad2e721ae023318ad0a5`; public cross-reference for read-only pause/loading/phone state meaning. No implementation copied. |
 | **FusionShaders (decompiled Rage shaders)** | https://github.com/Parallellines0451/GTAIV.EFLC.FusionShaders |
 | Halo MCC VR (same-frame / FOV lessons) | https://github.com/pancreations/Halo-MCC-VR |
 | GTA IV CE | Steam / Rockstar Launcher |

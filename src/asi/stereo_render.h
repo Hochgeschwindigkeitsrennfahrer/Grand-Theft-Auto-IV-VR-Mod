@@ -2,7 +2,22 @@
 
 #include "../../thirdparty/dxvk/d3d9_vk_interop.h"
 
+#include <cstdint>
+
 namespace asi {
+
+struct OpenXrStereoPair {
+  IDirect3DTexture9* eyes[2] = {nullptr, nullptr};
+  uint32_t width = 0;
+  uint32_t height = 0;
+  D3DFORMAT format = D3DFMT_UNKNOWN;
+  uint64_t pairId = 0;
+  uint64_t sourceFrameId[2] = {};
+  uint64_t poseSequence[2] = {};
+  int64_t renderedDisplayTime[2] = {};
+  bool sameSimulationTick = false;
+  bool poseStamped = false;
+};
 
 bool InstallStereoRenderHooks();
 
@@ -11,6 +26,11 @@ void StereoRenderOnDevice(IDirect3DDevice9* device);
 
 // If mode >= 4 and RTs ready, Submit L/R from eye textures. Returns true if handled.
 bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop);
+
+// Acquires AddRef'd L/R textures from the most recently completed capture
+// transaction. The caller must release with StereoReleaseOpenXrPair.
+bool StereoAcquireOpenXrPair(OpenXrStereoPair* output);
+void StereoReleaseOpenXrPair(OpenXrStereoPair* pair);
 
 // True while same-frame L/R dual pass is running (projection inject gate).
 bool StereoInDualPass();
