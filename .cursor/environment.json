@@ -1,0 +1,4 @@
+{
+  "name": "gtaiv-dxvk-vr",
+  "install": "bash scripts/setup-cloud-agent.sh"
+}
