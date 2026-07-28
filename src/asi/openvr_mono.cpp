@@ -9,6 +9,7 @@
 #include "stereo_config.h"
 #include "stereo_dual.h"
 #include "stereo_render.h"
+#include "hud_layout.h"
 #include "vr_display.h"
 #include "vr_move.h"
 
@@ -245,6 +246,7 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   StereoRenderOnDevice(device);
   UpdateGameFovFromDevice(device);
   TryApplyCoverMatchedFovAdd();  // Mode 123 once cover FOV known
+  UpdateHudLayoutForVr();        // Mode 166 radar/status inward
 
   // Always ask — StereoTrySubmitEyes has the full mode + haveL/R gate. A second
   // mode list here went stale (mode 26 captured canvases but never submitted →
@@ -280,6 +282,7 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   PollIpdScaleHotkey();
   PollWorldScaleHotkey();
   PollStereoScaleHotkey();
+  PollVrResHotkey();
 
   // Head tracking: mouse-look after warmup. Engine FP cam after more stable frames.
   constexpr uint32_t kLookAfter = 120;

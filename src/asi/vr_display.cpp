@@ -269,6 +269,90 @@ void PublishGameFovFromCCamDegrees(float ccamDeg, float aspectWH) {
   }
 }
 
+bool PublishGameFovFromCover() {
+  float coverH = 0.f, coverV = 0.f;
+  if (!GetCoverFovTangents(&coverH, &coverV))
+    return false;
+  if (!(coverH > 0.05f) || !(coverV > 0.05f) || !(coverH < 5.f) || !(coverV < 5.f))
+    return false;
+
+  const float curH = g_gameTanH.load();
+  const bool changed = !(curH > 0.05f) || std::fabs(coverH - curH) > 0.025f * curH;
+  g_gameTanH.store(coverH);
+  g_gameTanV.store(coverV);
+  // Own gameTan so UpdateGameFovFromDevice does not overwrite with projection.
+  g_fovFromCCam.store(true);
+  if (changed) {
+    const uint32_t gen = ++g_fovPublishGen;
+    if (gen <= 6 || (gen % 120) == 0)
+      Log("VrDisplay: gameTan from COVER tan=(%.3f,%.3f) gen=%u "
+          "(Mode153 under-publish — wide CCam BB packed into HMD cover)",
+          coverH, coverV, gen);
+  }
+  return true;
+}
+
+bool PublishGameFovUnderPublishFit(float ccamDeg, float aspectWH, float overscan) {
+  if (!(ccamDeg >= 5.f) || !(ccamDeg <= 160.f) || !std::isfinite(ccamDeg))
+    return false;
+  float coverH = 0.f, coverV = 0.f;
+  if (!GetCoverFovTangents(&coverH, &coverV))
+    return false;
+  if (!(coverH > 0.05f) || !(coverV > 0.05f))
+    return false;
+
+  constexpr float kEng = 58.7f / 45.f;
+  float vDeg = ccamDeg * kEng;
+  if (vDeg > 170.f)
+    vDeg = 170.f;
+  const float trueV = std::tan(0.5f * vDeg * 3.14159265f / 180.f);
+  float aspect = aspectWH;
+  if (!(aspect > 0.5f) || !(aspect < 3.f))
+    aspect = g_bbAspect.load();
+  if (!(aspect > 0.5f) || !(aspect < 3.f))
+    aspect = 16.f / 9.f;
+  const float trueH = trueV * aspect;
+  if (!(trueH > 0.05f) || !(trueV > 0.05f) || !(trueH < 5.f) || !(trueV < 5.f))
+    return false;
+
+  // Fit inside cover, preserve BB aspect (no Mode153 cover-aspect lie).
+  float scale = coverH / trueH;
+  const float scaleV = coverV / trueV;
+  if (scaleV < scale)
+    scale = scaleV;
+  if (scale > 1.f)
+    scale = 1.f;
+  // Mild overscan (Mode 157+): grow claimed FOV slightly → shrink bars, tiny edge crop.
+  float os = overscan;
+  if (!(os >= 1.f) || !std::isfinite(os))
+    os = 1.f;
+  if (os > 1.20f)
+    os = 1.20f;  // hard cap — beyond this feels like Mode152 zoom-IN
+  scale *= os;
+  if (!(scale > 0.05f))
+    return false;
+
+  const float tanH = trueH * scale;
+  const float tanV = trueV * scale;
+  const float fillH = (coverH > 0.05f) ? (tanH / coverH) : 0.f;
+  const float fillV = (coverV > 0.05f) ? (tanV / coverV) : 0.f;
+  const float curH = g_gameTanH.load();
+  const bool changed = !(curH > 0.05f) || std::fabs(tanH - curH) > 0.025f * curH;
+  g_gameTanH.store(tanH);
+  g_gameTanV.store(tanV);
+  g_fovFromCCam.store(true);
+  if (changed) {
+    const uint32_t gen = ++g_fovPublishGen;
+    if (gen <= 6 || (gen % 120) == 0)
+      Log("VrDisplay: gameTan under-publish FIT CCam=%.1f true=(%.3f,%.3f) "
+          "pub=(%.3f,%.3f) scale=%.3f overscan=%.3f fill≈%.0f%%h/%.0f%%v "
+          "cover=(%.3f,%.3f) gen=%u",
+          ccamDeg, trueH, trueV, tanH, tanV, scale / os, os, fillH * 100.f, fillV * 100.f,
+          coverH, coverV, gen);
+  }
+  return true;
+}
+
 void UpdateGameFovFromDevice(IDirect3DDevice9* device) {
   if (!device)
     return;

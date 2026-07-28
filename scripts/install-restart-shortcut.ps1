@@ -28,7 +28,7 @@ function New-RestartShortcut([string]$lnkPath) {
   $s.WorkingDirectory = $scripts
   $s.WindowStyle = 7  # Minimized (wscript itself is silent)
   $s.IconLocation = $icon
-  $s.Description = "GTA IV Quick Restart (kill + Steam relaunch, no console)"
+  $s.Description = "GTA IV Quick Restart (kill + DirectExe / RGLess, no console)"
   $s.Save()
   Write-Host "OK: $lnkPath"
 }
@@ -45,4 +45,4 @@ Write-Host "  1. Open Start Menu → search 'GTA IV Quick Restart'"
 Write-Host "  2. Right-click → Pin to taskbar"
 Write-Host "  (Desktop icon: right-click → Show more options → Pin to taskbar)"
 Write-Host ""
-Write-Host "Runs silent (no CMD, no Enter). Same as: restart-gtaiv.ps1 -NoPause"
+Write-Host "Runs silent (no CMD, no Enter). Same as: restart-gtaiv.ps1 -NoPause -DirectExe"

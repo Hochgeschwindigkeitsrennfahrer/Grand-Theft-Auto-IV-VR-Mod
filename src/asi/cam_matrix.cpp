@@ -34,9 +34,11 @@ struct Matrix44 {
 
 using CopyMat_t = void(__fastcall*)(Matrix44* mat, void* edx, void* arg2);
 using FindPlayerPed_t = void*(__cdecl*)(int32_t id);
+using FindPlayerVehicle_t = void*(__cdecl*)(int32_t id);
 
 CopyMat_t g_origCopyMat = nullptr;
 FindPlayerPed_t g_FindPlayerPed = nullptr;
+FindPlayerVehicle_t g_FindPlayerVehicle = nullptr;
 
 std::atomic<bool> g_hooksOk{false};
 std::atomic<bool> g_gameplayActive{false};  // false until past title (avoids blackscreen)
@@ -59,6 +61,12 @@ Matrix44* g_liveCamMat = nullptr;
 
 bool g_haveLastApplied = false;
 Vec4 g_lastAppliedPos{};
+
+// Mode 140: snapshot FirstPerson cam from CopyMat; IPD offset applied from this base
+// so L/R dual passes do not stack offsets.
+Matrix44 g_fpHostBase{};
+bool g_haveFpHostBase = false;
+std::atomic<uint32_t> g_fpHostIpdLog{0};
 
 constexpr int kMaxTrackedMats = 8;
 Matrix44* g_trackedMats[kMaxTrackedMats]{};
@@ -94,6 +102,45 @@ void Normalize(float* x, float* y, float* z) {
   *x /= len;
   *y /= len;
   *z /= len;
+}
+
+// Mode 140: keep FirstPerson orientation/pos; add ±half IPD along cam right (+ EyeZ).
+void ApplyFpHostStereoIpd(Matrix44* mat) {
+  if (!mat || !g_haveFpHostBase)
+    return;
+  *mat = g_fpHostBase;
+
+  float rx = mat->right.x, ry = mat->right.y, rz = mat->right.z;
+  Normalize(&rx, &ry, &rz);
+  float fx = mat->up.x, fy = mat->up.y, fz = mat->up.z;  // RAGE forward
+  Normalize(&fx, &fy, &fz);
+
+  const bool rightEye = (GetStereoEye() == StereoEye::Right);
+  float eyeZ = 0.f;
+  if (vr::VRSystem()) {
+    const vr::HmdMatrix34_t e2h =
+        vr::VRSystem()->GetEyeToHeadTransform(rightEye ? vr::Eye_Right : vr::Eye_Left);
+    eyeZ = e2h.m[2][3];
+  }
+  const float half = 0.5f * GetStereoSepMeters() * GetStereoScale();
+  const float s = rightEye ? half : -half;
+  const float ipdX = rx * s + fx * (-eyeZ);
+  const float ipdY = ry * s + fy * (-eyeZ);
+  const float ipdZ = rz * s + fz * (-eyeZ);
+  if (std::isfinite(ipdX) && std::isfinite(ipdY) && std::isfinite(ipdZ) &&
+      std::fabs(ipdX) < 20.f && std::fabs(ipdY) < 20.f && std::fabs(ipdZ) < 20.f) {
+    mat->pos.x += ipdX;
+    mat->pos.y += ipdY;
+    mat->pos.z += ipdZ;
+  }
+  g_lastAppliedPos = mat->pos;
+  g_haveLastApplied = true;
+
+  const uint32_t n = ++g_fpHostIpdLog;
+  if (n <= 5 || (n % 300) == 0)
+    Log("Mode140: IPD-only #%u %s pos=(%.3f,%.3f,%.3f) sep=%.0fcm (FP base kept)", n,
+        rightEye ? "R" : "L", mat->pos.x, mat->pos.y, mat->pos.z,
+        GetStereoSepMeters() * 100.f);
 }
 
 bool TryGetPedEyePos(Vec4* outEye) {
@@ -158,6 +205,98 @@ float WrapPi(float a) {
   return a;
 }
 
+// True while occupying a vehicle for VR cam offsets.
+// Prefer FindPlayerVehicle (null on foot) — CPed::m_pVehicle often LINGERS after
+// exit, which left vehcamoff stuck on. Fall back to m_pVehicle only if the pattern
+// miss (rare). No proximity heuristic (near-car without occupying).
+bool IsPlayerSeatedForVrCam() {
+  static int s_okFrames = 0;
+  static bool s_loggedExit = false;
+  static bool s_loggedEnter = false;
+  static bool s_loggedFallback = false;
+
+  bool inside = false;
+  const char* how = "none";
+  if (g_FindPlayerVehicle) {
+    inside = g_FindPlayerVehicle(0) != nullptr;
+    how = "FindPlayerVehicle";
+  } else if (g_FindPlayerPed) {
+    if (!s_loggedFallback) {
+      s_loggedFallback = true;
+      Log("VehCam: FindPlayerVehicle MISS — fallback m_pVehicle (exit may stick)");
+    }
+    void* ped = g_FindPlayerPed(0);
+    if (ped) {
+      inside =
+          *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(ped) + kPedVehicleOff) !=
+          nullptr;
+      how = "m_pVehicle";
+    }
+  }
+
+  if (!inside) {
+    if (s_okFrames > 0 && !s_loggedExit) {
+      s_loggedExit = true;
+      s_loggedEnter = false;
+      Log("VehCam: on foot — vehcamoff OFF (%s)", how);
+    }
+    s_okFrames = 0;
+    return false;
+  }
+  if (s_okFrames < 100)
+    ++s_okFrames;
+  if (s_okFrames >= 2) {
+    if (!s_loggedEnter) {
+      s_loggedEnter = true;
+      s_loggedExit = false;
+      Log("VehCam: INSIDE vehicle — vehcamoff/kPedFwd car ON (%s)", how);
+    }
+    return true;
+  }
+  return false;
+}
+
+// Legacy name used by ApplyHmdToCam.
+bool IsPlayerInVehicleSticky() {
+  return IsPlayerSeatedForVrCam();
+}
+
+// Raw m_pVehicle (no debounce) — enter/jack edge detection.
+bool IsPlayerVehiclePtrSet() {
+  if (!g_FindPlayerPed)
+    return false;
+  void* ped = g_FindPlayerPed(0);
+  if (!ped)
+    return false;
+  return *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(ped) + kPedVehicleOff) !=
+         nullptr;
+}
+
+// Mode 165: enter/jack window (force FP onto live CCam — script cams skip CopyMat).
+DWORD g_enterFpUntil = 0;
+
+bool IsEnterCarFpWindowActive() {
+  return g_enterFpUntil != 0 && GetTickCount() < g_enterFpUntil;
+}
+
+void UpdateEnterCarFpWindow() {
+  if (!IsOursFpEnterCarFp(GetStereoMode()) || !g_FindPlayerPed)
+    return;
+  static bool s_hadVeh = false;
+  const bool vehPtr = IsPlayerVehiclePtrSet();
+  const DWORD now = GetTickCount();
+  if (vehPtr && !s_hadVeh) {
+    g_enterFpUntil = now + 5000;  // jack + pull-out + sit
+    Log("EnterFp: vehicle ptr set — force CCam FP for 5000ms (enter/jack)");
+  }
+  if (!vehPtr) {
+    if (s_hadVeh)
+      Log("EnterFp: on foot — foot cam offsets restored (vehcamoff off)");
+    g_enterFpUntil = 0;
+  }
+  s_hadVeh = vehPtr;
+}
+
 float ComputeVehicleYawOffset() {
   const int mode = GetVehicleFollowMode();
   if (mode == 0 || !g_FindPlayerPed)
@@ -206,19 +345,64 @@ void ApplyHmdToCam(Matrix44* mat) {
   if (!g_gameplayActive.load())
     return;
 
+  // Exit vehicle → drop car offsets and re-baseline 6DoF so foot height returns.
+  {
+    static bool s_wasSeated = false;
+    const bool seated = IsPlayerSeatedForVrCam();
+    if (s_wasSeated && !seated) {
+      g_havePosBaseline = false;
+      Log("VehCam: exit edge — 6DoF baseline cleared (foot height/offsets)");
+    }
+    s_wasSeated = seated;
+  }
+
   vr::HmdMatrix34_t h{};
   if (!GetHmdPoseMatrix(&h))
     return;
 
+  const StereoMode sm = GetStereoMode();
+  const bool eyeCenter = IsOursFpEyeCenterCam(sm);
+
   Vec4 eye{};
-  if (!TryGetPedEyePos(&eye) || !SaneWorldPos(eye)) {
+  if (eyeCenter) {
+    // Mode 155/156: ped-fixed eye-center pivot (between eyes), not skull+6DoF.
+    if (!g_FindPlayerPed)
+      return;
+    void* ped = g_FindPlayerPed(0);
+    if (!ped)
+      return;
+    auto* pMat = *reinterpret_cast<Matrix44**>(reinterpret_cast<uint8_t*>(ped) + 0x20);
+    // 155: 78cm (between eyes). 156+: 65cm (lower than Mode154 skull 70cm).
+    const float kEyeH = IsOursFpEyeCenterLow(sm) ? 0.65f : 0.78f;
+    // Default: +8cm along ped forward. Mode164/165 in-car: slight seat nudge (vehcamoff
+    // does most of the rearward shift — keep this mild for trucks).
+    const bool inVeh = IsPlayerInVehicleSticky();
+    const bool carHead = IsOursFpInCarHead(sm) && inVeh;
+    float kPedFwd = carHead ? 0.02f : 0.08f;
+    if (!pMat) {
+      const float* t = reinterpret_cast<const float*>(reinterpret_cast<uint8_t*>(ped) + 0x10);
+      eye.x = t[0];
+      eye.y = t[1];
+      eye.z = t[2] + kEyeH;
+      eye.w = 1.f;
+    } else {
+      // RAGE: at = world up, up = ped forward.
+      eye.x = pMat->pos.x + pMat->at.x * kEyeH + pMat->up.x * kPedFwd;
+      eye.y = pMat->pos.y + pMat->at.y * kEyeH + pMat->up.y * kPedFwd;
+      eye.z = pMat->pos.z + pMat->at.z * kEyeH + pMat->up.z * kPedFwd;
+      eye.w = 1.f;
+    }
+    if (!SaneWorldPos(eye))
+      return;
+  } else if (!TryGetPedEyePos(&eye) || !SaneWorldPos(eye)) {
     // No real ped yet — never reuse stale eye (menu → freeze risk)
     return;
   }
   g_lastEye = eye;
   g_haveLastEye = true;
 
-  // Seated 6DoF on top of ped eye (F10 resets translation baseline)
+  // Seated 6DoF on top of ped eye (F10 resets translation baseline).
+  // Mode 155: skip — keep cam fixed on ped (no lean/shoulder orbit from HMD pos).
   float px, py, pz;
   OvrToGta(h.m[0][3], h.m[1][3], h.m[2][3], &px, &py, &pz);
   if (!g_havePosBaseline) {
@@ -227,16 +411,17 @@ void ApplyHmdToCam(Matrix44* mat) {
     g_basePz = pz;
     g_havePosBaseline = true;
   }
-  const float worldScale = GetWorldScale();
-  eye.x += (px - g_basePx) * kPosScale * worldScale;
-  eye.y += (py - g_basePy) * kPosScale * worldScale;
-  eye.z += (pz - g_basePz) * kPosScale * worldScale;
+  if (!eyeCenter) {
+    const float worldScale = GetWorldScale();
+    eye.x += (px - g_basePx) * kPosScale * worldScale;
+    eye.y += (py - g_basePy) * kPosScale * worldScale;
+    eye.z += (pz - g_basePz) * kPosScale * worldScale;
+  }
 
   float fx, fy, fz;
   OvrToGta(-h.m[0][2], -h.m[1][2], -h.m[2][2], &fx, &fy, &fz);
   Normalize(&fx, &fy, &fz);
 
-  const StereoMode sm = GetStereoMode();
   // Modes 47/48 only: leveled pitch flip (Mode 49+ OFF — headset said flip=1 reversed).
   const bool leveledPitchFlip =
       sm == StereoMode::HeadOwnedCamLeveledPitchFlip ||
@@ -369,7 +554,7 @@ void ApplyHmdToCam(Matrix44* mat) {
     }
   }
 
-  const float eyeFwd = GetEyeForwardMeters();
+  const float eyeFwd = eyeCenter ? 0.f : GetEyeForwardMeters();
   eye.x += fx * eyeFwd;
   eye.y += fy * eyeFwd;
   eye.z += fz * eyeFwd;
@@ -377,6 +562,14 @@ void ApplyHmdToCam(Matrix44* mat) {
   // Inspiration FirstPerson.ini FPX/FPY/FPZ (our units: cm via gtaiv_dxvk_vr.camoff).
   float offR = 0.f, offF = 0.f, offU = 0.f;
   GetCamOffsetMeters(&offR, &offF, &offU);
+  // Mode 164/165 in vehicle only: extra rearward offset (vehcamoff). Cleared on foot.
+  if (IsOursFpInCarHead(sm) && IsPlayerInVehicleSticky()) {
+    float vr = 0.f, vf = 0.f, vu = 0.f;
+    GetVehicleCamOffsetMeters(&vr, &vf, &vu);
+    offR += vr;
+    offF += vf;
+    offU += vu;
+  }
   if (offR != 0.f || offF != 0.f || offU != 0.f) {
     eye.x += rx * offR + fx * offF + ux * offU;
     eye.y += ry * offR + fy * offF + uy * offU;
@@ -446,9 +639,10 @@ void ApplyHmdToCam(Matrix44* mat) {
   const uint32_t n = ++g_applyCount;
   if (n <= 5 || (n % 300) == 0) {
     Log("CamMatrix: FP lock #%u %s pos=(%.3f,%.3f,%.3f) ipd=(%.4f,%.4f,%.4f) sep=%.0fcm "
-        "eyeFwd=%.0fcm fullHmdBasis=%d leveledPitchFlip=%d pitchStable=%d pedCoupled=%d",
+        "eyeFwd=%.0fcm eyeCenter=%d fullHmdBasis=%d leveledPitchFlip=%d pitchStable=%d "
+        "pedCoupled=%d",
         n, rightEye ? "R" : "L", eye.x, eye.y, eye.z, ipdX, ipdY, ipdZ,
-        GetStereoSepMeters() * 100.f, eyeFwd * 100.f, fullHeadPose ? 1 : 0,
+        GetStereoSepMeters() * 100.f, eyeFwd * 100.f, eyeCenter ? 1 : 0, fullHeadPose ? 1 : 0,
         leveledPitchFlip ? 1 : 0, usedPitchStable ? 1 : 0, pedCoupledYaw ? 1 : 0);
   }
 }
@@ -595,7 +789,14 @@ void __fastcall HookCopyMat(Matrix44* mat, void* edx, void* arg2) {
       ApplyFovPatch(mat);
     g_liveCamMat = mat;
     TrackCamMat(mat);
-    ApplyHmdToCam(mat);
+    if (IsExternalFpHost(sm)) {
+      // Snapshot FirstPerson cam, then IPD for current stereo eye.
+      g_fpHostBase = *mat;
+      g_haveFpHostBase = true;
+      ApplyFpHostStereoIpd(mat);
+    } else {
+      ApplyHmdToCam(mat);
+    }
   }
 }
 
@@ -631,6 +832,17 @@ bool InstallCamMatrixHooks() {
   g_FindPlayerPed = reinterpret_cast<FindPlayerPed_t>(findPed);
   Log("CamMatrix: FindPlayerPed @ %p", reinterpret_cast<void*>(findPed));
 
+  // FusionFix / SpeedoIV CE pattern — returns null on foot (unlike lingering m_pVehicle).
+  const uintptr_t findVeh =
+      FindPattern(nullptr, "8B 44 24 04 85 C0 75 15 A1 ? ? ? ? 83 F8 FF 75 04 33 C0 EB 07");
+  if (findVeh) {
+    g_FindPlayerVehicle = reinterpret_cast<FindPlayerVehicle_t>(findVeh);
+    Log("CamMatrix: FindPlayerVehicle @ %p (sit detect)", reinterpret_cast<void*>(findVeh));
+  } else {
+    g_FindPlayerVehicle = nullptr;
+    Log("CamMatrix: FindPlayerVehicle pattern MISS — sit detect falls back to m_pVehicle");
+  }
+
   int ok = 0;
   ok += HookOneCall("onfoot_front", "E8 ? ? ? ? 8A 86 ? ? ? ? 80 A6 ? ? ? ? ? 80 A6") ? 1 : 0;
   ok += HookOneCall("onfoot_behind", "E8 ? ? ? ? 8B 8E ? ? ? ? 56 8D 44 24 74") ? 1 : 0;
@@ -664,6 +876,13 @@ bool AreCamMatrixHooksInstalled() {
 }
 
 bool IsCamMatrixOverrideEnabled() {
+  // Mode 140: leave cam to FirstPerson; HMD→mouse (hmd_look) stays active.
+  if (IsExternalFpHost(GetStereoMode()))
+    return false;
+  return g_hooksOk.load() && g_gameplayActive.load();
+}
+
+bool IsStereoRenderArmed() {
   return g_hooksOk.load() && g_gameplayActive.load();
 }
 
@@ -690,15 +909,27 @@ void PollCamHotkeys() {
 void RefreshLiveCamForStereoEye() {
   if (!g_gameplayActive.load())
     return;
+
+  UpdateEnterCarFpWindow();
+
+  const bool fpHost = IsExternalFpHost(GetStereoMode());
   if (g_trackedCount > 0) {
     for (int i = 0; i < g_trackedCount; ++i) {
-      if (g_trackedMats[i])
+      if (!g_trackedMats[i])
+        continue;
+      if (fpHost)
+        ApplyFpHostStereoIpd(g_trackedMats[i]);
+      else
         ApplyHmdToCam(g_trackedMats[i]);
     }
     return;
   }
-  if (g_liveCamMat)
-    ApplyHmdToCam(g_liveCamMat);
+  if (g_liveCamMat) {
+    if (fpHost)
+      ApplyFpHostStereoIpd(g_liveCamMat);
+    else
+      ApplyHmdToCam(g_liveCamMat);
+  }
 }
 
 // Mode 22: world-space delta from LEFT eye to RIGHT eye = hmdRight * sep * scale
@@ -812,15 +1043,31 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
       }
     }
     float after = before;
-    // Idempotent ADD: the cam CALL usually resets CCam+0x60 to the base FOV, then
-    // we ADD. Sometimes the CALL leaves our previous write in place — adding again
-    // compounds (67→89) and blows canvas fill past 100% (headset 2026-07-24).
-    // Skip when before ≈ lastWritten (already has our ADD).
-    // Also: only ADD in the normal gameplay FOV band. Cutscene/menu bases (~70+)
-    // must not get +fovadd (load spike 76→98 → 193% fill / heavy crop).
     static float s_lastWritten = -1.f;
     constexpr float kGameplayFovHi = 55.f;
-    if (add > 0.05f && before <= kGameplayFovHi) {
+
+    // Modes 153–155: write ForwardFOV (fpfov) into CCam+0x60 to widen the engine BB.
+    // 153: lock gameTan to cover (aspect lie — can stretch V).
+    // 154/155: aspect-fit under-publish (preserve BB aspect, scale into cover).
+    // Absolute 90 + true CCam publish (Mode 152) caused StretchRect SRC crop zoom-IN.
+    if (WantsFpAbsoluteFov(sm)) {
+      const float target = GetFpForwardFovDegrees();
+      if (target >= 40.f && target <= 120.f && std::isfinite(target)) {
+        *fov = target;
+        after = target;
+        s_lastWritten = target;
+      } else {
+        s_lastWritten = -1.f;
+        after = before;
+      }
+      if (IsOursFpWideAspectFit(sm))
+        PublishGameFovUnderPublishFit(after, GetBackbufferAspect(), GetUnderPublishOverscan());
+      else
+        PublishGameFovFromCover();
+    } else if (add > 0.05f && before <= kGameplayFovHi) {
+      // Idempotent ADD: the cam CALL usually resets CCam+0x60 to the base FOV, then
+      // we ADD. Sometimes the CALL leaves our previous write in place — adding again
+      // compounds (67→89) and blows canvas fill past 100% (headset 2026-07-24).
       if (s_lastWritten > 0.f && std::fabs(before - s_lastWritten) < 0.4f) {
         after = before;
       } else {
@@ -831,14 +1078,15 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         s_lastWritten = after;
       }
     } else if (before > kGameplayFovHi) {
-      // Special cam — leave engine FOV alone; clear sticky lastWritten.
       s_lastWritten = -1.f;
       after = before;
     } else {
       s_lastWritten = -1.f;
     }
+
     // Mode 36/37: canvas must track TRUE engine FOV (not stale GetTransform).
     // Mode 35 baseline left unchanged (protect headset-good warp).
+    // Modes 153–155: skip — under-publish already applied above.
     if (sm == StereoMode::FovRecomputeTrueCanvas || sm == StereoMode::FovCanvasComfort ||
         sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion ||
         sm == StereoMode::FovCanvasMotionGuard || sm == StereoMode::ReplayCallChainProbe ||
@@ -852,7 +1100,8 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         sm == StereoMode::HeadOwnedCamStereoAer ||
         sm == StereoMode::HeadOwnedCamStereoSwap ||
         sm == StereoMode::HeadOwnedCamStereoSoftGuard ||
-        IsCleanDualLookMove(sm))
+        IsCleanDualLookMove(sm) ||
+        (IsHeadHideNativeOurs(sm) && !WantsFpAbsoluteFov(sm)))
       PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
 
     // Modes 45/46/47/48/49: Rage can revise a camera after CopyMat but before this already-safe
@@ -867,8 +1116,43 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         sm == StereoMode::HeadOwnedCamStereoAer ||
         sm == StereoMode::HeadOwnedCamStereoSwap ||
         sm == StereoMode::HeadOwnedCamStereoSoftGuard ||
-        IsCleanDualLookMove(sm)) {
-      RefreshLiveCamForStereoEye();
+        IsCleanDualLookMove(sm) || IsHeadHideNativeOurs(sm)) {
+      // Mode 165: enter/jack often uses a script cam that never hits our 4 CopyMat
+      // hooks. mat = CCam+0x10 (FOV at CCam+0x60 = mat+0x50). Always force HMD FP
+      // onto the live CCam so jacking stays first-person.
+      if (IsOursFpEnterCarFp(sm)) {
+        UpdateEnterCarFpWindow();
+        auto* ccamMat =
+            reinterpret_cast<Matrix44*>(reinterpret_cast<uint8_t*>(self) + 0x10);
+        // Start enter window if game cam is already far from ped (jack anim before
+        // m_pVehicle is set).
+        if (!IsPlayerVehiclePtrSet()) {
+          Vec4 pedEye{};
+          if (TryGetPedEyePos(&pedEye)) {
+            const float dx = ccamMat->pos.x - pedEye.x;
+            const float dy = ccamMat->pos.y - pedEye.y;
+            const float dz = ccamMat->pos.z - pedEye.z;
+            const float dist2 = dx * dx + dy * dy + dz * dz;
+            if (dist2 > 2.5f * 2.5f) {
+              g_enterFpUntil = GetTickCount() + 5000;
+              static uint32_t s_far = 0;
+              if (++s_far <= 4 || (s_far % 200) == 0)
+                Log("EnterFp: CCam far from ped (%.1fm) — jack/enter force FP",
+                    std::sqrt(dist2));
+            }
+          }
+        }
+        ApplyHmdToCam(ccamMat);
+        g_liveCamMat = ccamMat;
+        TrackCamMat(ccamMat);
+        static uint32_t s_enterForce = 0;
+        const uint32_t ef = ++s_enterForce;
+        if (ef <= 6 || (ef % 300) == 0)
+          Log("EnterFp: forced HMD onto CCam+0x10 #%u (window=%d vehPtr=%d)", ef,
+              IsEnterCarFpWindowActive() ? 1 : 0, IsPlayerVehiclePtrSet() ? 1 : 0);
+      } else {
+        RefreshLiveCamForStereoEye();
+      }
       static uint32_t s_headOwnedRefreshes = 0;
       const uint32_t refreshes = ++s_headOwnedRefreshes;
       if (refreshes <= 4 || (refreshes % 600) == 0)
@@ -886,8 +1170,8 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
     }
     const uint32_t n = ++g_fovSiteCalls;
     if (n <= 4 || (n % 600) == 0)
-      Log("FovSite: #%u CCam+0x60 %.3f -> %.3f (add=%.0f) self=%p trueCanvas=%d", n, before,
-          after, add, self,
+      Log("FovSite: #%u CCam+0x60 %.3f -> %.3f (add=%.0f) self=%p trueCanvas=%d underPub=%d", n,
+          before, after, add, self,
           (sm == StereoMode::FovRecomputeTrueCanvas || sm == StereoMode::FovCanvasComfort ||
            sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion ||
            sm == StereoMode::FovCanvasMotionGuard || sm == StereoMode::ReplayCallChainProbe ||
@@ -897,9 +1181,11 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
            sm == StereoMode::HeadOwnedCamLeveledPitchFlip ||
            sm == StereoMode::HeadOwnedCamPitchStable ||
            sm == StereoMode::HeadOwnedCamPedCoupled ||
-           IsCleanDualLookMove(sm))
+           IsCleanDualLookMove(sm) ||
+           (IsHeadHideNativeOurs(sm) && !WantsFpAbsoluteFov(sm)))
               ? 1
-              : 0);
+              : 0,
+          WantsFpAbsoluteFov(sm) ? 1 : 0);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     static bool once = false;
     if (!once) {

@@ -13,8 +13,12 @@ void SetCamMatrixGameplayActive(bool active);
 
 bool AreCamMatrixHooksInstalled();
 
-// True when hooks installed AND gameplay gate open.
+// True when hooks installed AND gameplay gate open AND we own full HMD cam
+// (false for Mode 140 — FirstPerson owns cam; HMD→mouse stays on).
 bool IsCamMatrixOverrideEnabled();
+
+// Hooks + gameplay armed (Mode 140 dual/submit still need this while override is off).
+bool IsStereoRenderArmed();
 
 void PollCamHotkeys();
 

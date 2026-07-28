@@ -23,6 +23,14 @@ void UpdateGameFovFromDevice(IDirect3DDevice9* device);
 // ccamDeg = live CCam FOV degrees; aspectWH = backbuffer W/H (0 = last known / 16:9).
 // Conversion: Mode 16 probe — CCam 45° → rendered V ≈ 58.7° (factor 58.7/45).
 void PublishGameFovFromCCamDegrees(float ccamDeg, float aspectWH = 0.f);
+// Mode 153: lock canvas gameTan to HMD cover FOV (under-publish vs wide CCam).
+// Returns true when cover tangents were applied.
+bool PublishGameFovFromCover();
+// Mode 154/155: under-publish with BB aspect preserved — scale true CCam tangents
+// so they fit inside cover (fill≈100% on limiting axis). Avoids 153 vertical stretch.
+// overscan>1 (Mode 157+): multiply fit scale to shrink bars (mild edge crop).
+bool PublishGameFovUnderPublishFit(float ccamDeg, float aspectWH = 0.f,
+                                   float overscan = 1.f);
 bool IsGameFovFromCCamActive();
 // Monotonic counter bumped when gameTan changes from CCam (StereoCanvas re-logs).
 uint32_t GetGameFovPublishGeneration();

@@ -164,16 +164,19 @@ void UpdateVrMoveAndStick() {
   // ~60fps assumed for yaw integrate; fine for cinema feel
   constexpr float kDt = 1.f / 60.f;
   if (stick != 0.f) {
-    g_controllerYaw += stick * kStickYawSpeed * kDt;
+    g_controllerYaw += stick * kStickYawSpeed * GetFpJoySensScale() * kDt;
     // Keep in [-pi, pi]
     while (g_controllerYaw > 3.14159265f)
       g_controllerYaw -= 6.2831853f;
     while (g_controllerYaw < -3.14159265f)
       g_controllerYaw += 6.2831853f;
 
-    // Mouse path (and vehicle look): stick turns camera
+    // Mouse path: stick turns camera. Scale by FirstPerson JoySens when configured.
     if (!IsCamMatrixOverrideEnabled()) {
-      const int dx = static_cast<int>(std::lround(stick * kMouseStickScale));
+      float m = stick * kMouseStickScale * GetFpJoySensScale();
+      if (WantsFpStickInvert(GetStereoMode()))
+        m = -m;
+      const int dx = static_cast<int>(std::lround(m));
       SendMouseDx(dx);
     }
   }
@@ -188,6 +191,10 @@ void UpdateVrMoveAndStick() {
   // In vehicle: don't force ped heading (car faces road); stick already moves cam via mouse
   void* veh = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(ped) + kVehicleOff);
   if (veh)
+    return;
+
+  // look_move owns ped heading when enabled (avoid double-apply / matrix fight with FP).
+  if (IsCleanDualLookMove(GetStereoMode()) || WantsExternalFpLookMove(GetStereoMode()))
     return;
 
   // Free move (gtaiv_dxvk_vr.movemode=1): the game maps stick input relative to the

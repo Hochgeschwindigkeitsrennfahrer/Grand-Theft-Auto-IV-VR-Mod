@@ -121,7 +121,7 @@ bool UsesFovComfortPath(StereoMode mode) {
          mode == StereoMode::HeadOwnedCamStereoAer ||
          mode == StereoMode::HeadOwnedCamStereoSwap ||
          mode == StereoMode::HeadOwnedCamStereoSoftGuard ||
-         IsCleanDualLookMove(mode);
+         UsesDrawSceneDualPath(mode);
 }
 
 bool UsesTrueFovCanvasPublish(StereoMode mode) {
@@ -589,11 +589,63 @@ bool CopyBbToEye(IDirect3DDevice9* dev, IDirect3DTexture9* tex) {
     bb->Release();
     return false;
   }
+  // Mode 168: flush DXVK queue so StretchRect sees the finished DrawScene, not a
+  // half-written BB (common near water when GPU is still finishing the pass).
+  if (IsOursFpFlashStable(GetStereoMode())) {
+    ID3D9VkInteropDevice* interop = nullptr;
+    if (SUCCEEDED(dev->QueryInterface(__uuidof(ID3D9VkInteropDevice),
+                                      reinterpret_cast<void**>(&interop))) &&
+        interop) {
+      interop->FlushRenderingCommands();
+      interop->Release();
+    }
+  }
   const HRESULT hr = dev->StretchRect(bb, nullptr, dst, nullptr, D3DTEXF_NONE);
   dst->Release();
   bb->Release();
   return SUCCEEDED(hr);
 }
+
+// Mode 163+: skip eye capture only for TINY side-passes (env/cube ≤512).
+// Log 2026-07-28: we also matched half-BB (1272x1260 vs 2544x2521) and quarter
+// (636x630) — those are fog/SSR/LOD-style scene buffers, NOT safe to skip.
+// Skipping them held last L/R while driving → flash/stutter; capturing mid-pass
+// showed missing distant/foggy buildings. Only skip clearly-small env maps.
+bool ShouldSkipFlashCapture(IDirect3DDevice9* dev) {
+  if (!dev)
+    return false;
+  IDirect3DSurface9* rt = nullptr;
+  IDirect3DSurface9* bb = nullptr;
+  if (FAILED(dev->GetRenderTarget(0, &rt)) || !rt)
+    return false;
+  if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) {
+    rt->Release();
+    return false;
+  }
+  const bool isBb = (bb == rt);
+  D3DSURFACE_DESC rd{}, bd{};
+  const bool gotR = SUCCEEDED(rt->GetDesc(&rd));
+  const bool gotB = SUCCEEDED(bb->GetDesc(&bd));
+  bb->Release();
+  rt->Release();
+  if (isBb)
+    return false;
+  if (!gotR || !gotB || bd.Width < 16 || bd.Height < 16)
+    return false;
+  const uint32_t maxDim = (rd.Width > rd.Height) ? rd.Width : rd.Height;
+  // 512 and below: classic env/cube. 636/1024/1272 are scene half-res — allow.
+  if (maxDim <= 512) {
+    static uint32_t s_skip = 0;
+    const uint32_t n = ++s_skip;
+    if (n <= 12 || (n % 400) == 0)
+      Log("FlashGate: skip tiny env RT %ux%u vs BB %ux%u n=%u", rd.Width, rd.Height,
+          bd.Width, bd.Height, n);
+    return true;
+  }
+  return false;
+}
+
+bool CopyBbToEyeCanvasGated(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye eye);
 
 // Prefer current color RT (offscreen); fall back to backbuffer.
 bool CopyCurrentColorToEye(IDirect3DDevice9* dev, IDirect3DTexture9* tex) {
@@ -655,7 +707,10 @@ void ComputeCanvasSize(uint32_t bbW, uint32_t bbH, uint32_t* outW, uint32_t* out
   uint32_t w = static_cast<uint32_t>(bbW * sx + 0.5f);
   uint32_t h = static_cast<uint32_t>(bbH * sy + 0.5f);
   const bool comfort = UsesFovComfortPath(GetStereoMode());
-  const uint32_t maxDim = comfort ? kCanvasMaxDimComfort : kCanvasMaxDim;
+  // Live maxDim (F5 on Mode 156+). Comfort default was 1536; non-comfort 2048.
+  uint32_t maxDim = GetCanvasMaxDim();
+  if (!IsHeadHideNativeOurs(GetStereoMode()) && !IsCleanDualLookMove(GetStereoMode()))
+    maxDim = comfort ? kCanvasMaxDimComfort : kCanvasMaxDim;
   if (w > maxDim)
     w = maxDim;
   if (h > maxDim)
@@ -663,11 +718,16 @@ void ComputeCanvasSize(uint32_t bbW, uint32_t bbH, uint32_t* outW, uint32_t* out
 
   // Mode 37: lock canvas size after first true-FOV sample. FOV wobble was
   // recreating 4 RTs (1536↔1440) every few frames = jump + FPS hit.
+  // F5 bumps GetCanvasMaxDimGeneration() to unlock and recreate at new size.
   static uint32_t s_lockW = 0, s_lockH = 0;
   static int s_lockMode = -1;
-  if (!comfort || GetStereoMode() != static_cast<StereoMode>(s_lockMode)) {
+  static uint32_t s_lockDimGen = 0;
+  const uint32_t dimGen = GetCanvasMaxDimGeneration();
+  if (!comfort || GetStereoMode() != static_cast<StereoMode>(s_lockMode) ||
+      dimGen != s_lockDimGen) {
     s_lockW = s_lockH = 0;
     s_lockMode = static_cast<int>(GetStereoMode());
+    s_lockDimGen = dimGen;
   }
   if (comfort && IsGameFovFromCCamActive()) {
     if (s_lockW == 0) {
@@ -849,12 +909,33 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
 bool CopyBbToEyeCanvas(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye eye) {
   if (!dev || !tex)
     return false;
+  // Mode 168: flush before reading BB so canvas StretchRect isn't mid-pass garbage.
+  if (IsOursFpFlashStable(GetStereoMode())) {
+    ID3D9VkInteropDevice* interop = nullptr;
+    if (SUCCEEDED(dev->QueryInterface(__uuidof(ID3D9VkInteropDevice),
+                                      reinterpret_cast<void**>(&interop))) &&
+        interop) {
+      interop->FlushRenderingCommands();
+      interop->Release();
+    }
+  }
   IDirect3DSurface9* bb = nullptr;
   if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb)
     return false;
   const bool ok = CopySurfToEyeCanvas(dev, bb, tex, eye);
   bb->Release();
   return ok;
+}
+
+bool CopyBbToEyeCanvasGated(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye eye) {
+  // Mode 168: never skip — CopyBbToEyeCanvas reads the backbuffer, not RT0.
+  // Tiny-RT skip was designed for current-RT capture and caused HOLDs/flashes
+  // whenever DrawScene exited on an env pass (common near water).
+  if (IsOursFpFlashStable(GetStereoMode()))
+    return CopyBbToEyeCanvas(dev, tex, eye);
+  if (IsOursFpFlashGate(GetStereoMode()) && ShouldSkipFlashCapture(dev))
+    return false;
+  return CopyBbToEyeCanvas(dev, tex, eye);
 }
 
 // Mode 23: the scene may still live in the CURRENT color RT (offscreen) at
@@ -4614,21 +4695,46 @@ void RunSameFrameDualFromDrawScene(void* drawSelf, void* edx, bool useCurrentRt)
 bool RunMode120DrawSceneDualGuarded(void* drawSelf, void* edx) {
   if (!g_origBuild || !drawSelf || !g_device || !g_texL || !g_texR)
     return false;
+  const bool fpHost = IsExternalFpHost(GetStereoMode());
+  const bool atomicPair = IsOursFpFlashStable(GetStereoMode());
   __try {
     SetStereoEye(StereoEye::Left);
     RefreshLiveCamForStereoEye();
+    if (fpHost)
+      PushLiveCamToD3D(g_device);
     g_origBuild(drawSelf, edx);
-    if (CopyBbToEyeCanvas(g_device, g_texL, vr::Eye_Left))
-      g_haveL = true;
+    const bool okL = CopyBbToEyeCanvasGated(g_device, g_texL, vr::Eye_Left);
 
     SetStereoEye(StereoEye::Right);
     RefreshLiveCamForStereoEye();
+    if (fpHost)
+      PushLiveCamToD3D(g_device);
     g_origBuild(drawSelf, edx);
-    if (CopyBbToEyeCanvas(g_device, g_texR, vr::Eye_Right))
-      g_haveR = true;
+    const bool okR = CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Right);
+
+    // Mode 168: only publish a fresh pair when BOTH eyes captured this tick.
+    // Partial update (old L + new R) looks like a full-screen flash.
+    if (atomicPair) {
+      if (okL && okR)
+        g_haveL = g_haveR = true;
+      else {
+        static uint32_t s_partial = 0;
+        const uint32_t n = ++s_partial;
+        if (n <= 8 || (n % 200) == 0)
+          Log("Mode168: dual capture partial okL=%d okR=%d — kept previous pair n=%u",
+              okL ? 1 : 0, okR ? 1 : 0, n);
+      }
+    } else {
+      if (okL)
+        g_haveL = true;
+      if (okR)
+        g_haveR = true;
+    }
 
     SetStereoEye(StereoEye::Left);
     RefreshLiveCamForStereoEye();
+    if (fpHost)
+      PushLiveCamToD3D(g_device);
     return true;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     return false;
@@ -4655,8 +4761,9 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
   // 133=FAILED same-tex L+R Submit (jump/fusion gone);
   // 134=132-safe twin + dualn=3 HOLD (FAILED HMD freeze via stale HOLD);
   // 135=ALWAYS-FRESH: everyN=1 dual; look/pose→BB×2; never bare HOLD.
-  if (IsCleanDualLookMove(mode)) {
-    if (g_mode120DualDead.load() || g_inDual.load() || !IsCamMatrixOverrideEnabled() ||
+  // Mode 140: same DrawScene dual; IPD-only on FirstPerson cam.
+  if (UsesDrawSceneDualPath(mode)) {
+    if (g_mode120DualDead.load() || g_inDual.load() || !IsStereoRenderArmed() ||
         !g_device || !g_texL || !g_texR) {
       g_origBuild(self, edx);
       return;
@@ -4669,8 +4776,9 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
     s_prev = now;
     if (gap >= StereoDualHitchMs()) {
       g_origBuild(self, edx);
-      // Mode 126/127/135 hitch: live BB (not stale HOLD). Mode 128–134: keep last L/R.
-      if (IsCleanDualAlwaysFresh(mode) || IsCleanDualFpsLiveLook(mode))
+      // Mode 126/127/135/168 hitch: live BB (not stale HOLD). Mode 128–134: keep last L/R.
+      if (IsCleanDualAlwaysFresh(mode) || IsCleanDualFpsLiveLook(mode) ||
+          IsOursFpFlashStable(mode))
         StereoDualMarkLiveLook();
       else if (g_haveL && g_haveR)
         StereoDualMarkHold();
@@ -4740,8 +4848,8 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
     const bool forceLookDual = StereoDualShouldForceLookDual();
     if (!forceLookDual && (s_tick % everyN) != 0u) {
       g_origBuild(self, edx);
-      // Mode 135 safety: never bare HOLD on off-tick (everyN should be 1).
-      if (IsCleanDualAlwaysFresh(mode))
+      // Mode 135/168 safety: never bare HOLD on off-tick (everyN should be 1).
+      if (IsCleanDualAlwaysFresh(mode) || IsOursFpFlashStable(mode))
         StereoDualMarkLiveLook();
       else if (g_haveL && g_haveR)
         StereoDualMarkHold();
@@ -4754,9 +4862,9 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
     if (!ok) {
       g_mode120DualDead.store(true);
       g_haveL = g_haveR = false;
-      // Experiments (121+) fall back to LKG 120; Mode 120 keeps kill=51.
-      const int killMode =
-          (mode == StereoMode::CleanDualLookMove) ? 51 : 120;
+      // Experiments (121+) fall back to LKG 120; Mode 120 keeps kill=51; Mode140 → 0.
+      const int killMode = IsExternalFpHost(mode) ? 0
+          : (mode == StereoMode::CleanDualLookMove) ? 51 : 120;
       Log("Mode%d: EXCEPTION in DrawScene dual — permanently disabled; wrote stereo=%d",
           static_cast<int>(mode), killMode);
       WriteStereoModeFile(killMode);
@@ -4769,9 +4877,10 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
     const uint32_t n = ++g_mode120DualN;
     if (n <= 6 || (n % 300) == 0)
       Log("Mode%d: DRAWSCENE dual #%u haveL=%d haveR=%d sep=%.0fcm everyN=%u "
-          "(HOLD off-tick; kill=120/51/45/0)",
+          "(%s; kill=167/162/120)",
           static_cast<int>(mode), n, g_haveL ? 1 : 0, g_haveR ? 1 : 0,
-          GetStereoSepMeters() * 100.f, everyN);
+          GetStereoSepMeters() * 100.f, everyN,
+          IsOursFpFlashStable(mode) ? "STABLE everyN=1" : "HOLD off-tick");
     return;
   }
 
@@ -5296,9 +5405,9 @@ bool InstallStereoRenderHooks() {
     return g_ok.load();
   }
 
-  if (IsCleanDualLookMove(mode)) {
-    // Mode 120 LKG / 121–132 experiments: Mode50-class FOV/RT + DrawScene dual.
-    // No AER temporal capture. No FPS HUD. Kill → 120 (good) / 51 / 45 / 0.
+  if (UsesDrawSceneDualPath(mode)) {
+    // Mode 120 LKG / 121–136 experiments / Mode 140 FP-host: DrawScene dual + eye RTs.
+    // Mode 140: no FOV site (FirstPerson owns FOV). Kill → 120 / 0.
     SetStereoEye(StereoEye::Left);
     g_haveL = g_haveR = false;
     g_mode30Phase.store(static_cast<int>(Mode30Phase::PairHold));
@@ -5312,10 +5421,76 @@ bool InstallStereoRenderHooks() {
     ClearGameFovPairLatch();
     StereoDualClearHold();
     StereoDualClearLiveLook();
-    const bool fovOk = InstallFovRecomputeSiteHook();
+    const bool fovOk =
+        IsExternalFpHost(mode) ? false : InstallFovRecomputeSiteHook();
     g_ok = InstallAllThreePhases();
     const int mid = static_cast<int>(mode);
-    if (mode == StereoMode::CleanDualAlwaysFresh) {
+    if (IsExternalFpHost(mode)) {
+      Log("StereoRender: mode %d EXTERNAL-FP DUAL (FirstPerson cam/hide/FOV; "
+          "DrawScene×2 IPD-only; dualn=2 HOLD; HMD→mouse look; no fovadd site; no AER) "
+          "ok=%d",
+          mid, g_ok.load() ? 1 : 0);
+      Log("StereoRender: kill-switch - 147 soft-move / 150 native-hide+FP / 151 ours+hide");
+    } else if (IsHeadHideNativeOurs(mode)) {
+      const char* tag = IsOursFpStableCarHud(mode)    ? "+STABLE+CAR+HUD"
+                        : IsOursFpCarHud(mode)        ? "+CAR+HUD"
+                        : IsOursFpHudLayout(mode)       ? "+HUD-LAYOUT"
+                        : IsOursFpEnterCarFp(mode)      ? "+ENTER-CAR-FP"
+                        : IsOursFpInCarHead(mode)       ? "+IN-CAR-HEAD"
+                        : IsOursFpFlashGate(mode) && mode == StereoMode::OursFpFlashGate
+                                                       ? "+FLASH-GATE"
+                        : IsOursFpSquareWideFov(mode)   ? "+SQUARE-WIDE-FOV"
+                        : IsOursFpSquareZeroOverscan(mode) ? "+SQUARE-ZERO-OS"
+                        : IsOursFpSquareLowOverscan(mode)  ? "+SQUARE-LOW-OS"
+                        : IsOursFpStrongOverscan(mode)   ? "+STRONG-OVERSCAN"
+                        : IsOursFpSquareRes(mode)        ? "+SQUARE-RES"
+                        : IsOursFpMildOverscan(mode)     ? "+OVERSCAN"
+                        : IsOursFpEyeCenterLow(mode)     ? "+EYE-LOW+VRES"
+                        : IsOursFpEyeCenterCam(mode)     ? "+EYE-CENTER"
+                        : IsOursFpWideAspectFit(mode)    ? "+FP-ASPECT-FIT"
+                        : IsOursFpWideUnderPublish(mode) ? "+FP-WIDE"
+                        : IsOursFpFovProfile(mode)       ? "+FP-PRESENCE"
+                                                         : "";
+      const char* detail =
+          IsOursFpStableCarHud(mode)
+              ? "; Mode167 cam/HUD + everyN=1 atomic dual (no skip-gate; hitch→live BB)"
+          : IsOursFpCarHud(mode)
+              ? "; sit-cam + HUD inset + mission directions"
+          : IsOursFpHudLayout(mode)
+              ? "; HUD radar/status inward (hudoff)"
+          : IsOursFpEnterCarFp(mode)
+              ? "; enter-car keep FP + in-car head + flash gate"
+          : IsOursFpInCarHead(mode)
+              ? "; in-car eye back (vehcamoff) + flash gate"
+          : (IsOursFpFlashGate(mode) && mode == StereoMode::OursFpFlashGate)
+              ? "; skip small RT side-pass (water/envmap; not strict BB)"
+          : IsOursFpSquareWideFov(mode)
+              ? "; Luke square + fpfov=100 zoom-out (0% OS)"
+          : IsOursFpSquareZeroOverscan(mode)
+              ? "; Luke square + overscan=0% exact fit A/B"
+          : IsOursFpSquareLowOverscan(mode)
+              ? "; Luke square + overscan~2% (less crop)"
+          : IsOursFpStrongOverscan(mode)
+              ? "; overscan~10% more bar shrink; 158=LKG"
+          : IsOursFpSquareRes(mode)
+              ? "; 1440sq commandline + mild overscan"
+          : IsOursFpMildOverscan(mode)
+              ? "; under-publish overscan~6% shrink bars"
+          : IsOursFpEyeCenterLow(mode)
+              ? "; eyeH=65cm + F5 VR canvas maxDim"
+          : IsOursFpEyeCenterCam(mode)
+              ? "; ped-fixed eye pivot + aspect-fit FOV"
+          : IsOursFpWideAspectFit(mode)
+              ? "; CCam=fpfov aspect-fit under-publish"
+          : IsOursFpWideUnderPublish(mode)
+              ? "; CCam=fpfov under-publish gameTan=COVER"
+          : IsOursFpFovProfile(mode) ? "; eyefwd=0+Window0 look-down jacket; F7 live"
+                                     : "";
+      Log("StereoRender: mode %d OURS+HIDE%s (Mode120 DrawScene dual + our HMD cam + "
+          "native SET_DRAW%s; FirstPerson.asi OFF) ok=%d fovSite=%d",
+          mid, tag, detail, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=162 / 161 / 158 or 0");
+    } else if (mode == StereoMode::CleanDualAlwaysFresh) {
       Log("StereoRender: mode %d CLEAN ALWAYS-FRESH (everyN=1 dual; look→BB→L+R EVERY; "
           "POSEHOLD→fresh monolook; hitch→LIVELOOK; NEVER bare HOLD; NOT same-tex; "
           "hitch 32; no AER; no FPS HUD) ok=%d fovSite=%d",
@@ -5920,11 +6095,11 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
     return;
   }
 
-    // Mode 120–136: Dual path owns L/R via DrawScene (runs before EndScene).
+    // Mode 120–136 / 140: Dual path owns L/R via DrawScene (runs before EndScene).
     // HOLD → skip TemporalCapture. Mode126/127 LIVELOOK + Mode129–135 mono →
     // StretchRect live BB (Mode131 only: every 3rd mono frame; Mode133: BB→L once FAILED).
     // Mode 135: liveLook always BB→L AND BB→R (132 style); never same-tex.
-    if (IsCleanDualLookMove(mode)) {
+    if (UsesDrawSceneDualPath(mode)) {
       g_dualDoneThisFrame = false;
       IDirect3DSurface9* bb = nullptr;
       if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb)
@@ -5964,7 +6139,7 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
         }
         if (IsCleanDualMonoLookHmdCheap(mode)) {
           // FAILED path kept for A/B: BB→L once; OpenVR Submit same handle L+R.
-          const bool okL = CopyBbToEyeCanvas(device, g_texL, vr::Eye_Left);
+          const bool okL = CopyBbToEyeCanvasGated(device, g_texL, vr::Eye_Left);
           if (okL) {
             g_haveL = g_haveR = true;
             g_submitSameLBoth = true;
@@ -5977,8 +6152,8 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
         }
         // Mode 132/134/135 (+130/129 LIVELOOK): same BB → L and R (never same-tex Submit).
         g_submitSameLBoth = false;
-        const bool okL = CopyBbToEyeCanvas(device, g_texL, vr::Eye_Left);
-        const bool okR = CopyBbToEyeCanvas(device, g_texR, vr::Eye_Right);
+        const bool okL = CopyBbToEyeCanvasGated(device, g_texL, vr::Eye_Left);
+        const bool okR = CopyBbToEyeCanvasGated(device, g_texR, vr::Eye_Right);
         if (okL && okR)
           g_haveL = g_haveR = true;
         static uint32_t s_liveN = 0;
@@ -6158,11 +6333,11 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
       mode != StereoMode::HeadOwnedCamStereoAer &&
       mode != StereoMode::HeadOwnedCamStereoSwap &&
       mode != StereoMode::HeadOwnedCamStereoSoftGuard &&
-      !IsCleanDualLookMove(mode))
+      !UsesDrawSceneDualPath(mode))
     return false;
   if (!device || !interop || !g_texL || !g_texR)
     return false;
-  if (!IsCamMatrixOverrideEnabled())
+  if (!IsStereoRenderArmed())
     return false;
   if (!g_haveL || !g_haveR)
     return false;

@@ -184,6 +184,12 @@ uint32_t StereoDualHitchMs() {
 }
 
 uint32_t StereoDualEveryN() {
+  // Mode 168: always everyN=1 (ignore cached dualn file / prior mode).
+  if (IsOursFpFlashStable(GetStereoMode())) {
+    if (!g_loggedN.exchange(true))
+      Log("StereoDual: everyN=1 (Mode168 STABLE; no off-tick HOLD; dual every DrawScene)");
+    return 1u;
+  }
   uint32_t n = g_everyN.load();
   if (n == 0) {
     const StereoMode mode = GetStereoMode();

@@ -110,6 +110,12 @@ void ApplyPedHeading(void* ped, float heading) {
   mat->at.w = 0.f;
 }
 
+// Mode 147+: walk look-dir without yanking FirstPerson attach cam (no matrix rewrite).
+void ApplyPedHeadingSoft(void* ped, float heading) {
+  *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(ped) + kHeadingOff) = heading;
+  *reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(ped) + kDesiredOff) = heading;
+}
+
 bool ReadLookMoveFile() {
   char path[MAX_PATH]{};
   HMODULE self = nullptr;
@@ -143,14 +149,14 @@ bool ReadLookMoveFile() {
 }  // namespace
 
 bool IsLookMoveEnabled() {
-  if (IsCleanDualLookMove(GetStereoMode()))
+  if (IsCleanDualLookMove(GetStereoMode()) || WantsExternalFpLookMove(GetStereoMode()))
     return true;
   int cached = g_lookMoveCached.load();
   if (cached < 0) {
     const bool on = ReadLookMoveFile();
     cached = on ? 1 : 0;
     g_lookMoveCached.store(cached);
-    Log("LookMove: %s (gtaiv_dxvk_vr.lookmove; Mode120 forces ON; pedCoupled OFF)",
+    Log("LookMove: %s (gtaiv_dxvk_vr.lookmove; Mode120/145+/151 forces ON; pedCoupled OFF)",
         on ? "ON" : "OFF");
   }
   return cached == 1;
@@ -163,7 +169,6 @@ void UpdateLookMove() {
   if (!IsLookMoveEnabled())
     return;
 
-  // When look-move is on we own ped heading — ignore movemode free-move.
   if (!EnsureFindPlayerPed() || !g_FindPlayerPed)
     return;
 
@@ -180,13 +185,19 @@ void UpdateLookMove() {
     return;
 
   const float heading = HeadingFromForwardXY(fx, fy) + GetControllerYawOffset();
-  ApplyPedHeading(ped, heading);
-
-  if (!g_ready.exchange(true))
-    Log("LookMove: HMD yaw → ped heading ON (atan2(-fx,fy); pure HMD cam)");
+  if (WantsSoftPedHeading(GetStereoMode())) {
+    ApplyPedHeadingSoft(ped, heading);
+    if (!g_ready.exchange(true))
+      Log("LookMove: SOFT HMD→ped heading (floats only; FP cam uncoupled from body matrix)");
+  } else {
+    ApplyPedHeading(ped, heading);
+    if (!g_ready.exchange(true))
+      Log("LookMove: HMD yaw → ped heading ON (atan2(-fx,fy); pure HMD cam)");
+  }
 
   if ((++g_logCounter % 600) == 1) {
-    Log("LookMove: heading=%.1f deg", heading * 57.2957795f);
+    Log("LookMove: heading=%.1f deg soft=%d", heading * 57.2957795f,
+        WantsSoftPedHeading(GetStereoMode()) ? 1 : 0);
   }
 }
 

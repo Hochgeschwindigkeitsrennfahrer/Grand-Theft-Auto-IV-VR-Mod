@@ -1,6 +1,7 @@
 #include "hmd_look.h"
 #include "cam_matrix.h"
 #include "log.h"
+#include "stereo_config.h"
 #include "vr_move.h"
 
 #ifndef NOMINMAX
@@ -18,12 +19,31 @@ namespace {
 
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kRad2Deg = 180.0f / kPi;
-constexpr float kYawSens = 380.0f;
-constexpr float kPitchSens = 380.0f;
-constexpr float kMaxDeltaRad = 0.20f;
-constexpr int kMaxMouseStep = 18;
 
-// Defaults on — no toggles (F9 recenter only).
+constexpr float kYawSensLegacy = 380.0f;
+constexpr float kPitchSensLegacy = 380.0f;
+constexpr float kMaxDeltaRadLegacy = 0.20f;
+constexpr int kMaxMouseStepLegacy = 18;
+
+constexpr float kYawSensFp = 720.0f;
+constexpr float kPitchSensFp = 980.0f;
+constexpr float kMaxDeltaRadFp = 0.55f;
+constexpr int kMaxMouseStepFp = 96;
+
+constexpr float kPitchSensFpUnlock = 1400.0f;
+constexpr float kMaxDeltaRadFpUnlock = 0.85f;
+constexpr int kMaxMouseStepFpUnlock = 120;
+
+constexpr float kYawSensFpLookMove = 360.0f;
+constexpr float kPitchSensFpLookMove = 520.0f;
+constexpr float kPitchDeadzoneRad = 0.004f;
+constexpr float kMaxDeltaRadLookMove = 0.70f;
+constexpr int kMaxMouseStepLookMove = 72;
+
+// Mode 147/148/150: full mouse cam (144 signs) + slow pitch; soft ped owns walk-dir.
+constexpr float kYawSensSoft = 720.0f;
+constexpr float kPitchSensSoft = 480.0f;
+
 bool g_enabled = true;
 bool g_pitchEnabled = true;
 bool g_haveLast = false;
@@ -96,6 +116,55 @@ bool IsGameForeground() {
   return pid == GetCurrentProcessId();
 }
 
+struct LookTune {
+  float yawSens;
+  float pitchSens;
+  float maxDeltaRad;
+  int maxStep;
+  float yawSign;
+  float pitchSign;
+  bool everyFrame;
+  bool perAxisClamp;
+  float pitchDeadzone;
+  bool mouseYaw;
+  const char* tag;
+};
+
+LookTune TuneForMode(StereoMode sm) {
+  if (IsExternalFpHostSoftMoveStick(sm) || IsExternalFpHostSoftMove(sm) ||
+      IsHeadHideNativeWithFp(sm)) {
+    return {kYawSensSoft, kPitchSensSoft, kMaxDeltaRadLookMove, kMaxMouseStepLookMove, -1.f,
+            -1.f, true, true, kPitchDeadzoneRad, true, "147-soft"};
+  }
+  if (IsExternalFpHostLookMoveYaw(sm)) {
+    return {kYawSensFpLookMove, kPitchSensFpLookMove, kMaxDeltaRadLookMove,
+            kMaxMouseStepLookMove, -1.f, -1.f, true, true, kPitchDeadzoneRad, true,
+            "146-lookmove+yaw"};
+  }
+  if (IsExternalFpHostLookMove(sm)) {
+    return {0.f, kPitchSensFpLookMove, kMaxDeltaRadLookMove, kMaxMouseStepLookMove, -1.f, -1.f,
+            true, true, kPitchDeadzoneRad, false, "145-lookmove"};
+  }
+  if (IsExternalFpHostLookPitchAlt(sm)) {
+    return {kYawSensFp, kPitchSensFpUnlock, kMaxDeltaRadFpUnlock, kMaxMouseStepFpUnlock, -1.f,
+            -1.f, true, true, 0.f, true, "144-pitchAlt"};
+  }
+  if (IsExternalFpHostLookPitch(sm)) {
+    return {kYawSensFp, kPitchSensFpUnlock, kMaxDeltaRadFpUnlock, kMaxMouseStepFpUnlock, -1.f,
+            +1.f, true, true, 0.f, true, "143-pitch"};
+  }
+  if (IsExternalFpHostLookAlt(sm)) {
+    return {kYawSensFp, kPitchSensFp, kMaxDeltaRadFp, kMaxMouseStepFp, -1.f, -1.f, true, true,
+            0.f, true, "142-altYaw"};
+  }
+  if (IsExternalFpHostLookFix(sm)) {
+    return {kYawSensFp, kPitchSensFp, kMaxDeltaRadFp, kMaxMouseStepFp, +1.f, -1.f, true, true,
+            0.f, true, "141-fix"};
+  }
+  return {kYawSensLegacy, kPitchSensLegacy, kMaxDeltaRadLegacy, kMaxMouseStepLegacy, -1.f, -1.f,
+          false, false, 0.f, true, "legacy"};
+}
+
 }  // namespace
 
 void PollRecenterHotkey() {
@@ -105,7 +174,6 @@ void PollRecenterHotkey() {
 }
 
 void ApplyHmdMouseLook(const vr::TrackedDevicePose_t* poses, uint32_t poseCount) {
-  // Engine cam owns look when active.
   if (IsCamMatrixOverrideEnabled())
     return;
 
@@ -114,8 +182,11 @@ void ApplyHmdMouseLook(const vr::TrackedDevicePose_t* poses, uint32_t poseCount)
   if (!poses || poseCount == 0 || !IsGameForeground())
     return;
 
-  if ((++g_frameSkip & 1u) != 0)
-    return;
+  const LookTune tune = TuneForMode(GetStereoMode());
+  if (!tune.everyFrame) {
+    if ((++g_frameSkip & 1u) != 0)
+      return;
+  }
 
   const uint32_t hmd = vr::k_unTrackedDeviceIndex_Hmd;
   if (hmd >= poseCount || !poses[hmd].bPoseIsValid || !poses[hmd].bDeviceIsConnected)
@@ -136,20 +207,38 @@ void ApplyHmdMouseLook(const vr::TrackedDevicePose_t* poses, uint32_t poseCount)
   g_lastYaw = yaw;
   g_lastPitch = pitch;
 
-  if (std::fabs(dyaw) > kMaxDeltaRad || std::fabs(dpitch) > kMaxDeltaRad)
+  if (tune.perAxisClamp) {
+    if (std::fabs(dyaw) > tune.maxDeltaRad)
+      dyaw = 0.f;
+    if (std::fabs(dpitch) > tune.maxDeltaRad)
+      dpitch = 0.f;
+  } else if (std::fabs(dyaw) > tune.maxDeltaRad || std::fabs(dpitch) > tune.maxDeltaRad) {
     return;
+  }
 
-  int dx = static_cast<int>(std::lround(-dyaw * kYawSens));
+  if (tune.pitchDeadzone > 0.f && std::fabs(dpitch) < tune.pitchDeadzone)
+    dpitch = 0.f;
+
+  int dx = 0;
+  if (tune.mouseYaw) {
+    const float yawMul = tune.yawSens * GetFpMouseSensScale();
+    dx = static_cast<int>(std::lround(tune.yawSign * dyaw * yawMul));
+  }
   int dy = 0;
-  if (g_pitchEnabled)
-    dy = static_cast<int>(std::lround(-dpitch * kPitchSens));
+  if (g_pitchEnabled) {
+    const float pitchMul = tune.pitchSens * GetFpMouseSensScale();
+    dy = static_cast<int>(std::lround(tune.pitchSign * dpitch * pitchMul));
+  }
 
-  dx = (std::max)(-kMaxMouseStep, (std::min)(kMaxMouseStep, dx));
-  dy = (std::max)(-kMaxMouseStep, (std::min)(kMaxMouseStep, dy));
+  dx = (std::max)(-tune.maxStep, (std::min)(tune.maxStep, dx));
+  dy = (std::max)(-tune.maxStep, (std::min)(tune.maxStep, dy));
   SendMouseDelta(dx, dy);
 
   if ((++g_logCounter % 300) == 1) {
-    Log("HmdLook: yaw=%.1f pitch=%.1f dx=%d dy=%d", yaw * kRad2Deg, pitch * kRad2Deg, dx, dy);
+    Log("HmdLook[%s]: yaw=%.1f pitch=%.1f dx=%d dy=%d soft=%d stickInv=%d", tune.tag,
+        yaw * kRad2Deg, pitch * kRad2Deg, dx, dy,
+        WantsSoftPedHeading(GetStereoMode()) ? 1 : 0,
+        WantsFpStickInvert(GetStereoMode()) ? 1 : 0);
   }
 }
 

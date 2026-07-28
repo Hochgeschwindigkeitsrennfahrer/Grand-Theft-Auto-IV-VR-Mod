@@ -342,6 +342,104 @@ enum class StereoMode : int {
   // (not capture-time AER). SteamVR can reproject between content frames → smoother look.
   // Kill: 120. Paths 120–135 untouched. OpenVR 2.12.14. No FPS HUD.
   CleanDualLateLatch = 136,
+  // Mode 140 EXTERNAL-FP HOST: C06alt FirstPerson owns FP cam + hide + FOV.
+  // Our ASI: DrawScene×2 IPD-only dual Submit + HMD→mouse (no full HMD CopyMat).
+  // Mode 120 code path untouched. Kill: stereo 0 or 120 (+ restore FP off).
+  // Known look issues (kept for A/B): yaw sides inverted; pitch sluggish (frame-skip/cap).
+  ExternalFpHost = 140,
+  // Mode 141: Mode140 dual+FP + HMD→mouse look fix for FirstPerson (GET_MOUSE_INPUT path):
+  // yaw sign un-inverted; every-frame (no skip); higher pitch sens; higher max mouse step;
+  // larger delta accept (fast head turns). Kill: 140 / 0 / 120.
+  ExternalFpHostLookFix = 141,
+  // Mode 142: Mode141 pitch/rate, but opposite yaw sign vs 141 (if 141 still mirrored).
+  // Kill: 141 / 140 / 0. Yaw confirmed good; pitch dead when FirstPerson HMD=1 (Oculus).
+  ExternalFpHostLookAlt = 142,
+  // Mode 143: Mode142 yaw (−) + pitch unlock for FirstPerson mouse path (HMD=0):
+  // per-axis clamp (don't drop pitch when yaw spikes); pitch sign flip vs 142; higher pitch.
+  // Requires FirstPerson.ini HMD=0. Kill: 142 / 140 / 0.
+  ExternalFpHostLookPitch = 143,
+  // Mode 144: Mode143 rate/clamp, but Mode142 pitch sign (if 143 looks inverted UD).
+  // Kill: 143 / 142 / 0. Confirmed: signs OK; pitch too fast vs yaw; no ped look-move;
+  // walk direction hard; camera bob up/down while walking.
+  ExternalFpHostLookPitchAlt = 144,
+  // Mode 145: Mode144 signs + look_move ON (ped faces HMD → walk in look dir like Mode120)
+  // + mouse pitch only (no mouse yaw — ped turn owns LR) + slower pitch + small pitch deadzone.
+  // FirstPerson HMD=0. Kill: 144 / 0 / 120.
+  ExternalFpHostLookMove = 145,
+  // Mode 146: Mode145 look_move + reduced mouse yaw (half) if ped-only yaw undershoots FP cam.
+  // Kill: 145 / 144 / 0.
+  ExternalFpHostLookMoveYaw = 146,
+  // Mode 147: LAST movement A/B before head-hide port.
+  // Uncouple cam from body: mouse look = Mode144 signs (slow pitch); ped heading floats
+  // ONLY (no matrix rewrite — FP attach cam not yanked). Walk toward look. Stick LR invert fix.
+  // Kill: 144 / 0.
+  ExternalFpHostSoftMove = 147,
+  // Mode 148: Mode147 without stick invert (if 147 stick still wrong).
+  // Kill: 147 / 144 / 0.
+  ExternalFpHostSoftMoveStick = 148,
+  // Mode 150: FP-host dual (like 147 soft move) + native SET_DRAW_PLAYER_COMPONENT hide
+  // (ScriptHook-timing goal via NativeInvoke). Keep FirstPerson for cam; test hide port.
+  // Kill: 147 / 0. pedhide forced conceptually.
+  HeadHideNativeWithFp = 150,
+  // Mode 151: OUR cam (Mode120-class DrawScene dual + HMD CopyMat) + native head hide.
+  // Rename FirstPerson.asi → .off for this test. Kill: 120 / 0.
+  HeadHideNativeOurs = 151,
+  // Mode 152: Mode151 + FirstPerson.ini FOV profile for OUR cam:
+  // ForwardFOV/RearFOV/FootFOV via gtaiv_dxvk_vr.fpfov (default 90 90 90 — not 111),
+  // FPX/Y/Z→camoff, joysens/mousesens files. Absolute CCam FOV write (SET_CAM_FOV style).
+  // FirstPerson.asi OFF. Kill: 151 / 120 / 0.
+  OursFpFovProfile = 152,
+  // Mode 153: Mode152 stack + FP-wide under-publish FOV.
+  // Write CCam+0x60 = fpfov (widen engine BB) but lock canvas gameTan to HMD cover
+  // (do NOT PublishGameFovFromCCamDegrees). Matches FP-host dezoom feel. Kill: 152/120/0.
+  OursFpWideUnderPublish = 153,
+  // Mode 154: Mode153 + aspect-correct under-publish fit (tanH/tanV keep BB aspect,
+  // scale to touch cover on one axis). Fixes 153 vertical stretch / narrow rooms.
+  // Kill: 153 / 152 / 120. Luke Ross square commandline NOT used (already failed alone).
+  OursFpWideAspectFit = 154,
+  // Mode 155: Mode154 FOV + ped-fixed eye-center pivot (no 6DoF lean; ped-fwd offset
+  // between eyes; ignore look-axis eyefwd). Kill: 154 / 153 / 120.
+  OursFpEyeCenterCam = 155,
+  // Mode 156: Mode155 with lower eye height (65cm vs 78) + F5 VR eye-canvas maxDim
+  // increments (1024…2048 / SteamVR recommended). Kill: 154 / 155 / 120.
+  OursFpEyeCenterLowRes = 156,
+  // Mode 157: Mode156 + mild under-publish overscan (~6%) to shrink black bars
+  // without Mode153 aspect lie. Slight edge crop. Kill: 156 / 154 / 120.
+  OursFpMildOverscan = 157,
+  // Mode 158: Mode157 + Luke-style square(ish) render path.
+  // Use commandline.txt.vr-square (1440×1440) → rename to commandline.txt + restart.
+  // Closer BB aspect → fewer bars; keep aspect-fit+overscan FOV. Kill: 157 / 156 / 120.
+  OursFpSquareRes = 158,
+  // Mode 159: Mode158 stack + stronger overscan (~10%) to eat more black bars.
+  // 158 frozen as LKG. Kill: 158 / 157 / 120.
+  OursFpStrongOverscan = 159,
+  // Mode 160: Luke Ross square path + LOW overscan (~2%). Bars mostly gone from
+  // square aspect; strong overscan no longer needed. Kill: 158 / 159 / 120.
+  OursFpSquareLowOverscan = 160,
+  // Mode 161: same as 160 but overscan = 1.0 (0%) for A/B vs 160. Kill: 160 / 158 / 120.
+  OursFpSquareZeroOverscan = 161,
+  // Mode 162: Mode161 + wider engine FOV (fpfov 100 vs 90). Same square + 0% overscan;
+  // packs more world into the filled HMD (true zoom-out). Kill: 161 / 160 / 158.
+  OursFpSquareWideFov = 162,
+  // Mode 163: Mode162 + flash gate — skip capture only for SMALL RT0 (<70% BB;
+  // water/envmap). Full-size offscreen still captures. Kill: 162.
+  OursFpFlashGate = 163,
+  // Mode 164: Mode163 + in-car eye further back (vehcamoff default 0 -12 0). Kill: 162 / 163.
+  OursFpInCarHead = 164,
+  // Mode 165: Mode164 + keep first-person during enter-car anim/cutscene. Kill: 164 / 162.
+  OursFpEnterCarFp = 165,
+  // Mode 166: Mode162 FOV stack + HUD/radar inward offsets (hudoff file). Kill: 162.
+  OursFpHudLayout = 166,
+  // Mode 167: Mode165 (enter-car FP + in-car head + flash gate) + Mode166 HUD inset
+  // (mission directions / radar / status). Kill: 165 / 166 / 162.
+  OursFpCarHud = 167,
+  // Mode 168: Mode167 car+HUD + flicker-stable dual:
+  //   - everyN=1 (no off-tick stale L/R HOLD)
+  //   - always capture BB (no tiny-RT skip gate — that gate caused HOLDs/flashes)
+  //   - atomic L+R pair update (never mix old L with new R)
+  //   - hitch → live BB both eyes (not stale HOLD)
+  // Kill: 167 / 162.
+  OursFpStableCarHud = 168,
 };
 
 // Mode 40–49: rapid HMD delta → temporary mono pair. Mode 50+ never flattens.
@@ -373,6 +471,64 @@ bool IsCleanDualMonoLookHmdCheap(StereoMode mode); // 133 only (FAILED same-tex 
 bool IsCleanDualMonoLookBack132(StereoMode mode);  // 134 only (=132-safe; FAILED HOLD freeze)
 bool IsCleanDualAlwaysFresh(StereoMode mode);      // 135 only (everyN=1; never bare HOLD)
 bool IsCleanDualLateLatch(StereoMode mode);        // 136 only (Mode120 content + TextureWithPose late)
+bool IsExternalFpHost(StereoMode mode);            // 140–148, 150 (not 151)
+bool UsesDrawSceneDualPath(StereoMode mode);       // clean dual OR FP-host OR 151
+bool IsExternalFpHostLookFix(StereoMode mode);     // 141
+bool IsExternalFpHostLookAlt(StereoMode mode);     // 142
+bool IsExternalFpHostLookPitch(StereoMode mode);   // 143
+bool IsExternalFpHostLookPitchAlt(StereoMode mode); // 144
+bool IsExternalFpHostLookMove(StereoMode mode);    // 145
+bool IsExternalFpHostLookMoveYaw(StereoMode mode); // 146
+bool IsExternalFpHostSoftMove(StereoMode mode);    // 147
+bool IsExternalFpHostSoftMoveStick(StereoMode mode); // 148
+bool IsHeadHideNativeWithFp(StereoMode mode);      // 150
+bool IsHeadHideNativeOurs(StereoMode mode);        // 151–168
+bool IsOursFpFovProfile(StereoMode mode);          // 152 only
+bool IsOursFpWideUnderPublish(StereoMode mode);    // 153 only (cover-lock)
+bool IsOursFpWideAspectFit(StereoMode mode);       // 154–168 (aspect-fit under-publish)
+bool IsOursFpEyeCenterCam(StereoMode mode);        // 155–168
+bool IsOursFpEyeCenterLow(StereoMode mode);        // 156–168 (lower pivot + F5 VR res)
+bool IsOursFpMildOverscan(StereoMode mode);        // 157–168 (family; 161+ uses 1.0)
+bool IsOursFpSquareRes(StereoMode mode);           // 158–168
+bool IsOursFpStrongOverscan(StereoMode mode);      // 159 only
+bool IsOursFpSquareLowOverscan(StereoMode mode);   // 160 only
+bool IsOursFpSquareZeroOverscan(StereoMode mode);  // 161–168 (0% overscan family)
+bool IsOursFpSquareWideFov(StereoMode mode);       // 162–168 (fpfov 100 family)
+bool IsOursFpFlashGate(StereoMode mode);           // 163–167 (tiny-RT skip; not 168)
+bool IsOursFpFlashStable(StereoMode mode);         // 168 flicker-stable dual
+bool IsOursFpInCarHead(StereoMode mode);           // 164–165, 167–168
+bool IsOursFpEnterCarFp(StereoMode mode);          // 165, 167–168
+bool IsOursFpHudLayout(StereoMode mode);           // 166–168
+bool IsOursFpCarHud(StereoMode mode);              // 167–168
+bool IsOursFpStableCarHud(StereoMode mode);        // 168 only
+// Force HMD→ped heading (walk look-dir): 145–148, 150–168, clean dual.
+bool WantsExternalFpLookMove(StereoMode mode);
+bool WantsSoftPedHeading(StereoMode mode);
+bool WantsFpStickInvert(StereoMode mode);
+bool WantsNativePedHide(StereoMode mode);
+// Absolute engine FOV like FirstPerson SET_CAM_FOV (ForwardFOV from fpfov file).
+// Modes 153–166: write CCam; canvas under-publish (cover or aspect-fit).
+bool WantsFpAbsoluteFov(StereoMode mode);
+// Under-publish overscan: 1.0 = 0% (Mode 161–166), ~1.02 low, ~1.06 mild, ~1.10 strong.
+float GetUnderPublishOverscan();
+// Mode 164/165: Inspiration-style vehicle camoff (cm R/F/U). Default 0 -12 0.
+void GetVehicleCamOffsetMeters(float* outRight, float* outForward, float* outUp);
+void EnsureVehicleCamOffDefaults();
+
+// Eye-canvas maxDim (F5 cycles). Comfort default 1536. Gen bumps to unlock RT size.
+uint32_t GetCanvasMaxDim();
+uint32_t GetCanvasMaxDimGeneration();
+void SetCanvasMaxDim(uint32_t dim, bool fromHotkey);
+void ReloadCanvasMaxDim();
+void PollVrResHotkey();
+
+// FirstPerson.ini-style knobs (files next to ASI; defaults match user 90/90/90 test).
+float GetFpForwardFovDegrees();  // gtaiv_dxvk_vr.fpfov first value / forwardfov
+float GetFpRearFovDegrees();
+float GetFpFootFovDegrees();
+float GetFpMouseSensScale();     // MouseSens/50 → 1.0 default
+float GetFpJoySensScale();       // JoySensLev1/20 → 1.0 default
+void EnsureFpProfileDefaults();  // write missing fpfov/camoff/sens files
 
 // Mode 123: once cover FOV known, set fovadd so fillH≈100% (no SoftInset).
 void TryApplyCoverMatchedFovAdd();
@@ -409,7 +565,9 @@ bool UsesAngleCorrectCanvas(StereoMode mode);
 
 // gtaiv_dxvk_vr.eyefwd: eye-forward offset in cm (default 42). Places cam through
 // skull/hair. With PedHide on, try lower values (12–20) for less turn-swing.
+// Mode 152 FP presence uses 0 (see jacket when looking down, like FirstPerson).
 float GetEyeForwardMeters();
+void SetEyeForwardCm(int cm);
 
 // gtaiv_dxvk_vr.camoff: "x y z" cm — Inspiration FirstPerson.ini FPX/FPY/FPZ style.
 // X = right, Y = forward (away from face), Z = up. Default 0 0 0.
