@@ -1,0 +1,658 @@
+diff --git a/src/mcp_integration.h b/src/mcp_integration.h
+index 4c09f04..5bca685 100644
+--- a/src/mcp_integration.h
++++ b/src/mcp_integration.h
+@@ -8,6 +8,8 @@
+ #include <wrl/client.h>
+ #include <string>
+ #include <vector>
++#include <cstdint>
++#include <cstdlib>
+ #include <cstdio>
+ #include <cstring>
+ #include <cstdarg>
+@@ -563,6 +565,34 @@ inline bool JsonHasKey(const char* json, const char* key) {
+     return strstr(json, searchKey) != nullptr;
+ }
+ 
++inline uint64_t ParseJsonUInt64(const char* json, const char* key, uint64_t defaultVal) {
++    char searchKey[64];
++    snprintf(searchKey, sizeof(searchKey), "\"%s\"", key);
++    const char* pos = strstr(json, searchKey);
++    if (!pos) return defaultVal;
++    pos = strchr(pos, ':');
++    if (!pos) return defaultVal;
++    pos++;
++    while (*pos == ' ' || *pos == '\t') pos++;
++    char* end = nullptr;
++    const unsigned long long parsed = strtoull(pos, &end, 10);
++    return end == pos ? defaultVal : (uint64_t)parsed;
++}
++
++inline bool ParseJsonBool(const char* json, const char* key, bool defaultVal) {
++    char searchKey[64];
++    snprintf(searchKey, sizeof(searchKey), "\"%s\"", key);
++    const char* pos = strstr(json, searchKey);
++    if (!pos) return defaultVal;
++    pos = strchr(pos, ':');
++    if (!pos) return defaultVal;
++    pos++;
++    while (*pos == ' ' || *pos == '\t') pos++;
++    if (_strnicmp(pos, "true", 4) == 0 || *pos == '1') return true;
++    if (_strnicmp(pos, "false", 5) == 0 || *pos == '0') return false;
++    return defaultVal;
++}
++
+ // Check for head pose command from MCP
+ // File format: {"x": 0, "y": 1.7, "z": 0, "yaw": 0, "pitch": 0, "roll": 0}
+ // "roll" is optional — omit to keep the simulator's current roll value.
+@@ -830,53 +860,128 @@ inline bool CheckProjLogDumpRequest() {
+     return true;
+ }
+ 
+-// Controller pose control structure for MCP
+-// Allows setting right or left controller position/orientation and trigger
++// Persistent controller control structure for MCP/CLI.
++//
++// Sequence numbers reject stale commands. A non-zero lease_ms makes the
++// runtime neutralize every input on that hand when the lease expires. A zero
++// lease is persistent until a newer command arrives. The "neutral" command is
++// explicit and holds neutral for its lease, preventing stuck buttons when a
++// test driver exits unexpectedly.
+ struct ControllerPoseCommand {
+     bool valid = false;
+-    int hand = 1;           // 0=left, 1=right
++    int hand = 1;           // 0=left, 1=right, 2=both
++    uint64_t sequence = 0;
++    bool hasSequence = false;
++    uint32_t leaseMs = 0;
++    bool neutral = false;
++
+     float posX = 0.2f;     // Position offset from head (head-local space)
+     float posY = -0.3f;
+     float posZ = -0.4f;
+     float yaw = 0.0f;      // Yaw offset relative to head
+     float pitch = -0.3f;   // Pitch offset relative to head
++    bool posXSet = false;
++    bool posYSet = false;
++    bool posZSet = false;
++    bool yawSet = false;
++    bool pitchSet = false;
++
+     float trigger = 0.0f;  // 0.0-1.0 trigger value
+     bool triggerSet = false;
+-    int  buttonA = -1;     // -1=unchanged, 0=released, 1=pressed
++    float squeeze = 0.0f;  // 0.0-1.0 grip/squeeze value
++    bool squeezeSet = false;
++    float stickX = 0.0f;   // -1.0 to 1.0
++    float stickY = 0.0f;
++    bool stickXSet = false;
++    bool stickYSet = false;
++    int primary = -1;      // -1=unchanged, 0=released, 1=pressed
++    int secondary = -1;
++    int menu = -1;
++    int thumbClick = -1;
+ };
+ 
+-// Check for controller pose command from MCP
+-// File format: {"hand": 1, "posX": 0.2, "posY": -0.3, "posZ": -0.4, "yaw": 0, "pitch": -0.3, "trigger": 0.0}
++// Check for controller state from MCP/CLI. The command file is consumed once,
++// while the resulting state remains active in the runtime until superseded or
++// its lease expires.
++//
++// Full format:
++// {"hand":1,"sequence":42,"lease_ms":2000,"neutral":false,
++//  "posX":0.2,"posY":-0.3,"posZ":-0.4,"yaw":0,"pitch":-0.3,
++//  "stickX":0,"stickY":1,"trigger":0.5,"squeeze":0,
++//  "primary":false,"secondary":false,"menu":false,"thumbClick":false}
+ inline ControllerPoseCommand CheckControllerPoseCommand() {
+     ControllerPoseCommand cmd;
+     std::string cmdPath = GetSimulatorDataPath() + "\\controller_pose_command.json";
+     FILE* f = nullptr;
+     if (fopen_s(&f, cmdPath.c_str(), "r") == 0 && f) {
+-        char buf[512];
++        char buf[2048];
+         size_t n = fread(buf, 1, sizeof(buf)-1, f);
+         buf[n] = 0;
+         fclose(f);
+ 
+         cmd.valid = true;
+         cmd.hand = (int)ParseJsonFloat(buf, "hand", 1.0f);
++        cmd.hasSequence = JsonHasKey(buf, "sequence");
++        cmd.sequence = ParseJsonUInt64(buf, "sequence", 0);
++        cmd.leaseMs = (uint32_t)ParseJsonUInt64(buf, "lease_ms", 0);
++        cmd.neutral = ParseJsonBool(buf, "neutral", false);
++
++        cmd.posXSet = JsonHasKey(buf, "posX");
++        cmd.posYSet = JsonHasKey(buf, "posY");
++        cmd.posZSet = JsonHasKey(buf, "posZ");
++        cmd.yawSet = JsonHasKey(buf, "yaw");
++        cmd.pitchSet = JsonHasKey(buf, "pitch");
+         cmd.posX = ParseJsonFloat(buf, "posX", 0.2f);
+         cmd.posY = ParseJsonFloat(buf, "posY", -0.3f);
+         cmd.posZ = ParseJsonFloat(buf, "posZ", -0.4f);
+         cmd.yaw = ParseJsonFloat(buf, "yaw", 0.0f);
+         cmd.pitch = ParseJsonFloat(buf, "pitch", -0.3f);
+-        cmd.trigger = ParseJsonFloat(buf, "trigger", -1.0f);
+-        cmd.triggerSet = (cmd.trigger >= 0.0f);
+-        if (!cmd.triggerSet) cmd.trigger = 0.0f;
+-        cmd.buttonA = (int)ParseJsonFloat(buf, "buttonA", -1.0f);
++
++        cmd.triggerSet = JsonHasKey(buf, "trigger");
++        cmd.trigger = ParseJsonFloat(buf, "trigger", 0.0f);
++        cmd.squeezeSet = JsonHasKey(buf, "squeeze");
++        cmd.squeeze = ParseJsonFloat(buf, "squeeze", 0.0f);
++        cmd.stickXSet = JsonHasKey(buf, "stickX");
++        cmd.stickYSet = JsonHasKey(buf, "stickY");
++        cmd.stickX = ParseJsonFloat(buf, "stickX", 0.0f);
++        cmd.stickY = ParseJsonFloat(buf, "stickY", 0.0f);
++        cmd.primary = JsonHasKey(buf, "primary")
++            ? (ParseJsonBool(buf, "primary", false) ? 1 : 0)
++            : (int)ParseJsonFloat(buf, "buttonA", -1.0f); // legacy alias
++        cmd.secondary = JsonHasKey(buf, "secondary")
++            ? (ParseJsonBool(buf, "secondary", false) ? 1 : 0) : -1;
++        cmd.menu = JsonHasKey(buf, "menu")
++            ? (ParseJsonBool(buf, "menu", false) ? 1 : 0) : -1;
++        cmd.thumbClick = JsonHasKey(buf, "thumbClick")
++            ? (ParseJsonBool(buf, "thumbClick", false) ? 1 : 0) : -1;
+ 
+         // Delete the file after reading (one-shot command)
+         DeleteFileA(cmdPath.c_str());
+-        McpLogf("Controller pose command: hand=%d pos(%.2f, %.2f, %.2f) yaw=%.2f pitch=%.2f trigger=%.1f",
+-                cmd.hand, cmd.posX, cmd.posY, cmd.posZ, cmd.yaw, cmd.pitch, cmd.trigger);
++        McpLogf("Controller state command: hand=%d sequence=%llu lease_ms=%u neutral=%d",
++                cmd.hand, (unsigned long long)cmd.sequence, cmd.leaseMs, cmd.neutral ? 1 : 0);
+     }
+     return cmd;
+ }
+ 
++inline void WriteControllerCommandAck(uint64_t sequence, int hand, bool success, const char* detail) {
++    std::string ackPath = GetSimulatorDataPath() + "\\command_ack.json";
++    FILE* f = nullptr;
++    if (fopen_s(&f, ackPath.c_str(), "w") == 0 && f) {
++        SYSTEMTIME st;
++        GetLocalTime(&st);
++        fprintf(f, "{\n");
++        fprintf(f, "  \"timestamp\": \"%04d-%02d-%02dT%02d:%02d:%02d.%03d\",\n",
++                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
++        fprintf(f, "  \"command\": \"controller_state\",\n");
++        fprintf(f, "  \"sequence\": %llu,\n", (unsigned long long)sequence);
++        fprintf(f, "  \"hand\": %d,\n", hand);
++        fprintf(f, "  \"success\": %s,\n", success ? "true" : "false");
++        fprintf(f, "  \"detail\": \"%s\"\n", detail ? detail : "");
++        fprintf(f, "}\n");
++        fclose(f);
++    }
++}
++
+ // Write acknowledgment that command was processed
+ inline void WriteCommandAck(const char* cmdType, bool success) {
+     std::string ackPath = GetSimulatorDataPath() + "\\command_ack.json";
+diff --git a/src/runtime.cpp b/src/runtime.cpp
+index 201bee2..50f1f47 100644
+--- a/src/runtime.cpp
++++ b/src/runtime.cpp
+@@ -367,6 +367,86 @@ static Instance g_instance{};
+ static Session g_session{};
+ static std::unordered_map<XrSwapchain, Swapchain> g_swapchains;
+ 
++// Command-line/headless integration is strictly opt-in. With no environment
++// variables set, focus and preview behavior remain byte-for-byte equivalent to
++// upstream behavior.
++static bool IsEnvironmentFlagEnabled(const char* name) {
++    char value[32]{};
++    const DWORD length = GetEnvironmentVariableA(name, value, (DWORD)sizeof(value));
++    if (length == 0 || length >= sizeof(value)) return false;
++    return _stricmp(value, "1") == 0 ||
++           _stricmp(value, "true") == 0 ||
++           _stricmp(value, "yes") == 0 ||
++           _stricmp(value, "on") == 0;
++}
++
++static bool IsHeadlessMode() {
++    static const bool enabled = IsEnvironmentFlagEnabled("OPENXR_SIMULATOR_HEADLESS");
++    return enabled;
++}
++
++static const std::string& GetExternalFocusExecutable() {
++    static const std::string executable = []() {
++        char value[MAX_PATH]{};
++        const DWORD length = GetEnvironmentVariableA(
++            "OPENXR_SIMULATOR_EXTERNAL_FOCUS_EXE", value, (DWORD)sizeof(value));
++        if (length == 0 || length >= sizeof(value)) return std::string{};
++        const char* file = value;
++        if (const char* slash = strrchr(value, '\\')) file = slash + 1;
++        if (const char* slash = strrchr(file, '/')) file = slash + 1;
++        return std::string(file);
++    }();
++    return executable;
++}
++
++static bool ForegroundMatchesExternalFocusExecutable(HWND foregroundWindow) {
++    const std::string& wanted = GetExternalFocusExecutable();
++    if (wanted.empty() || !foregroundWindow) return false;
++
++    DWORD processId = 0;
++    GetWindowThreadProcessId(foregroundWindow, &processId);
++    if (processId == 0) return false;
++
++    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
++    if (!process) return false;
++    char imagePath[MAX_PATH]{};
++    DWORD imagePathLength = (DWORD)sizeof(imagePath);
++    const BOOL queried = QueryFullProcessImageNameA(process, 0, imagePath, &imagePathLength);
++    CloseHandle(process);
++    if (!queried) return false;
++
++    const char* file = imagePath;
++    if (const char* slash = strrchr(imagePath, '\\')) file = slash + 1;
++    if (const char* slash = strrchr(file, '/')) file = slash + 1;
++    return _stricmp(file, wanted.c_str()) == 0;
++}
++
++static bool IsLogicalFocusForeground() {
++    // A hidden command-line session has no user-facing window to focus. It is
++    // deliberately FOCUSED from xrBeginSession onward so the OpenXR host can
++    // become ready before the external game process exists.
++    if (IsHeadlessMode()) return true;
++
++    const HWND foregroundWindow = GetForegroundWindow();
++    if (!foregroundWindow) return false;
++    if (foregroundWindow == g_session.hwnd) return g_session.isFocused.load();
++    return ForegroundMatchesExternalFocusExecutable(foregroundWindow);
++}
++
++static bool IsInputFocusForeground() {
++    // Headless sessions are CLI-controlled. They stay logically XR-focused,
++    // but must never reinterpret GTA's physical keyboard as XR controller
++    // input.
++    if (IsHeadlessMode()) return false;
++    const HWND foregroundWindow = GetForegroundWindow();
++    if (!foregroundWindow) return false;
++    if (foregroundWindow == g_session.hwnd) return g_session.isFocused.load();
++    DWORD processId = 0;
++    GetWindowThreadProcessId(foregroundWindow, &processId);
++    if (processId != 0 && processId == GetCurrentProcessId()) return true;
++    return ForegroundMatchesExternalFocusExecutable(foregroundWindow);
++}
++
+ // Head tracking state for mouse look and WASD movement
+ static XrVector3f g_headPos = {0.0f, 1.7f, 0.0f};  // Start at standing eye height
+ static float g_headYaw = 0.0f;    // Rotation around Y axis (left/right)
+@@ -493,6 +573,13 @@ struct ControllerState {
+     XrVector3f angularVelocity; // rad/s
+     float prevYaw;              // Previous yaw for angular velocity
+     float prevPitch;            // Previous pitch for angular velocity
++
++    // File/CLI control ownership. While active, keyboard animation cannot
++    // overwrite the persistent command state. A non-zero expiry neutralizes
++    // every input before returning control to the keyboard simulator.
++    bool commandActive = false;
++    uint64_t commandSequence = 0;
++    ULONGLONG commandExpiresAt = 0;
+ };
+ static ControllerState g_leftController = {
+     {-0.2f, -0.3f, -0.4f}, 0.0f, -0.3f, true,  // Position/orientation
+@@ -507,6 +594,32 @@ static ControllerState g_rightController = {
+     {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, 0.0f, 0.0f  // Velocity tracking
+ };
+ 
++static void NeutralizeControllerInputs(ControllerState& controller) {
++    controller.triggerPressed = false;
++    controller.gripPressed = false;
++    controller.menuPressed = false;
++    controller.primaryPressed = false;
++    controller.secondaryPressed = false;
++    controller.thumbstickPressed = false;
++    controller.triggerValue = 0.0f;
++    controller.gripValue = 0.0f;
++    controller.thumbstick = {0.0f, 0.0f};
++}
++
++static bool IsControllerCommandActive(ControllerState& controller, const char* handName) {
++    if (!controller.commandActive) return false;
++    const ULONGLONG now = GetTickCount64();
++    if (controller.commandExpiresAt != 0 && now >= controller.commandExpiresAt) {
++        NeutralizeControllerInputs(controller);
++        controller.commandActive = false;
++        controller.commandExpiresAt = 0;
++        Logf("[SimXR] Controller command lease expired: hand=%s sequence=%llu; inputs neutralized",
++             handName, (unsigned long long)controller.commandSequence);
++        return false;
++    }
++    return true;
++}
++
+ // Map XrSpace handles to controller type (0=none, 1=left grip, 2=left aim, 3=right grip, 4=right aim)
+ static std::unordered_map<XrSpace, int> g_controllerSpaces;
+ 
+@@ -846,8 +959,11 @@ static LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPara
+                 Log("[SimXR] WndProc: WM_ACTIVATE -> unfocused");
+                 rt::g_mouseCapture = false;  // Release mouse capture when window loses focus
+                 ReleaseCapture();
+-                // Push VISIBLE state if we were FOCUSED
+-                if (rt::g_session.state == XR_SESSION_STATE_FOCUSED) {
++                // An explicitly allowed external foreground process (or the
++                // opt-in hidden CLI mode) owns logical focus even while this
++                // preview window is inactive.
++                if (rt::g_session.state == XR_SESSION_STATE_FOCUSED &&
++                    !rt::IsLogicalFocusForeground()) {
+                     rt::PushState(rt::g_session.handle, XR_SESSION_STATE_VISIBLE);
+                 }
+             }
+@@ -1158,13 +1274,17 @@ static void ensurePreview(Session& s) {
+     if (s.hwnd) return;
+     WNDCLASSW wc{}; wc.lpfnWndProc = WndProc; wc.hInstance = GetModuleHandleW(nullptr); wc.lpszClassName = L"OpenXR Simulator";
+     RegisterClassW(&wc);
+-    s.hwnd = CreateWindowExW(0, wc.lpszClassName, L"OpenXR Simulator", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
++    const bool headless = IsHeadlessMode();
++    const DWORD style = WS_OVERLAPPEDWINDOW | (headless ? 0 : WS_VISIBLE);
++    s.hwnd = CreateWindowExW(0, wc.lpszClassName, L"OpenXR Simulator", style,
+                              CW_USEDEFAULT, CW_USEDEFAULT, (int)s.previewWidth, (int)s.previewHeight, nullptr, nullptr, wc.hInstance, nullptr);
+-    Logf("[SimXR] ensurePreview: hwnd=%p size=%ux%u usesD3D12=%d", s.hwnd, s.previewWidth, s.previewHeight, s.usesD3D12);
++    Logf("[SimXR] ensurePreview: hwnd=%p size=%ux%u usesD3D12=%d headless=%d",
++         s.hwnd, s.previewWidth, s.previewHeight, s.usesD3D12, headless ? 1 : 0);
+ 
+-    // Make sure window is shown and updated
++    // A hidden HWND is retained in headless mode because DXGI still requires a
++    // swapchain target; it is never shown or foregrounded.
+     if (s.hwnd) {
+-        ShowWindow(s.hwnd, SW_SHOW);
++        ShowWindow(s.hwnd, headless ? SW_HIDE : SW_SHOW);
+         UpdateWindow(s.hwnd);
+ 
+         // Check if window has focus
+@@ -2480,8 +2600,10 @@ static XrResult XRAPI_PTR xrBeginSession_runtime(XrSession s, const XrSessionBeg
+     Log("[SimXR] ============================================");
+     rt::PushState(s, XR_SESSION_STATE_SYNCHRONIZED); 
+     rt::PushState(s, XR_SESSION_STATE_VISIBLE);
+-    // Only push FOCUSED if window is actually active/focused
+-    if (rt::g_session.hwnd && rt::g_session.isFocused) {
++    // Headless CLI mode is deliberately focused from session start. In normal
++    // mode this remains window-focus driven, with one optional external
++    // foreground executable allowed by environment variable.
++    if (rt::IsLogicalFocusForeground()) {
+         rt::PushState(s, XR_SESSION_STATE_FOCUSED);
+     }
+     return XR_SUCCESS; 
+@@ -2497,6 +2619,13 @@ static XrResult XRAPI_PTR xrWaitFrame_runtime(XrSession, const XrFrameWaitInfo*,
+     static long long periodNs = (long long)(periodSec * 1e9);
+     static double nextTick = [](){ LARGE_INTEGER t; QueryPerformanceCounter(&t); return (double)t.QuadPart; }();
+ 
++    const bool logicalFocus = rt::IsLogicalFocusForeground();
++    if (logicalFocus && rt::g_session.state == XR_SESSION_STATE_VISIBLE) {
++        rt::PushState(rt::g_session.handle, XR_SESSION_STATE_FOCUSED);
++    } else if (!logicalFocus && rt::g_session.state == XR_SESSION_STATE_FOCUSED) {
++        rt::PushState(rt::g_session.handle, XR_SESSION_STATE_VISIBLE);
++    }
++
+     // Handle WASD keyboard input for movement (relative to head orientation).
+     //
+     // Accept input when the foreground window is our preview window OR ANY window owned by the host
+@@ -2514,17 +2643,16 @@ static XrResult XRAPI_PTR xrWaitFrame_runtime(XrSession, const XrFrameWaitInfo*,
+     // exactly why those worked while WASD didn't). Gating on "any window of our process is foreground"
+     // fixes that. Note: FH5 also binds W/S/A/D to throttle/brake/steer, so while the game window is
+     // focused these keys additionally drive the car — park the car when isolating head-only translation.
+-    const HWND foregroundWindow = GetForegroundWindow();
+-    bool previewWindowFocused = false;
+-    if (foregroundWindow != nullptr) {
+-        if (foregroundWindow == rt::g_session.hwnd) {
+-            previewWindowFocused = rt::g_session.isFocused.load();
+-        } else {
+-            DWORD fgPid = 0;
+-            GetWindowThreadProcessId(foregroundWindow, &fgPid);
+-            previewWindowFocused = (fgPid != 0 && fgPid == GetCurrentProcessId());
+-        }
+-    }
++    // Headless mode is command-line driven. Never sample global keyboard state
++    // there: GTA owns the physical keyboard, and mapping its Space key to the
++    // simulated right trigger creates phantom RT input after a CLI lease
++    // expires. Visible mode retains the upstream keyboard controls, including
++    // the opt-in external-foreground path.
++    const bool previewWindowFocused = rt::IsInputFocusForeground();
++    const bool leftCommandActive =
++        rt::IsControllerCommandActive(rt::g_leftController, "left");
++    const bool rightCommandActive =
++        rt::IsControllerCommandActive(rt::g_rightController, "right");
+     if (previewWindowFocused) {
+         const float moveSpeed = 3.0f;  // meters per second
+         float deltaTime = (float)periodSec;
+@@ -2575,7 +2703,7 @@ static XrResult XRAPI_PTR xrWaitFrame_runtime(XrSession, const XrFrameWaitInfo*,
+         }
+         mKeyWasPressed = mKeyPressed;
+ 
+-        if (autoMotionEnabled) {
++        if (autoMotionEnabled && !rightCommandActive) {
+             animTime += deltaTime;
+ 
+             // Move controller in a figure-8 pattern around the camera
+@@ -2604,7 +2732,7 @@ static XrResult XRAPI_PTR xrWaitFrame_runtime(XrSession, const XrFrameWaitInfo*,
+         const float ctrlMoveSpeed = 0.5f * deltaTime;
+         const float ctrlRotSpeed = 1.0f * deltaTime;
+ 
+-        if (!autoMotionEnabled) {
++        if (!autoMotionEnabled && !rightCommandActive) {
+             if (GetAsyncKeyState(VK_NUMPAD8) & 0x8000) {
+                 rt::g_rightController.posOffset.z -= ctrlMoveSpeed;  // Forward
+             }
+@@ -2637,7 +2765,7 @@ static XrResult XRAPI_PTR xrWaitFrame_runtime(XrSession, const XrFrameWaitInfo*,
+             }
+         }
+         // Numpad 5: Reset controller to default position
+-        if (GetAsyncKeyState(VK_NUMPAD5) & 0x8000) {
++        if (!rightCommandActive && (GetAsyncKeyState(VK_NUMPAD5) & 0x8000)) {
+             rt::g_rightController.posOffset = {0.2f, -0.3f, -0.4f};
+             rt::g_rightController.yawOffset = 0.0f;
+             rt::g_rightController.pitchOffset = -0.3f;
+@@ -2654,14 +2782,16 @@ static XrResult XRAPI_PTR xrWaitFrame_runtime(XrSession, const XrFrameWaitInfo*,
+         // R = Primary button (A)
+         // T = Secondary button (B)
+         // Enter = Thumbstick click
+-        rt::g_rightController.triggerPressed = (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
+-        rt::g_rightController.triggerValue = rt::g_rightController.triggerPressed ? 1.0f : 0.0f;
+-        rt::g_rightController.gripPressed = (GetAsyncKeyState('F') & 0x8000) != 0;
+-        rt::g_rightController.gripValue = rt::g_rightController.gripPressed ? 1.0f : 0.0f;
+-        rt::g_rightController.menuPressed = (GetAsyncKeyState(VK_TAB) & 0x8000) != 0;
+-        rt::g_rightController.primaryPressed = (GetAsyncKeyState('R') & 0x8000) != 0;
+-        rt::g_rightController.secondaryPressed = (GetAsyncKeyState('T') & 0x8000) != 0;
+-        rt::g_rightController.thumbstickPressed = (GetAsyncKeyState(VK_RETURN) & 0x8000) != 0;
++        if (!rightCommandActive) {
++            rt::g_rightController.triggerPressed = (GetAsyncKeyState(VK_SPACE) & 0x8000) != 0;
++            rt::g_rightController.triggerValue = rt::g_rightController.triggerPressed ? 1.0f : 0.0f;
++            rt::g_rightController.gripPressed = (GetAsyncKeyState('F') & 0x8000) != 0;
++            rt::g_rightController.gripValue = rt::g_rightController.gripPressed ? 1.0f : 0.0f;
++            rt::g_rightController.menuPressed = (GetAsyncKeyState(VK_TAB) & 0x8000) != 0;
++            rt::g_rightController.primaryPressed = (GetAsyncKeyState('R') & 0x8000) != 0;
++            rt::g_rightController.secondaryPressed = (GetAsyncKeyState('T') & 0x8000) != 0;
++            rt::g_rightController.thumbstickPressed = (GetAsyncKeyState(VK_RETURN) & 0x8000) != 0;
++        }
+ 
+         // Left controller buttons (off-hand)
+         // Left Ctrl = Trigger
+@@ -2669,27 +2799,33 @@ static XrResult XRAPI_PTR xrWaitFrame_runtime(XrSession, const XrFrameWaitInfo*,
+         // G = Menu (left hand)
+         // V = Primary (X)
+         // B = Secondary (Y)
+-        rt::g_leftController.triggerPressed = (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0;
+-        rt::g_leftController.triggerValue = rt::g_leftController.triggerPressed ? 1.0f : 0.0f;
+-        rt::g_leftController.gripPressed = (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0;
+-        rt::g_leftController.gripValue = rt::g_leftController.gripPressed ? 1.0f : 0.0f;
+-        rt::g_leftController.menuPressed = (GetAsyncKeyState('G') & 0x8000) != 0;
+-        rt::g_leftController.primaryPressed = (GetAsyncKeyState('V') & 0x8000) != 0;
+-        rt::g_leftController.secondaryPressed = (GetAsyncKeyState('B') & 0x8000) != 0;
++        if (!leftCommandActive) {
++            rt::g_leftController.triggerPressed = (GetAsyncKeyState(VK_LCONTROL) & 0x8000) != 0;
++            rt::g_leftController.triggerValue = rt::g_leftController.triggerPressed ? 1.0f : 0.0f;
++            rt::g_leftController.gripPressed = (GetAsyncKeyState(VK_LMENU) & 0x8000) != 0;
++            rt::g_leftController.gripValue = rt::g_leftController.gripPressed ? 1.0f : 0.0f;
++            rt::g_leftController.menuPressed = (GetAsyncKeyState('G') & 0x8000) != 0;
++            rt::g_leftController.primaryPressed = (GetAsyncKeyState('V') & 0x8000) != 0;
++            rt::g_leftController.secondaryPressed = (GetAsyncKeyState('B') & 0x8000) != 0;
++        }
+ 
+         // Right controller thumbstick (Arrow keys)
+-        rt::g_rightController.thumbstick = {0.0f, 0.0f};
+-        if (GetAsyncKeyState(VK_UP) & 0x8000) rt::g_rightController.thumbstick.y = 1.0f;
+-        if (GetAsyncKeyState(VK_DOWN) & 0x8000) rt::g_rightController.thumbstick.y = -1.0f;
+-        if (GetAsyncKeyState(VK_LEFT) & 0x8000) rt::g_rightController.thumbstick.x = -1.0f;
+-        if (GetAsyncKeyState(VK_RIGHT) & 0x8000) rt::g_rightController.thumbstick.x = 1.0f;
++        if (!rightCommandActive) {
++            rt::g_rightController.thumbstick = {0.0f, 0.0f};
++            if (GetAsyncKeyState(VK_UP) & 0x8000) rt::g_rightController.thumbstick.y = 1.0f;
++            if (GetAsyncKeyState(VK_DOWN) & 0x8000) rt::g_rightController.thumbstick.y = -1.0f;
++            if (GetAsyncKeyState(VK_LEFT) & 0x8000) rt::g_rightController.thumbstick.x = -1.0f;
++            if (GetAsyncKeyState(VK_RIGHT) & 0x8000) rt::g_rightController.thumbstick.x = 1.0f;
++        }
+ 
+         // Left controller thumbstick (IJKL keys)
+-        rt::g_leftController.thumbstick = {0.0f, 0.0f};
+-        if (GetAsyncKeyState('I') & 0x8000) rt::g_leftController.thumbstick.y = 1.0f;
+-        if (GetAsyncKeyState('K') & 0x8000) rt::g_leftController.thumbstick.y = -1.0f;
+-        if (GetAsyncKeyState('J') & 0x8000) rt::g_leftController.thumbstick.x = -1.0f;
+-        if (GetAsyncKeyState('L') & 0x8000) rt::g_leftController.thumbstick.x = 1.0f;
++        if (!leftCommandActive) {
++            rt::g_leftController.thumbstick = {0.0f, 0.0f};
++            if (GetAsyncKeyState('I') & 0x8000) rt::g_leftController.thumbstick.y = 1.0f;
++            if (GetAsyncKeyState('K') & 0x8000) rt::g_leftController.thumbstick.y = -1.0f;
++            if (GetAsyncKeyState('J') & 0x8000) rt::g_leftController.thumbstick.x = -1.0f;
++            if (GetAsyncKeyState('L') & 0x8000) rt::g_leftController.thumbstick.x = 1.0f;
++        }
+ 
+         // ========================================
+         // Velocity Tracking for Motion Controls
+@@ -2860,20 +2996,85 @@ static XrResult XRAPI_PTR xrWaitFrame_runtime(XrSession, const XrFrameWaitInfo*,
+ 
+         mcp::ControllerPoseCommand ctrlCmd = mcp::CheckControllerPoseCommand();
+         if (ctrlCmd.valid) {
+-            rt::ControllerState& ctrl = (ctrlCmd.hand == 0) ? rt::g_leftController : rt::g_rightController;
+-            ctrl.posOffset.x = ctrlCmd.posX;
+-            ctrl.posOffset.y = ctrlCmd.posY;
+-            ctrl.posOffset.z = ctrlCmd.posZ;
+-            ctrl.yawOffset = ctrlCmd.yaw;
+-            ctrl.pitchOffset = ctrlCmd.pitch;
+-            if (ctrlCmd.triggerSet) {
+-                ctrl.triggerValue = ctrlCmd.trigger;
+-                ctrl.triggerPressed = (ctrlCmd.trigger >= 0.5f);
++            auto applyControllerCommand = [&](rt::ControllerState& ctrl, const char* handName) {
++                if (ctrlCmd.hasSequence && ctrlCmd.sequence <= ctrl.commandSequence) {
++                    Logf("[SimXR] Rejected stale controller command: hand=%s sequence=%llu last=%llu",
++                         handName, (unsigned long long)ctrlCmd.sequence,
++                         (unsigned long long)ctrl.commandSequence);
++                    return false;
++                }
++
++                // A sequenced command is a complete input snapshot. Clear
++                // fields before applying it so omitted buttons cannot remain
++                // stuck from an earlier test. Legacy unsequenced commands keep
++                // their historical partial-update behavior.
++                if (ctrlCmd.hasSequence || ctrlCmd.neutral) {
++                    rt::NeutralizeControllerInputs(ctrl);
++                }
++
++                if (ctrlCmd.posXSet) ctrl.posOffset.x = ctrlCmd.posX;
++                if (ctrlCmd.posYSet) ctrl.posOffset.y = ctrlCmd.posY;
++                if (ctrlCmd.posZSet) ctrl.posOffset.z = ctrlCmd.posZ;
++                if (ctrlCmd.yawSet) ctrl.yawOffset = ctrlCmd.yaw;
++                if (ctrlCmd.pitchSet) ctrl.pitchOffset = ctrlCmd.pitch;
++
++                if (!ctrlCmd.neutral) {
++                    if (ctrlCmd.triggerSet) {
++                        ctrl.triggerValue = std::clamp(ctrlCmd.trigger, 0.0f, 1.0f);
++                        ctrl.triggerPressed = ctrl.triggerValue >= 0.5f;
++                    }
++                    if (ctrlCmd.squeezeSet) {
++                        ctrl.gripValue = std::clamp(ctrlCmd.squeeze, 0.0f, 1.0f);
++                        ctrl.gripPressed = ctrl.gripValue >= 0.5f;
++                    }
++                    if (ctrlCmd.stickXSet) {
++                        ctrl.thumbstick.x = std::clamp(ctrlCmd.stickX, -1.0f, 1.0f);
++                    }
++                    if (ctrlCmd.stickYSet) {
++                        ctrl.thumbstick.y = std::clamp(ctrlCmd.stickY, -1.0f, 1.0f);
++                    }
++                    if (ctrlCmd.primary >= 0) ctrl.primaryPressed = ctrlCmd.primary != 0;
++                    if (ctrlCmd.secondary >= 0) ctrl.secondaryPressed = ctrlCmd.secondary != 0;
++                    if (ctrlCmd.menu >= 0) ctrl.menuPressed = ctrlCmd.menu != 0;
++                    if (ctrlCmd.thumbClick >= 0) {
++                        ctrl.thumbstickPressed = ctrlCmd.thumbClick != 0;
++                    }
++                }
++
++                if (ctrlCmd.hasSequence) ctrl.commandSequence = ctrlCmd.sequence;
++                ctrl.commandActive =
++                    ctrlCmd.hasSequence || ctrlCmd.leaseMs > 0 || ctrlCmd.neutral;
++                ctrl.commandExpiresAt = ctrlCmd.leaseMs > 0
++                    ? GetTickCount64() + (ULONGLONG)ctrlCmd.leaseMs
++                    : 0;
++                Logf("[SimXR] Applied controller command: hand=%s sequence=%llu lease_ms=%u neutral=%d",
++                     handName, (unsigned long long)ctrl.commandSequence,
++                     ctrlCmd.leaseMs, ctrlCmd.neutral ? 1 : 0);
++                return true;
++            };
++
++            bool success = false;
++            if (ctrlCmd.hand == 0) {
++                success = applyControllerCommand(rt::g_leftController, "left");
++            } else if (ctrlCmd.hand == 1) {
++                success = applyControllerCommand(rt::g_rightController, "right");
++            } else if (ctrlCmd.hand == 2) {
++                const bool leftSuccess =
++                    applyControllerCommand(rt::g_leftController, "left");
++                const bool rightSuccess =
++                    applyControllerCommand(rt::g_rightController, "right");
++                success = leftSuccess && rightSuccess;
++            } else {
++                Logf("[SimXR] Rejected controller command with invalid hand=%d", ctrlCmd.hand);
+             }
+-            if (ctrlCmd.buttonA >= 0) {
+-                ctrl.primaryPressed = (ctrlCmd.buttonA != 0);
++
++            if (ctrlCmd.hasSequence) {
++                mcp::WriteControllerCommandAck(
++                    ctrlCmd.sequence, ctrlCmd.hand, success,
++                    success ? "applied" : "rejected");
++            } else {
++                mcp::WriteCommandAck("controller_pose", success);
+             }
+-            mcp::WriteCommandAck("controller_pose", true);
+         }
+     }
+ 
+@@ -2901,6 +3102,7 @@ static XrResult XRAPI_PTR xrBeginFrame_runtime(XrSession, const XrFrameBeginInfo
+ // resize callback) owns its size.
+ static void ensurePreviewWindow(rt::Session& s, UINT initialClientW, UINT initialClientH) {
+     if (s.hwnd) return;
++    const bool headless = rt::IsHeadlessMode();
+ 
+     // Register window class if not done (use global flag)
+     if (!rt::g_windowClassRegistered) {
+@@ -2923,7 +3125,7 @@ static void ensurePreviewWindow(rt::Session& s, UINT initialClientW, UINT initialClientH) {
+             SetWindowLongPtrW(s.hwnd, GWLP_WNDPROC, (LONG_PTR)rt::WndProc);
+             Log("[SimXR] Updated window WndProc to new DLL address");
+             ui::ApplyDarkTheme(s.hwnd);
+-            ShowWindow(s.hwnd, SW_SHOW);
++            ShowWindow(s.hwnd, headless ? SW_HIDE : SW_SHOW);
+             UpdateWindow(s.hwnd);
+             // Seed clientWidth/Height from the actual current client area
+             RECT cr{};
+@@ -2948,12 +3150,15 @@ static void ensurePreviewWindow(rt::Session& s, UINT initialClientW, UINT initialClientH) {
+         Log("[SimXR] Failed to create preview window!");
+         return;
+     }
+-    ShowWindow(s.hwnd, SW_SHOW);
++    ShowWindow(s.hwnd, headless ? SW_HIDE : SW_SHOW);
+     UpdateWindow(s.hwnd);
+-    SetForegroundWindow(s.hwnd);
+-    SetWindowPos(s.hwnd, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+-    Logf("[SimXR] Created new preview window: hwnd=%p clientSize=%ux%u",
+-         s.hwnd, initialClientW, initialClientH);
++    if (!headless) {
++        SetForegroundWindow(s.hwnd);
++        SetWindowPos(s.hwnd, HWND_TOP, 0, 0, 0, 0,
++                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
++    }
++    Logf("[SimXR] Created new preview window: hwnd=%p clientSize=%ux%u headless=%d",
++         s.hwnd, initialClientW, initialClientH, headless ? 1 : 0);
+ 
+     ui::ApplyDarkTheme(s.hwnd);
+     ui::g_uiState.windowWidth = initialClientW;

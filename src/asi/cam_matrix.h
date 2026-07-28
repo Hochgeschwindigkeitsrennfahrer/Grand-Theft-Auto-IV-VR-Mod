@@ -1,8 +1,21 @@
 #pragma once
 
+#include <cstdint>
+
 struct IDirect3DDevice9;
 
 namespace asi {
+
+struct StereoCamBuildReceipt {
+  uint32_t applyGeneration = 0u;
+  uint32_t applyCount = 0u;
+  uint32_t writerThreadId = 0u;
+  bool rightEye = false;
+  bool eyeOffsetApplied = false;
+  float position[3] = {};
+  float eyeOffset[3] = {};
+  float localEyeOffset[3] = {};
+};
 
 // AOB-hook CE follow-cam CopyMat; hard-lock pos to player ped + HMD orient.
 // Safe to call repeatedly; installs once.
@@ -27,8 +40,16 @@ void CamMatrixOnSixDofReset();
 // Re-apply HMD+IPD to all tracked CopyMat matrices (stereo pass switch).
 void RefreshLiveCamForStereoEye();
 
+// Monotonic count of successful ApplyHmdToCam writes.
+uint32_t GetStereoCamApplyGeneration();
+
 // Last position written by ApplyHmdToCam (for L/R delta logs).
 bool GetLastStereoCamPos(float* x, float* y, float* z);
+
+// Game-thread BuildRootA receipt. Every successful ApplyHmdToCam on the
+// calling thread is accumulated while the scope is active.
+void BeginStereoCamBuildReceipt(bool rightEye);
+bool EndStereoCamBuildReceipt(StereoCamBuildReceipt* receipt);
 
 // World-space delta from LEFT to RIGHT eye (hmdRight * sep * worldScale).
 bool GetStereoEyeRightDeltaWorld(float* dx, float* dy, float* dz);

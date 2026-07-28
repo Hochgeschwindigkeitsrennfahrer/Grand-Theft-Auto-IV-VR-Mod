@@ -270,6 +270,11 @@ enum class StereoMode : int {
   // OpenXR pose, and the sidecar publishes it only as a distinct-eye CPU
   // mailbox transaction. It never calls OpenVR or SteamVR.
   OpenXrDrawSceneStereo = 56,
+  // Direct-OpenXR temporal full-frame stereo fallback. Captures completed
+  // native backbuffers on alternating L/R game frames using the exact OpenXR
+  // eye poses, then publishes only completed distinct-eye pairs to the x64
+  // host. This is AER rather than same-tick stereo and never calls OpenVR.
+  OpenXrTemporalStereo = 57,
   // Mode 120 CLEAN rewrite (LKG / last-good smooth): Mode50 head-owned + RT lock +
   // true-FOV canvas + synced DrawScene×2 every N with HOLD/hitchcut (Praydog sequential).
   // look-move ON (HMD yaw→ped; atan2(-fx,fy)); pedCoupled OFF; motion-guard OFF;
@@ -367,7 +372,7 @@ bool IsOpenXrDirectMode(StereoMode mode);
 
 // Mode 40–49: rapid HMD delta → temporary mono pair. Mode 50+ never flattens.
 bool UsesMotionGuardStereo(StereoMode mode);
-// Mode 50–53: stereo-first temporal path with pair audit logging.
+// Mode 50–53 and direct-OpenXR Mode 57: distinct-eye temporal pairs.
 bool UsesStereoAlwaysDistinct(StereoMode mode);
 // Mode 38/51/53: Submit_TextureWithPose per eye.
 bool UsesAerPoseSubmit(StereoMode mode);

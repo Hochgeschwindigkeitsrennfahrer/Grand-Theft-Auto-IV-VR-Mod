@@ -28,6 +28,10 @@ struct GameFrameView
     uint32_t uiReasonFlags = gtaiv_xr_bridge::UiReasonNone;
     uint32_t uiEye = 0u;
     bool sameSimulationTick = false;
+    // True only for an explicitly tagged, ordered L-then-R pair captured from
+    // two different GTA frames. The host accepts this route only when its
+    // command line opted in to temporal stereo.
+    bool temporalStereo = false;
 
     explicit operator bool() const noexcept
     {
@@ -54,6 +58,8 @@ public:
         ID3D11Device* device,
         ID3D11DeviceContext* context,
         LogFunction logger,
+        // Fail closed by default. This is enabled only by the dedicated
+        // temporal-stereo host command line used with GTA Mode 57.
         bool allowTemporalStereo = false);
     GameFrameView update();
     void reset();

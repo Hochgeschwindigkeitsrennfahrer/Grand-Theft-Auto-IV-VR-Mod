@@ -533,9 +533,13 @@ struct LocatedViewSample
 class CalibrationHost
 {
 public:
-    explicit CalibrationHost(Logger& logger, bool gameMode)
+    explicit CalibrationHost(
+        Logger& logger,
+        bool gameMode,
+        bool allowTemporalStereo)
         : logger_(logger)
         , gameMode_(gameMode)
+        , allowTemporalStereo_(allowTemporalStereo)
     {
     }
 
@@ -582,7 +586,8 @@ public:
                 if (sessionState_ == XR_SESSION_STATE_IDLE)
                 {
                     message
-                        << " Put on Quest 3 and launch Quest Link inside the headset.";
+                        << " Focus the active OpenXR runtime: open Meta XR Simulator "
+                           "or enter Quest Link in the headset.";
                 }
                 throw std::runtime_error(message.str());
             }
@@ -1304,7 +1309,8 @@ private:
                 context_.Get(),
                 [this](const std::string& message) {
                     logger_.write(message);
-                });
+                },
+                allowTemporalStereo_);
             if (!bridgeReady)
                 throw std::runtime_error("The GTA GPU frame bridge could not initialize.");
             logger_.write(
@@ -1436,6 +1442,55 @@ private:
         destination.position[0] = source.position.x;
         destination.position[1] = source.position.y;
         destination.position[2] = source.position.z;
+    }
+
+    static bool deriveHmdPoseFromViews(
+        gtaiv_xr_bridge::Pose& destination,
+        const std::array<XrView, EyeCount>& views)
+    {
+        const XrQuaternionf left = views[0].pose.orientation;
+        XrQuaternionf right = views[1].pose.orientation;
+        const float dot =
+            left.x * right.x +
+            left.y * right.y +
+            left.z * right.z +
+            left.w * right.w;
+        if (dot < 0.0f)
+        {
+            right.x = -right.x;
+            right.y = -right.y;
+            right.z = -right.z;
+            right.w = -right.w;
+        }
+        const float qx = left.x + right.x;
+        const float qy = left.y + right.y;
+        const float qz = left.z + right.z;
+        const float qw = left.w + right.w;
+        const float norm = std::sqrt(
+            qx * qx + qy * qy + qz * qz + qw * qw);
+        if (!std::isfinite(norm) || norm < 0.5f)
+            return false;
+        const float inverseNorm = 1.0f / norm;
+        destination.orientation[0] = qx * inverseNorm;
+        destination.orientation[1] = qy * inverseNorm;
+        destination.orientation[2] = qz * inverseNorm;
+        destination.orientation[3] = qw * inverseNorm;
+        destination.position[0] =
+            0.5f * (
+                views[0].pose.position.x +
+                views[1].pose.position.x);
+        destination.position[1] =
+            0.5f * (
+                views[0].pose.position.y +
+                views[1].pose.position.y);
+        destination.position[2] =
+            0.5f * (
+                views[0].pose.position.z +
+                views[1].pose.position.z);
+        return
+            std::isfinite(destination.position[0]) &&
+            std::isfinite(destination.position[1]) &&
+            std::isfinite(destination.position[2]);
     }
 
     bool locatePose(
@@ -1690,7 +1745,14 @@ private:
             }
         }
 
-        if (locatePose(viewSpace_, frameState.predictedDisplayTime, frame.hmdPose))
+        const bool viewDerivedHmd =
+            viewsValid &&
+            deriveHmdPoseFromViews(frame.hmdPose, views);
+        if (viewDerivedHmd ||
+            locatePose(
+                viewSpace_,
+                frameState.predictedDisplayTime,
+                frame.hmdPose))
             frame.flags |= gtaiv_xr_bridge::PoseBridgeHmdValid;
 
         if (inputReady_)
@@ -1904,7 +1966,9 @@ private:
                                 : gameFrame_.presentationMode
                                         == gtaiv_xr_bridge::PresentationMode::WorldMono
                                     ? "world-headtracked-mono-projection"
-                                    : "world-stereo")
+                                    : gameFrame_.temporalStereo
+                                        ? "world-temporal-stereo"
+                                        : "world-stereo")
                         << " reasons=0x" << std::hex
                         << gameFrame_.uiReasonFlags;
                 logger_.write(message.str());
@@ -1917,21 +1981,84 @@ private:
                 !gameMode_ || !gameFrame_ || quadPresentation;
             if (gameMode_ && gameFrame_ && !quadPresentation)
             {
-                // Usability branch: a stale pair audit must never hide a usable
-                // GTA world frame. Present the newest valid transaction against
-                // the current OpenXR views; pair/pose identities remain logged
-                // for diagnosis but are not a black-frame gate.
-                gameFramePoseMatched_ = true;
-                if (!loggedGamePoseMatch_)
+                if (gameFrame_.temporalStereo)
                 {
-                    std::ostringstream message;
-                    message
-                        << "XRHost: latest-frame world presentation active "
-                           "(no pair/pose black gate) "
-                        << "transaction=" << gameFrame_.transactionId
-                        << " pose=" << gameFrame_.poseSequence[0];
-                    logger_.write(message.str());
-                    loggedGamePoseMatch_ = true;
+                    // Each eye was rendered on a different GTA frame. Submit
+                    // that eye's actual capture pose/FOV so the OpenXR runtime
+                    // can reproject it from the correct origin. Never pretend a
+                    // temporal pair was rendered at the current shared pose.
+                    std::array<XrView, EyeCount> renderedViews {
+                        XrView { XR_TYPE_VIEW },
+                        XrView { XR_TYPE_VIEW }
+                    };
+                    gameFramePoseMatched_ = true;
+                    for (uint32_t eye = 0u; eye < EyeCount; ++eye)
+                    {
+                        if (!findRenderedView(
+                                gameFrame_.poseSequence[eye],
+                                gameFrame_.renderedDisplayTime[eye],
+                                eye,
+                                renderedViews[eye]))
+                        {
+                            gameFramePoseMatched_ = false;
+                            break;
+                        }
+                    }
+                    if (gameFramePoseMatched_)
+                    {
+                        submittedViews = renderedViews;
+                        if (lastTemporalPoseLogTransaction_ == 0u
+                            || gameFrame_.transactionId
+                                >= lastTemporalPoseLogTransaction_ + 120u)
+                        {
+                            std::ostringstream message;
+                            message
+                                << "XRHost: temporal pair capture poses active "
+                                << "transaction=" << gameFrame_.transactionId
+                                << " source="
+                                << gameFrame_.sourceFrameId[0] << '/'
+                                << gameFrame_.sourceFrameId[1]
+                                << " pose="
+                                << gameFrame_.poseSequence[0] << '/'
+                                << gameFrame_.poseSequence[1];
+                            logger_.write(message.str());
+                            lastTemporalPoseLogTransaction_ =
+                                gameFrame_.transactionId;
+                        }
+                    }
+                    else
+                    {
+                        const uint64_t now = GetTickCount64();
+                        if (lastTemporalPoseMissLogTick_ == 0u
+                            || now - lastTemporalPoseMissLogTick_ >= 2000u)
+                        {
+                            std::ostringstream message;
+                            message
+                                << "XRHost: temporal pair capture pose missing; "
+                                   "projection layer held transaction="
+                                << gameFrame_.transactionId;
+                            logger_.write(message.str());
+                            lastTemporalPoseMissLogTick_ = now;
+                        }
+                    }
+                }
+                else
+                {
+                    // Same-frame world routes remain a latest-frame usability
+                    // path. Their pair/pose identities are diagnostics, not a
+                    // black-frame gate.
+                    gameFramePoseMatched_ = true;
+                    if (!loggedGamePoseMatch_)
+                    {
+                        std::ostringstream message;
+                        message
+                            << "XRHost: latest-frame world presentation active "
+                               "(no pair/pose black gate) "
+                            << "transaction=" << gameFrame_.transactionId
+                            << " pose=" << gameFrame_.poseSequence[0];
+                        logger_.write(message.str());
+                        loggedGamePoseMatch_ = true;
+                    }
                 }
             }
             if (gameMode_
@@ -2016,7 +2143,10 @@ private:
                             &uiLayer);
                 }
             }
-            else
+            else if (!gameMode_
+                     || !gameFrame_
+                     || !gameFrame_.temporalStereo
+                     || gameFramePoseMatched_)
             {
                 for (uint32_t eye = 0; eye < EyeCount; ++eye)
                 {
@@ -2040,7 +2170,12 @@ private:
                     reinterpret_cast<const XrCompositionLayerBaseHeader*>(
                         &projectionLayer);
             }
-            rendered = !quadPresentation || quadPoseReady;
+            rendered = quadPresentation
+                ? quadPoseReady
+                : !gameMode_
+                    || !gameFrame_
+                    || !gameFrame_.temporalStereo
+                    || gameFramePoseMatched_;
         }
 
         XrFrameEndInfo endInfo { XR_TYPE_FRAME_END_INFO };
@@ -2417,7 +2552,10 @@ private:
     bool recenterChordDown_ = false;
     bool gameFramePoseMatched_ = false;
     bool loggedGamePoseMatch_ = false;
+    uint64_t lastTemporalPoseLogTransaction_ = 0u;
+    uint64_t lastTemporalPoseMissLogTick_ = 0u;
     bool gameMode_ = false;
+    bool allowTemporalStereo_ = false;
     gtaiv_xr_bridge::PresentationMode lastLoggedPresentationMode_ =
         gtaiv_xr_bridge::PresentationMode::Unknown;
 };
@@ -2471,8 +2609,11 @@ int main(int argc, char** argv)
         if (hasArgument(argc, argv, "--help"))
         {
             std::cout
-                << "gtaiv_xr_host [--game] [--self-test] [--frames N] [--timeout-ms N]\n"
+                << "gtaiv_xr_host [--game] [--allow-temporal-stereo] "
+                   "[--self-test] [--frames N] [--timeout-ms N]\n"
                 << "  --game       Show live GTAIV.exe frames; black while the game starts.\n"
+                << "  --allow-temporal-stereo\n"
+                   "               Accept explicitly tagged ordered L/R GTA frame pairs.\n"
                 << "  --self-test  Check shaders/protocol without touching OpenXR.\n"
                 << "  --frames N   Exit after N submitted OpenXR frames.\n"
                 << "  --timeout-ms Exit unsuccessfully if the test exceeds N milliseconds.\n";
@@ -2517,7 +2658,8 @@ int main(int argc, char** argv)
             }
             logger->write(
                 "SelfTest: PASS pointerBits=64 shaders=ok protocol=v6 "
-                "worldStrict=1 wvpProof=1 drawSceneProof=1 immersiveMono=1 "
+                "worldStrict=1 wvpProof=1 drawSceneProof=1 "
+                "temporalOptIn=1 immersiveMono=1 "
                 "cpuMailbox=1 cpuMailboxStereo=1 cpuMailboxWorldUi=1 "
                 "stationaryUiQuad=1 uiAspect=1 routeSwitch=1 "
                 "srgbDecode=1 "
@@ -2532,8 +2674,23 @@ int main(int argc, char** argv)
         SetConsoleCtrlHandler(consoleControlHandler, TRUE);
 
         const bool gameMode = hasArgument(argc, argv, "--game");
-        logger->write(gameMode ? "Mode: GAME" : "Mode: CALIBRATION");
-        CalibrationHost host(*logger, gameMode);
+        const bool allowTemporalStereo =
+            hasArgument(argc, argv, "--allow-temporal-stereo");
+        if (allowTemporalStereo && !gameMode)
+        {
+            throw std::runtime_error(
+                "--allow-temporal-stereo requires --game.");
+        }
+        logger->write(
+            gameMode
+                ? allowTemporalStereo
+                    ? "Mode: GAME (temporal stereo explicitly enabled)"
+                    : "Mode: GAME (strict same-tick stereo)"
+                : "Mode: CALIBRATION");
+        CalibrationHost host(
+            *logger,
+            gameMode,
+            allowTemporalStereo);
         host.initialize();
         return host.run(frameLimit, timeoutMilliseconds);
     }

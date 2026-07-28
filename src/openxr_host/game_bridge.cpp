@@ -209,6 +209,7 @@ struct TransactionQuality
 {
     bool accepted = false;
     bool sameTick = false;
+    bool temporalStereo = false;
     bool uiQuad = false;
     bool immersiveMono = false;
     const char* rejection = nullptr;
@@ -219,8 +220,12 @@ TransactionQuality assessTransactionQuality(
     bool allowTemporalStereo)
 {
     TransactionQuality result {};
+    const bool sameTickFlag =
+        (value.flags & gtaiv_xr_bridge::SameSimulationTick) != 0u;
+    const bool temporalStereoFlag =
+        (value.flags & gtaiv_xr_bridge::TemporalStereo) != 0u;
     result.sameTick =
-        (value.flags & gtaiv_xr_bridge::SameSimulationTick) != 0u
+        sameTickFlag
         && value.sourceFrameId[0] != 0u
         && value.sourceFrameId[0] == value.sourceFrameId[1]
         && value.poseSequence[0] != 0u
@@ -247,8 +252,20 @@ TransactionQuality assessTransactionQuality(
             | gtaiv_xr_bridge::EyesDistinct);
     const bool immersiveMonoFlag =
         (value.flags & gtaiv_xr_bridge::ImmersiveMono) != 0u;
-    const bool temporalStereo =
-        (value.flags & gtaiv_xr_bridge::TemporalStereo) != 0u;
+    // A temporal pair is an ordered L-then-R capture, not merely a world
+    // transaction that omitted SameSimulationTick. Require every render stamp
+    // to advance so accidental stale/duplicated eyes cannot enter the opt-in
+    // route.
+    result.temporalStereo =
+        temporalStereoFlag
+        && !sameTickFlag
+        && value.sourceFrameId[0] != 0u
+        && value.sourceFrameId[0] < value.sourceFrameId[1]
+        && value.poseSequence[0] != 0u
+        && value.poseSequence[0] < value.poseSequence[1]
+        && value.renderedDisplayTime[0] != 0
+        && value.renderedDisplayTime[0]
+            < value.renderedDisplayTime[1];
     result.uiQuad =
         value.presentationMode
             == gtaiv_xr_bridge::PresentationMode::UiQuad;
@@ -271,11 +288,12 @@ TransactionQuality assessTransactionQuality(
             && value.uiReasonFlags == gtaiv_xr_bridge::UiReasonNone)
         || (worldStereo && immersiveMonoFlag)
         || (worldStereo && !distinctEyes)
+        || (sameTickFlag && temporalStereoFlag)
         || (result.immersiveMono
             && (!immersiveMonoFlag
                 || verifiedWvpStereo
                 || verifiedDrawSceneStereo
-                || temporalStereo))
+                || temporalStereoFlag))
         || (result.uiQuad
             && (immersiveMonoFlag
                 || verifiedWvpStereo
@@ -284,16 +302,30 @@ TransactionQuality assessTransactionQuality(
         result.rejection = "invalid presentation mode";
         return result;
     }
-    if (worldStereo
-        && !verifiedWvpStereo
-        && !verifiedDrawSceneStereo)
+    if (worldStereo && temporalStereoFlag)
+    {
+        if (!allowTemporalStereo)
+        {
+            result.rejection = "temporal stereo was not explicitly enabled";
+            return result;
+        }
+        if (!result.temporalStereo)
+        {
+            result.rejection = "temporal stereo stamps are not ordered";
+            return result;
+        }
+        if (verifiedWvpStereo || verifiedDrawSceneStereo)
+        {
+            result.rejection =
+                "temporal stereo claimed a same-frame proof";
+            return result;
+        }
+    }
+    else if (worldStereo
+             && (!result.sameTick
+                 || (!verifiedWvpStereo && !verifiedDrawSceneStereo)))
     {
         result.rejection = "missing verified same-frame stereo proof";
-        return result;
-    }
-    if (worldStereo && !result.sameTick && !allowTemporalStereo)
-    {
-        result.rejection = "not one simulation tick/pose";
         return result;
     }
     if (result.immersiveMono && !result.sameTick)
@@ -696,7 +728,7 @@ struct GameBridge::Implementation
                 lastMappingLogTick);
             return false;
         }
-        log("GameBridge: GTA frame descriptor v5 found");
+        log("GameBridge: GTA frame descriptor v6 found");
         return true;
     }
 
@@ -1151,6 +1183,7 @@ struct GameBridge::Implementation
         frame.contentHeight = value.contentHeight;
         frame.transactionId = value.transactionId;
         frame.sameSimulationTick = quality.sameTick;
+        frame.temporalStereo = quality.temporalStereo;
         frame.presentationMode = value.presentationMode;
         frame.uiReasonFlags = value.uiReasonFlags;
         frame.uiEye = value.uiEye;
@@ -1179,6 +1212,7 @@ struct GameBridge::Implementation
         frame.contentHeight = value.contentHeight;
         frame.transactionId = value.transactionId;
         frame.sameSimulationTick = quality.sameTick;
+        frame.temporalStereo = quality.temporalStereo;
         frame.presentationMode = value.presentationMode;
         frame.uiReasonFlags = value.uiReasonFlags;
         frame.uiEye = value.uiEye;
@@ -1289,7 +1323,7 @@ struct GameBridge::Implementation
         ++acquiredFrameCount;
 
         if (acquiredFrameCount <= 4u
-            || acquiredFrameCount % 120u == 0u
+            || current.transactionId % 60u == 0u
             || current.presentationMode != lastLoggedCpuPresentationMode)
         {
             std::ostringstream message;
@@ -1302,9 +1336,15 @@ struct GameBridge::Implementation
                             ? "stationary-ui-quad"
                             : current.presentationMode
                                     == gtaiv_xr_bridge::PresentationMode::WorldStereo
-                                ? "world-drawscene-stereo"
+                                ? current.temporalStereo
+                                    ? "world-temporal-stereo"
+                                    : "world-drawscene-stereo"
                                 : "world-immersive-mono")
                     << " eyes=" << sourceEyeCount
+                    << " sameTick="
+                    << (current.sameSimulationTick ? 1 : 0)
+                    << " temporal="
+                    << (current.temporalStereo ? 1 : 0)
                     << " copyMs=" << (GetTickCount64() - started);
             log(message.str());
             lastLoggedCpuPresentationMode = current.presentationMode;
@@ -1375,6 +1415,8 @@ struct GameBridge::Implementation
                     << " privateSlot=" << currentPrivateSlot
                     << " sameTick="
                     << (current.sameSimulationTick ? 1 : 0)
+                    << " temporal="
+                    << (current.temporalStereo ? 1 : 0)
                     << " presentation="
                     << (current.presentationMode
                                 == gtaiv_xr_bridge::PresentationMode::UiQuad
@@ -1706,7 +1748,7 @@ bool GameBridgeProtocolSelfTest(std::string& failure)
         failure = "unverified same-tick world pair was accepted";
         return false;
     }
-    value.flags |= gtaiv_xr_bridge::VerifiedWvpStereo;
+    value.flags &= ~gtaiv_xr_bridge::VerifiedWvpStereo;
     value.flags &= ~gtaiv_xr_bridge::SameSimulationTick;
     value.flags |= gtaiv_xr_bridge::TemporalStereo;
     value.sourceFrameId[1] = 11u;
@@ -1717,6 +1759,40 @@ bool GameBridgeProtocolSelfTest(std::string& failure)
         failure = "temporal world pair was accepted";
         return false;
     }
+    const TransactionQuality temporalQuality =
+        assessTransactionQuality(value, true);
+    if (!temporalQuality.accepted
+        || !temporalQuality.temporalStereo
+        || temporalQuality.sameTick)
+    {
+        failure =
+            "explicitly enabled ordered temporal world pair was rejected";
+        return false;
+    }
+
+    value.flags |= gtaiv_xr_bridge::VerifiedWvpStereo;
+    if (assessTransactionQuality(value, true).accepted)
+    {
+        failure =
+            "temporal world pair claiming same-frame WVP proof was accepted";
+        return false;
+    }
+    value.flags &= ~gtaiv_xr_bridge::VerifiedWvpStereo;
+    value.poseSequence[1] = value.poseSequence[0];
+    if (assessTransactionQuality(value, true).accepted)
+    {
+        failure = "temporal world pair with repeated pose was accepted";
+        return false;
+    }
+    value.poseSequence[1] = 21u;
+    value.flags |= gtaiv_xr_bridge::SameSimulationTick;
+    if (assessTransactionQuality(value, true).accepted)
+    {
+        failure =
+            "world pair claiming both same-tick and temporal timing was accepted";
+        return false;
+    }
+    value.flags &= ~gtaiv_xr_bridge::SameSimulationTick;
 
     value.presentationMode =
         gtaiv_xr_bridge::PresentationMode::WorldMono;

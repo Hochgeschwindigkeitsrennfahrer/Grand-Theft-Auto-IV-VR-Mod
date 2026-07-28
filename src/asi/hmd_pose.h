@@ -20,6 +20,13 @@ void UpdateHmdPose(const vr::TrackedDevicePose_t* poses, uint32_t poseCount);
 void UpdateHmdPoseFromOpenXr(const gtaiv_xr_bridge::PoseBridge& pose);
 void InvalidateHmdPose();
 
+// Pin one coherent OpenXR pose and both eye offsets to the calling thread for
+// the duration of a native GTA BuildRootA. Camera hooks on that thread then
+// cannot observe a newer EndScene pose halfway through the build.
+bool BeginPinnedOpenXrBuildPose(
+    const gtaiv_xr_bridge::PoseBridge& pose);
+void EndPinnedOpenXrBuildPose();
+
 bool GetHmdPoseMatrix(vr::HmdMatrix34_t* out);
 bool IsHmdPoseValid();
 

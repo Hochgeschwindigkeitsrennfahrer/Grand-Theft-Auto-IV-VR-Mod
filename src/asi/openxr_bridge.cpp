@@ -128,6 +128,49 @@ bool sameComIdentity(IUnknown* left, IUnknown* right)
         && leftIdentity.Get() == rightIdentity.Get();
 }
 
+uint64_t sampleLockedBgraHash(
+    const D3DLOCKED_RECT& locked,
+    uint32_t width,
+    uint32_t height)
+{
+    if (!locked.pBits || locked.Pitch <= 0 || width == 0u || height == 0u)
+        return 0u;
+
+    // Sparse deterministic FNV-1a sampling keeps this live proof cheap while
+    // still rejecting exact mono duplication across the two eye images.
+    constexpr uint64_t Offset = 1469598103934665603ull;
+    constexpr uint64_t Prime = 1099511628211ull;
+    constexpr uint32_t SamplesX = 32u;
+    constexpr uint32_t SamplesY = 18u;
+    const auto* base = static_cast<const uint8_t*>(locked.pBits);
+    uint64_t hash = Offset;
+    for (uint32_t sampleY = 0u; sampleY < SamplesY; ++sampleY)
+    {
+        const uint32_t y =
+            SamplesY > 1u
+                ? sampleY * (height - 1u) / (SamplesY - 1u)
+                : 0u;
+        const auto* row =
+            base + static_cast<size_t>(y)
+                * static_cast<size_t>(locked.Pitch);
+        for (uint32_t sampleX = 0u; sampleX < SamplesX; ++sampleX)
+        {
+            const uint32_t x =
+                SamplesX > 1u
+                    ? sampleX * (width - 1u) / (SamplesX - 1u)
+                    : 0u;
+            const auto* pixel = row + static_cast<size_t>(x) * 4u;
+            // Ignore alpha: X8R8G8B8 does not promise meaningful alpha bits.
+            for (uint32_t channel = 0u; channel < 3u; ++channel)
+            {
+                hash ^= pixel[channel];
+                hash *= Prime;
+            }
+        }
+    }
+    return hash;
+}
+
 struct PairLease
 {
     ~PairLease()
@@ -313,9 +356,13 @@ public:
             return;
 
         const UiPresentationState uiState = GetUiPresentationState();
+        const StereoMode stereoMode = GetStereoMode();
         const bool immersiveMono =
             !uiState
-            && GetStereoMode() == StereoMode::OpenXrImmersiveMono;
+            && stereoMode == StereoMode::OpenXrImmersiveMono;
+        const bool temporalStereoMode =
+            !uiState
+            && stereoMode == StereoMode::OpenXrTemporalStereo;
         PairLease lease;
         if (!StereoAcquireOpenXrPair(&lease.pair))
         {
@@ -343,11 +390,15 @@ public:
             publishHeartbeat();
             return;
         }
-        if (!uiState && !lease.pair.sameSimulationTick)
+        if (!uiState
+            && !lease.pair.sameSimulationTick
+            && !(temporalStereoMode
+                && lease.pair.verifiedTemporalStereo))
         {
             logRateLimited(
                 "OpenXRBridge: world frame is not one simulation tick/pose; "
-                "GPU transaction withheld",
+                "transaction withheld unless explicit Mode57 temporal proof "
+                "is present",
                 lastPairWaitLogTick_);
             publishHeartbeat();
             return;
@@ -355,11 +406,13 @@ public:
         if (!uiState
             && !immersiveMono
             && !lease.pair.verifiedWvpStereo
-            && !lease.pair.verifiedDrawSceneStereo)
+            && !lease.pair.verifiedDrawSceneStereo
+            && !(temporalStereoMode
+                && lease.pair.verifiedTemporalStereo))
         {
             logRateLimited(
-                "OpenXRBridge: world pair lacks validated same-frame proof; "
-                "GPU transaction withheld",
+                "OpenXRBridge: world pair lacks validated same-frame or "
+                "explicit Mode57 temporal proof; transaction withheld",
                 lastPairWaitLogTick_);
             publishHeartbeat();
             return;
@@ -372,8 +425,9 @@ public:
         }
 
         const bool cpuMailboxRoute =
-            GetStereoMode() == StereoMode::OpenXrImmersiveMono
-            || GetStereoMode() == StereoMode::OpenXrDrawSceneStereo;
+            stereoMode == StereoMode::OpenXrImmersiveMono
+            || stereoMode == StereoMode::OpenXrDrawSceneStereo
+            || stereoMode == StereoMode::OpenXrTemporalStereo;
         if (cpuMailboxRoute)
         {
             if (!ready_)
@@ -620,7 +674,9 @@ private:
     {
         if (!gameDevice
             || !pair.eyes[0]
-            || (pair.verifiedDrawSceneStereo && !pair.eyes[1])
+            || ((pair.verifiedDrawSceneStereo
+                 || pair.verifiedTemporalStereo)
+                && !pair.eyes[1])
             || pair.width == 0u
             || pair.height == 0u
             || pair.width > gtaiv_xr_bridge::CpuFrameMaxWidth
@@ -719,7 +775,10 @@ private:
         }
 
         const bool distinctStereo =
-            !uiState && !immersiveMono && pair.verifiedDrawSceneStereo;
+            !uiState
+            && !immersiveMono
+            && (pair.verifiedDrawSceneStereo
+                || pair.verifiedTemporalStereo);
         const uint32_t sourceEyeCount = distinctStereo
             ? gtaiv_xr_bridge::EyeCount
             : 1u;
@@ -743,6 +802,8 @@ private:
 
         const uint32_t rowBytes =
             width_ * gtaiv_xr_bridge::CpuFrameBytesPerPixel;
+        const bool auditEyeContent = distinctStereo;
+        uint64_t eyeHashes[gtaiv_xr_bridge::EyeCount] {};
         LARGE_INTEGER start {};
         LARGE_INTEGER afterReadback {};
         LARGE_INTEGER finished {};
@@ -775,6 +836,27 @@ private:
                 || locked[eye].Pitch < static_cast<INT>(rowBytes))
             {
                 unlockAll();
+                return false;
+            }
+        }
+        if (auditEyeContent)
+        {
+            for (uint32_t eye = 0u;
+                 eye < gtaiv_xr_bridge::EyeCount;
+                 ++eye)
+            {
+                eyeHashes[eye] =
+                    sampleLockedBgraHash(locked[eye], width_, height_);
+            }
+            if (eyeHashes[0] == 0u
+                || eyeHashes[1] == 0u
+                || eyeHashes[0] == eyeHashes[1])
+            {
+                unlockAll();
+                logRateLimited(
+                    "OpenXRBridge: rejected exact-mono L/R world readback; "
+                    "last proved stereo transaction retained",
+                    lastStereoDuplicateLogTick_);
                 return false;
             }
         }
@@ -840,7 +922,7 @@ private:
 
         ++cpuCaptureCount_;
         if (cpuCaptureCount_ <= 4u
-            || cpuCaptureCount_ % 120u == 0u
+            || transaction % 60u == 0u
             || lastLoggedCpuPresentation_ != lastPresentationMode_)
         {
             LARGE_INTEGER frequency {};
@@ -851,18 +933,30 @@ private:
                     : 1.0;
             Log(
                 "OpenXRBridge: CPU mailbox transaction=%llu slot=%u "
-                "presentation=%s eyes=%u capture=%ux%u "
-                "readbackMs=%.2f copyMs=%.2f",
+                "pair=%llu presentation=%s eyes=%u "
+                "sameTick=%d temporal=%d "
+                "pose=%llu/%llu source=%llu/%llu capture=%ux%u "
+                "readbackMs=%.2f copyMs=%.2f "
+                "eyeHashL=%016llx eyeHashR=%016llx pixelDistinct=%d",
                 static_cast<unsigned long long>(transaction),
                 slot,
+                static_cast<unsigned long long>(pair.pairId),
                 lastPresentationMode_
                         == gtaiv_xr_bridge::PresentationMode::UiQuad
                     ? "stationary-ui-quad"
                     : lastPresentationMode_
-                            == gtaiv_xr_bridge::PresentationMode::WorldStereo
-                        ? "world-drawscene-stereo"
+                        == gtaiv_xr_bridge::PresentationMode::WorldStereo
+                        ? pair.verifiedTemporalStereo
+                            ? "world-temporal-stereo"
+                            : "world-drawscene-stereo"
                         : "world-immersive-mono",
                 sourceEyeCount,
+                pair.sameSimulationTick ? 1 : 0,
+                pair.verifiedTemporalStereo ? 1 : 0,
+                static_cast<unsigned long long>(pair.poseSequence[0]),
+                static_cast<unsigned long long>(pair.poseSequence[1]),
+                static_cast<unsigned long long>(pair.sourceFrameId[0]),
+                static_cast<unsigned long long>(pair.sourceFrameId[1]),
                 width_,
                 height_,
                 static_cast<double>(
@@ -870,7 +964,15 @@ private:
                     / ticksPerMs,
                 static_cast<double>(
                     finished.QuadPart - afterReadback.QuadPart)
-                    / ticksPerMs);
+                    / ticksPerMs,
+                static_cast<unsigned long long>(eyeHashes[0]),
+                static_cast<unsigned long long>(eyeHashes[1]),
+                auditEyeContent
+                        && eyeHashes[0] != 0u
+                        && eyeHashes[1] != 0u
+                        && eyeHashes[0] != eyeHashes[1]
+                    ? 1
+                    : 0);
             lastLoggedCpuPresentation_ = lastPresentationMode_;
         }
         return true;
@@ -1826,7 +1928,7 @@ private:
         }
         if (lastPair_.sameSimulationTick)
             value.flags |= gtaiv_xr_bridge::SameSimulationTick;
-        else
+        else if (lastPair_.verifiedTemporalStereo)
             value.flags |= gtaiv_xr_bridge::TemporalStereo;
         if (lastPair_.poseStamped)
             value.flags |= gtaiv_xr_bridge::PoseStamped;
@@ -2009,6 +2111,7 @@ private:
     uint64_t lastRouteWaitLogTick_ = 0u;
     uint64_t lastBusyLogTick_ = 0u;
     uint64_t lastCpuFailureLogTick_ = 0u;
+    uint64_t lastStereoDuplicateLogTick_ = 0u;
     uint64_t cpuCaptureCount_ = 0u;
     uint32_t resourceGeneration_ = 0u;
     uint32_t currentSlot_ = 0u;
@@ -2148,8 +2251,9 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
         {
             Log(
                 "OpenXRBridge: direct world presentation requires stereo mode "
-                "55 (immersive mono), 56 (guarded DrawScene stereo), or 54 "
-                "(experimental WVP); current mode=%d, so no GTA "
+                "55 (immersive mono), 56 (guarded DrawScene diagnostic), "
+                "57 (ordered temporal stereo), or 54 (experimental WVP); "
+                "current mode=%d, so no GTA "
                 "camera, controller, or frame hooks were armed",
                 static_cast<int>(directMode));
             return;

@@ -1,11 +1,13 @@
 param(
   [string]$GameDir = "",
-  [switch]$Build
+  [switch]$Build,
+  [string]$RuntimeManifest = ""
 )
 
 $ErrorActionPreference = "Stop"
 
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
+. "$PSScriptRoot\openxr-runtime-info.ps1"
 $HostExe = Join-Path $Root "out-openxr\gtaiv_xr_host.exe"
 $Asi = Join-Path $Root "out-asi\gtaiv_dxvk_vr.asi"
 
@@ -53,28 +55,36 @@ if ($hostMachine -ne 0x8664) {
   throw ("Host machine is 0x{0:X4}; expected x64 0x8664." -f $hostMachine)
 }
 
-$runtimeKey = "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Khronos\OpenXR\1"
-$runtime = (Get-ItemProperty -Path $runtimeKey -Name ActiveRuntime -ErrorAction Stop).ActiveRuntime
-if (-not $runtime -or -not (Test-Path $runtime)) {
-  throw "The active x64 OpenXR runtime manifest is missing: $runtime"
+$runtimeInfo = if ($RuntimeManifest) {
+  $resolvedManifest = (Resolve-Path -LiteralPath $RuntimeManifest).Path
+  Get-OpenXrRuntimeInfo -ManifestPath $resolvedManifest
 }
-$isMetaRuntime = $runtime -match "Oculus|Meta"
-if (-not $isMetaRuntime) {
-  throw "Active x64 OpenXR runtime is not Meta Quest Link: $runtime. Refusing to launch because it could start SteamVR. In Meta Quest Link, set Meta Quest Link as the active OpenXR runtime, then retry."
+else {
+  Get-ActiveOpenXrRuntimeInfo
 }
-if ($isMetaRuntime) {
+$runtime = $runtimeInfo.ManifestPath
+if (-not $runtimeInfo.IsDirectTestRuntime) {
+  throw "Selected x64 OpenXR runtime is not a supported direct route: $runtime. Refusing the no-SteamVR route."
+}
+if ($runtimeInfo.RequiresOvrService) {
   $ovrService = Get-Service -Name OVRService -ErrorAction SilentlyContinue
   if (-not $ovrService -or $ovrService.Status -ne "Running") {
     throw "Meta OVRService is not running. Start Meta Quest Link first."
   }
 }
 
-$steamVr = Get-Process -Name vrmonitor,vrserver,vrcompositor -ErrorAction SilentlyContinue
+$steamVr = Get-Process `
+  -Name vrmonitor,vrserver,vrcompositor,vrdashboard,vrwebhelper `
+  -ErrorAction SilentlyContinue
 if ($steamVr) {
-  throw "SteamVR is running. Close it before the direct Meta OpenXR test; this script will not launch GTA while it is running."
+  throw "SteamVR is running. Close it before the direct OpenXR test; this script will not launch GTA while it is running."
 }
 Write-Host "OPENXR GTA PREFLIGHT PASS"
+Write-Host "Route:   $($runtimeInfo.DisplayName)"
 Write-Host "Runtime: $runtime"
+if ($RuntimeManifest) {
+  Write-Host "Scope:   child-only runtime override; system ActiveRuntime will not change"
+}
 Write-Host "GTA:     $(Join-Path $GameDir 'GTAIV.exe') (x86)"
 Write-Host "ASI:     $Asi (x86)"
 Write-Host "Host:    $HostExe (x64)"

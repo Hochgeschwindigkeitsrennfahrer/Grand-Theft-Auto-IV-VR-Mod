@@ -374,14 +374,14 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 
 int ParseModeFile(const char* buf, size_t n) {
   // Three-digit Mode 120–136 (clean dual+lookmove family; 120=LKG, 121+=experiments).
-  // Two-digit modes 10..56 otherwise. Mode 46 remaps to protected 45 below.
+  // Two-digit modes 10..57 otherwise. Mode 46 remaps to protected 45 below.
   if (n >= 3 && buf[0] == '1' && buf[1] == '3' && buf[2] >= '0' && buf[2] <= '6')
     return 130 + (buf[2] - '0');
   if (n >= 3 && buf[0] == '1' && buf[1] == '2' && buf[2] >= '0' && buf[2] <= '9')
     return 120 + (buf[2] - '0');
   if (n >= 2 && buf[0] >= '1' && buf[0] <= '5' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 56)
+    if (v <= 57)
       return v;
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
@@ -415,7 +415,7 @@ void ReloadStereoMode() {
   }
   int prev = g_mode.load();
   if (v >= 0 &&
-      (v <= 56 || IsCleanDualLookMove(static_cast<StereoMode>(v)))) {
+      (v <= 57 || IsCleanDualLookMove(static_cast<StereoMode>(v)))) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -561,7 +561,7 @@ void ReloadStereoMode() {
 
 void WriteStereoModeFile(int mode) {
   if (mode < 0 ||
-      (mode > 56 && !IsCleanDualLookMove(static_cast<StereoMode>(mode))))
+      (mode > 57 && !IsCleanDualLookMove(static_cast<StereoMode>(mode))))
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -588,7 +588,8 @@ bool IsTemporalStereoMode(StereoMode mode) {
 bool IsOpenXrDirectMode(StereoMode mode) {
   return mode == StereoMode::OpenXrSameFrameWvp ||
          mode == StereoMode::OpenXrImmersiveMono ||
-         mode == StereoMode::OpenXrDrawSceneStereo;
+         mode == StereoMode::OpenXrDrawSceneStereo ||
+         mode == StereoMode::OpenXrTemporalStereo;
 }
 
 bool UsesAngleCorrectCanvas(StereoMode mode) {
@@ -645,7 +646,8 @@ bool UsesStereoAlwaysDistinct(StereoMode mode) {
   return mode == StereoMode::HeadOwnedCamStereoAlways ||
          mode == StereoMode::HeadOwnedCamStereoAer ||
          mode == StereoMode::HeadOwnedCamStereoSwap ||
-         mode == StereoMode::HeadOwnedCamStereoSoftGuard;
+         mode == StereoMode::HeadOwnedCamStereoSoftGuard ||
+         mode == StereoMode::OpenXrTemporalStereo;
 }
 
 bool UsesAerPoseSubmit(StereoMode mode) {

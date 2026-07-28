@@ -45,6 +45,8 @@ XInputEnableFunction g_realEnable = nullptr;
 std::atomic<bool> g_installed{false};
 std::atomic<bool> g_xinputEnabled{true};
 std::atomic<uint32_t> g_requestedMotors{0u};
+std::atomic<DWORD> g_lastLoggedInputPacket{0xffffffffu};
+std::atomic<bool> g_loggedNonNeutralInput{false};
 
 SRWLOCK g_packetLock = SRWLOCK_INIT;
 XINPUT_GAMEPAD g_lastGamepad {};
@@ -87,6 +89,17 @@ DWORD packetFor(const XINPUT_GAMEPAD& gamepad)
     return result;
 }
 
+bool nonNeutral(const XINPUT_GAMEPAD& gamepad)
+{
+    return gamepad.wButtons != 0u
+        || gamepad.bLeftTrigger != 0u
+        || gamepad.bRightTrigger != 0u
+        || gamepad.sThumbLX != 0
+        || gamepad.sThumbLY != 0
+        || gamepad.sThumbRX != 0
+        || gamepad.sThumbRY != 0;
+}
+
 DWORD WINAPI HookXInputGetState(
     DWORD userIndex,
     XINPUT_STATE* state)
@@ -98,8 +111,32 @@ DWORD WINAPI HookXInputGetState(
         && touchInputAvailable(pose)
         && synthesizeGamepad(pose, gamepad))
     {
-        state->dwPacketNumber = packetFor(gamepad);
+        const DWORD packet = packetFor(gamepad);
+        state->dwPacketNumber = packet;
         state->Gamepad = gamepad;
+        const bool active = nonNeutral(gamepad);
+        const DWORD priorPacket =
+            g_lastLoggedInputPacket.exchange(packet, std::memory_order_acq_rel);
+        if (packet != priorPacket
+            && (active
+                || g_loggedNonNeutralInput.exchange(
+                    active,
+                    std::memory_order_acq_rel)))
+        {
+            Log(
+                "OpenXRController: GTA consumed packet=%lu "
+                "buttons=0x%04x LT=%u RT=%u LS=(%d,%d) RS=(%d,%d) neutral=%d",
+                static_cast<unsigned long>(packet),
+                static_cast<unsigned>(gamepad.wButtons),
+                static_cast<unsigned>(gamepad.bLeftTrigger),
+                static_cast<unsigned>(gamepad.bRightTrigger),
+                static_cast<int>(gamepad.sThumbLX),
+                static_cast<int>(gamepad.sThumbLY),
+                static_cast<int>(gamepad.sThumbRX),
+                static_cast<int>(gamepad.sThumbRY),
+                active ? 0 : 1);
+            g_loggedNonNeutralInput.store(active, std::memory_order_release);
+        }
         return ERROR_SUCCESS;
     }
     return g_realGetState

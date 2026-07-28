@@ -1,15 +1,120 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-27 18:56 PT
+**As of:** 2026-07-28 00:01 PT
 
-## Current candidate: Mode 56 direct OpenXR L/R pair (offline PASS, no headset result)
+## Current candidate: Mode 57 direct OpenXR temporal stereo (headless in-game proof PASS)
 
-Upstream was fetched on 2026-07-27: `origin/master` is still `01f355b` and is
+The corrected full headless Elliott OpenXR proof completed in
+`out-openxr/runs/20260728-000001-steam-safe/`. GTA passed the startup menu,
+loaded the world, continued rendering, entered and left the pause menu, consumed
+locomotion input, and completed an eight-second head-pose sweep. SteamVR remained
+absent. The launcher then stopped GTA and the x64 host and restored the original
+game-folder ASI, `openvr_api.dll`, `backend=off`, `stereo=0`, and no disable
+sentinel.
+
+Mode **57** is an explicit temporal stereo route. It alternates complete native GTA
+frames left, right, left, right and forms a pair only from consecutive L/R source
+frames. It is **not same-tick stereo**. The strict producer/host gates require
+advancing source-frame, pose, display-time, and camera-apply sequences; a 1-20 cm
+camera baseline; and pixel-distinct eye images. Its raw pre-canvas corroboration
+uses a 64x64 RGB grid and requires an absolute difference of at least 1024, at
+least 16 changed pixels, and coverage across at least 4 screen tiles. The x64
+host accepts temporal pairs only with `--allow-temporal-stereo`, then submits the
+exact OpenXR pose/FOV captured with each eye so the OpenXR runtime can reproject
+it. Modes 55 and 56 do not receive this opt-in.
+
+The final run produced:
+
+- first accepted receipt pair: build epochs `9/10`, pose sequences `5495/5496`,
+  `6.40 cm` camera separation, `rawRgbAbsDiff=12073`, 2395 changed pixels
+  across all 64 tiles, and stable Build/Exec/D3D lane IDs;
+- acceptance pair 4: build epochs `21/22`, pose sequences `5502/5503`,
+  `rawRgbAbsDiff=1985`, 34 changed pixels across 22 tiles;
+- periodic pair 600: `rawRgbAbsDiff=1100`, 70 changed pixels across 27 tiles,
+  `camDist=6.40cm`;
+- matching first/latest producer and host world-transaction endpoints
+  `1893 -> 2580`, with the pre-pause continuous-frame gate proven over
+  `1893 -> 2040`;
+- a full-world gate where UI reasons remained `0` for `6549 ms` while it
+  observed three fresh monotonic producer frames, three matching host frames,
+  and three shared transaction IDs;
+- a `1280x720` stationary local-space UI quad at
+  `(0.000, 1.700, -1.800)`, including a proved world -> pause UI -> world
+  round trip;
+- an sRGB decode SRV and OpenXR swapchain format `29`, fixing the washed-out
+  double-gamma path;
+- exact live GTA consumption of Start, A, forward left stick `(0,26214)`, and
+  the post-stick neutral packet, plus the eight-second scripted pose sweep.
+
+The complete Touch-to-XInput mapping also passes its offline suite:
+`sticks=1 triggers=1 face=1 shoulders=1 thumbs=1 dpad=1 menu=1 recenter=1
+haptics=1`. The live run intentionally exercised the minimum deterministic subset
+needed to prove menu, gameplay movement, release, and pause/resume behavior.
+
+Mode **56** is no longer the current stereo candidate. Its guarded `DrawScene x2`
+calls did apply a `6.40 cm` left/right camera offset, but ten raw backbuffer audits
+were byte-identical. That seam does not own a complete second GTA render. Keep Mode
+56 as a fail-closed diagnostic; do not call it same-frame stereo and do not spend
+more headset trials tuning it.
+
+The proof uses a pinned Elliott simulator source commit
+`48a70f440ac7d9bda385994937e3da8e15a4d9bb` plus the repository's reviewed
+headless/file-IPC patch. It never registers a system runtime and the live launcher
+sets `XR_RUNTIME_JSON` only for its x64 child. No simulator window is opened or
+controlled. A path-scoped Rockstar preflight and one normal-Steam handoff retry
+handle the observed launcher state where authentication succeeds but
+`GTAIV.exe` is never started.
+
+Live-proof artifact hashes:
+
+- x86 ASI SHA-256:
+  `A4CE9B4CDA194FB238333D72F79B67C213D4B1974414BF36E61C2DF37896A76E`;
+- x64 host SHA-256:
+  `1DB1EB185E7785B3CA9A70F7646C9AE75E155D08CEF453A9382741EE80D2D628`;
+- patched Elliott runtime DLL SHA-256:
+  `BA79B6EC8D7E68117AED40041673D4CDE6CDC060D97799C394940AB08BA80621`.
+
+The proof binaries passed the x86 isolation, stereo/WVP, complete controller,
+PE32/PE32+ architecture, host self-test, Elliott automation, launcher-safety,
+runtime-classifier, and PowerShell parser gates before launch.
+
+The earlier `20260727-214303` run is retained only as transport/UI/color/input
+evidence. Its old temporal eye association could be satisfied by motion between
+frames and is **not** an accepted stereo proof. The interrupted `230635` run
+exposed the asynchronous `BuildRoot -> ExecRoot -> BeginScene -> EndScene`
+ordering. The `233618` run exposed pre-replay BuildRoot queue overflow, and
+`234638` proved the corrected FIFO/camera chain while exposing a too-sparse
+16x16 pixel audit. The final run closes both issues with an explicit first-Exec
+alignment token and the distributed 64x64 raw audit. None of these runs started
+SteamVR. All completed supervised runs report exact restoration. The externally
+interrupted `230635` archive has no final restore record; its state was recovered
+manually before the later completed runs.
+
+The next Mode 57 diagnostic gate is a real Quest 3 visual acceptance run. The
+headless proof establishes real, distinct eye content and complete game/input
+flow, but it cannot judge binocular comfort, perceived scale, Link latency, or
+headset smoothness. The same-tick product stereo and shipping transport/performance
+gates in `docs/FULL_VR_PLAN.md` also remain open. Do not describe Mode 57 as a
+finished comfort-grade VR release until those product gates pass. See
+`docs/ELLIOTT_OPENXR_SIMULATOR_PROOF.md` for the repeatable headless command.
+
+## Superseded Mode 56 candidate record (historical)
+
+The section below preserves the state before the Mode 57 proof. It is not the
+current launch instruction or acceptance result.
+
+Upstream was fetched again on 2026-07-28: `origin/master` is still `01f355b` and is
 already contained by this branch. The full clean OpenVR release at
 `origin/backup/clean-session-20260727` (`416427e`), followed by the development-setup
 commit at `origin/cursor/setup-dev-requirements-d131` (`5308417`), is now integrated.
 Its Modes 120–136 and supporting camera, late-latch, performance, and setup code remain
 available as the explicit OpenVR/Reverb G2 fallback.
+
+Every fetched origin ref was checked. The only origin ref not ancestral to this
+branch is `origin/backup/main-session-20260727` (`f31c10e`), the alternate Mode 88
+main-worktree A/B backup captured one second before the clean Mode 136 snapshot.
+It is retained remotely for comparison and is not the newer clean release or a
+merge target for this OpenXR branch.
 
 The prior GPU bridge is not a usable gameplay route: its host release fence blocked
 the GTA/DXVK queue after a few world transactions, leaving the headset on stale
@@ -64,6 +169,14 @@ global `safe.directory` settings. OpenVR is pinned and verified at `v2.12.14`;
 the host build also normalizes duplicate `PATH`/`Path` entries before invoking
 MSBuild. Both fixes were required to reproduce the clean upstream build on this
 workspace.
+
+Meta XR Simulator **205.0** is now recognized as a separate direct-OpenXR route.
+When its active manifest is `meta_openxr_simulator.json`, the scripts do not
+require Quest Link, `OVRService`, or a headset; SteamVR remains blocked. The
+runtime classifier, PowerShell parser checks, existing Quest-Link preflight, and
+x64 host self-test pass. The final automated in-game proof used the pinned
+headless Elliott runtime instead of controlling the Meta simulator UI. See
+`docs/META_XR_SIMULATOR_TEST.md`.
 
 The guarded launcher remains SteamVR-blocked and restores the installed game state.
 It defaults to Mode 55; the explicit Mode 56 test command is:

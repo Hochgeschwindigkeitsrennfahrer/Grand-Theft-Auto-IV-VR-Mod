@@ -43,6 +43,8 @@ separate x64 host; OpenVR remains the fallback.
 | `docs/VR_STRATEGY.md` | Interop instead of IronWolf |
 | `docs/FULL_VR_PLAN.md` | Quest 3 OpenXR-primary implementation plan |
 | `docs/OPENXR_QUEST3_TEST.md` | Exact Quest 3 calibration-host test |
+| `docs/ELLIOTT_OPENXR_SIMULATOR_PROOF.md` | Headless full-game OpenXR proof |
+| `docs/META_XR_SIMULATOR_TEST.md` | No-headset Meta XR Simulator stereo/input test |
 | `docs/DXVK_FLAT_TROUBLESHOOT.md` | Flat-DXVK lessons |
 | `docs/ARCHITECTURE.md` | Modules |
 | `docs/CONSTRAINTS.md` | Hard rules |

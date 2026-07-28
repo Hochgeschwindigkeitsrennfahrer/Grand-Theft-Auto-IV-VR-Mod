@@ -47,7 +47,9 @@ foreach ($requiredMonoSource in @(
   "StereoMono: center-eye capture pair",
   "RunOpenXrDrawSceneStereoGuarded(",
   "StereoMode::OpenXrDrawSceneStereo",
-  "StereoOpenXR: DrawScene L/R pair"
+  "StereoOpenXR: DrawScene L/R pair",
+  "StereoMode::OpenXrTemporalStereo",
+  "StereoOpenXRTemporal: pair #%u"
 )) {
   if (-not $stereoRenderSource.Contains($requiredMonoSource)) {
     throw "OpenXR direct-render source check failed: missing '$requiredMonoSource'"
@@ -55,14 +57,125 @@ foreach ($requiredMonoSource in @(
 }
 foreach ($requiredBridgeSource in @(
   "pair.verifiedDrawSceneStereo",
+  "pair.verifiedTemporalStereo",
   "StereoMode::OpenXrDrawSceneStereo",
-  "CpuFrameEyeCount"
+  "StereoMode::OpenXrTemporalStereo",
+  "CpuFrameEyeCount",
+  "sampleLockedBgraHash(",
+  "rejected exact-mono L/R world readback",
+  "pixelDistinct=%d"
 )) {
   if (-not $openXrSource.Contains($requiredBridgeSource)) {
     throw "OpenXR stereo-mailbox source check failed: missing '$requiredBridgeSource'"
   }
 }
-Write-Host "OpenXR frame isolation source check: PASS (Mode55 mono + Mode56 distinct L/R mailbox)"
+foreach ($requiredStereoProofSource in @(
+  "cameraBaselineValid",
+  "GetStereoCamApplyGeneration()",
+  "RawStereoMinRgbAbsDiff",
+  "rawRgbAbsDiff=%lld proof=draw-scene",
+  "g_dualDoneThisFrame = true;"
+)) {
+  if (-not $stereoRenderSource.Contains($requiredStereoProofSource)) {
+    throw "OpenXR stereo proof source check failed: missing '$requiredStereoProofSource'"
+  }
+}
+foreach ($requiredTemporalProofSource in @(
+  "TemporalStereoMinRgbAbsDiff",
+  "TemporalStereoMinChangedPixels",
+  "TemporalStereoMinChangedTiles",
+  "changedPixels=%u changedTiles=%u",
+  "BeginPinnedOpenXrBuildPose(",
+  "BeginStereoCamBuildReceipt(",
+  "InstallRootProbeHooks(2)",
+  "StereoMode57BeginScene(",
+  "g_openXrTemporalBuildTickets",
+  "g_openXrTemporalSceneTickets",
+  "g_openXrTemporalStructuralFailure",
+  "g_openXrTemporalExecPrimed",
+  "g_openXrTemporalBuildTickets.resetQuiescent()",
+  "g_openXrTemporalSceneTickets.resetQuiescent()",
+  "BuildRootA waiting for first ExecRoot",
+  "first ExecRoot publishing invalid alignment token",
+  "ExecRoot -> later successful BeginScene underflow",
+  "rightTicket.buildEpoch == leftTicket.buildEpoch + 1u",
+  "rightStamp.poseSequence > leftStamp.poseSequence",
+  "rightStamp.renderedDisplayTime >",
+  "cameraReceipt.eyeOffsetApplied",
+  "offsetMagnitude(rightTicket.cameraEyeOffset)",
+  "rightTicket.cameraEyeOffsetLocal[0]",
+  "appliedOffsetsMatchSelected",
+  "leftTicket.cameraEyeOffsetApplied",
+  "PromoteOpenXrTemporalReceiptPair(",
+  "output->verifiedTemporalStereo = g_openXrPairVerifiedTemporal",
+  "proof=buildroot-execroot-fifo-beginscene-endscene-entry"
+)) {
+  if (-not $stereoRenderSource.Contains($requiredTemporalProofSource)) {
+    throw "OpenXR temporal-stereo proof source check failed: missing '$requiredTemporalProofSource'"
+  }
+}
+foreach ($forbiddenTemporalProofSource in @(
+  "ticket.execThreadId == d3dThreadId",
+  "ticket.buildThreadId != ticket.execThreadId",
+  "leftTicket.execThreadId == g_holdOpenXrD3dThreadId[0]"
+)) {
+  if ($stereoRenderSource.Contains($forbiddenTemporalProofSource)) {
+    throw "OpenXR temporal-stereo proof assumes a false cross-lane thread relationship: '$forbiddenTemporalProofSource'"
+  }
+}
+$temporalExecStart = $stereoRenderSource.IndexOf(
+  "void RunOpenXrTemporalExecRoot(")
+$temporalExecEnd = $stereoRenderSource.IndexOf(
+  "void __fastcall HookRoot0(",
+  $temporalExecStart + 1)
+if ($temporalExecStart -lt 0 -or
+    $temporalExecEnd -le $temporalExecStart) {
+  throw "OpenXR temporal-stereo ExecRoot function boundary was not found"
+}
+$temporalExecSource = $stereoRenderSource.Substring(
+  $temporalExecStart,
+  $temporalExecEnd - $temporalExecStart)
+if ([regex]::Matches(
+      $temporalExecSource,
+      'g_origRoot\[0\]\(self, edx\);').Count -ne 1 -or
+    -not $temporalExecSource.Contains(
+      "g_openXrTemporalSceneTickets.push(")) {
+  throw "OpenXR temporal-stereo owned ExecRoot lane is not one native dispatch after one scene-token publish path"
+}
+if ($stereoRenderSource -notmatch
+    '(?s)mode == StereoMode::OpenXrDrawSceneStereo.*?' +
+    'g_dualDoneThisFrame.*?' +
+    'RunOpenXrDrawSceneStereoGuarded\(self, edx\).*?' +
+    'g_dualDoneThisFrame = true;') {
+  throw "OpenXR stereo proof source check failed: Mode56 is not guarded once per EndScene"
+}
+Write-Host "OpenXR frame isolation source check: PASS (Mode55 mono + Mode56 diagnostic + Mode57 ordered temporal L/R mailbox)"
+
+$hooksSource = Get-Content -LiteralPath "$Root\src\asi\hooks.cpp" -Raw
+foreach ($requiredResetSource in @(
+  "HookReset(",
+  "vt[16]",
+  "StereoNotifyDeviceLost();"
+)) {
+  if (-not $hooksSource.Contains($requiredResetSource)) {
+    throw "D3D9 reset-safety source check failed: missing '$requiredResetSource'"
+  }
+}
+if (([regex]::Matches(
+      $hooksSource,
+      [regex]::Escape("StereoNotifyDeviceLost();"))).Count -lt 2) {
+  throw "D3D9 reset-safety source check failed: eye resources must clear before and after Reset"
+}
+foreach ($requiredResetRenderSource in @(
+  "TestCooperativeLevel()",
+  "D3DERR_DEVICELOST",
+  "D3DERR_DEVICENOTRESET"
+)) {
+  if (-not $stereoRenderSource.Contains($requiredResetRenderSource)) {
+    throw "D3D9 reset-safety source check failed: missing '$requiredResetRenderSource'"
+  }
+}
+Write-Host "D3D9 reset-safety source check: PASS (slot 16 + before/after release + cooperative gate)"
 
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found" }

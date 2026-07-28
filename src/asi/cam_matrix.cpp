@@ -59,6 +59,23 @@ Matrix44* g_liveCamMat = nullptr;
 
 bool g_haveLastApplied = false;
 Vec4 g_lastAppliedPos{};
+SRWLOCK g_lastAppliedLock = SRWLOCK_INIT;
+
+struct CamBuildReceiptScope {
+  uint32_t applyGeneration = 0u;
+  uint32_t applyCount = 0u;
+  DWORD writerThreadId = 0u;
+  bool expectedRightEye = false;
+  bool lastRightEye = false;
+  bool eyeMismatch = false;
+  bool eyeOffsetApplied = false;
+  bool eyeOffsetMismatch = false;
+  Vec4 lastPosition{};
+  Vec4 appliedEyeOffset{};
+  Vec4 selectedLocalEyeOffset{};
+  bool active = false;
+};
+thread_local CamBuildReceiptScope g_camBuildReceiptScope{};
 
 constexpr int kMaxTrackedMats = 8;
 Matrix44* g_trackedMats[kMaxTrackedMats]{};
@@ -205,6 +222,13 @@ bool SaneWorldPos(const Vec4& p) {
 void ApplyHmdToCam(Matrix44* mat) {
   if (!g_gameplayActive.load())
     return;
+  const StereoMode sm = GetStereoMode();
+  // Mode 57 camera writes are valid only inside the pinned BuildRootA
+  // receipt scope. A later camera callback cannot mutate the queued eye.
+  if (sm == StereoMode::OpenXrTemporalStereo &&
+      !g_camBuildReceiptScope.active) {
+    return;
+  }
 
   vr::HmdMatrix34_t h{};
   if (!GetHmdPoseMatrix(&h))
@@ -236,7 +260,6 @@ void ApplyHmdToCam(Matrix44* mat) {
   OvrToGta(-h.m[0][2], -h.m[1][2], -h.m[2][2], &fx, &fy, &fz);
   Normalize(&fx, &fy, &fz);
 
-  const StereoMode sm = GetStereoMode();
   // Modes 47/48 only: leveled pitch flip (Mode 49+ OFF — headset said flip=1 reversed).
   const bool leveledPitchFlip =
       sm == StereoMode::HeadOwnedCamLeveledPitchFlip ||
@@ -390,6 +413,8 @@ void ApplyHmdToCam(Matrix44* mat) {
   //   origin + forward*(-eyeZ*scale) + right*(±IPD*ipdScale*scale/2)
   // Cover FOV + TextureBounds (Submit) handle fusion; IPD alone is not enough.
   float ipdX = 0.f, ipdY = 0.f, ipdZ = 0.f;
+  bool directOpenXrEyeOffsetApplied = false;
+  EyeOffset directOpenXrLocalEyeOffset{};
   const bool rightEye = (GetStereoEye() == StereoEye::Right);
   if (sm >= StereoMode::DualIpd &&
       sm != StereoMode::OpenXrImmersiveMono) {
@@ -416,7 +441,9 @@ void ApplyHmdToCam(Matrix44* mat) {
     // WorldScale (F7) = 6DoF only. StereoScale (F6, default 1.15, cap 1.30) =
     // soft disparity for size-without-fusion-break. Raw WorldScale×IPD at 1.5
     // made ~9 cm sep → fusion gone + violent jump (headset 2026-07-24).
-    if (sm == StereoMode::OpenXrDrawSceneStereo && haveEyeOffset) {
+    if ((sm == StereoMode::OpenXrDrawSceneStereo ||
+         sm == StereoMode::OpenXrTemporalStereo) &&
+        haveEyeOffset) {
       // The x64 OpenXR host supplies exact LOCAL-space eye poses. Transform
       // the complete eye-to-head vector through the cached HMD basis rather
       // than inventing an IPD from the legacy user configuration.
@@ -443,9 +470,19 @@ void ApplyHmdToCam(Matrix44* mat) {
       eye.x += ipdX;
       eye.y += ipdY;
       eye.z += ipdZ;
+      directOpenXrEyeOffsetApplied =
+          (sm == StereoMode::OpenXrDrawSceneStereo ||
+           sm == StereoMode::OpenXrTemporalStereo) &&
+          haveEyeOffset;
+      if (directOpenXrEyeOffsetApplied)
+        directOpenXrLocalEyeOffset = eyeOffset;
     } else {
       ipdX = ipdY = ipdZ = 0.f;
     }
+  }
+  if (sm == StereoMode::OpenXrTemporalStereo &&
+      !directOpenXrEyeOffsetApplied) {
+    return;
   }
 
   if (!std::isfinite(eye.x) || !std::isfinite(eye.y) || !std::isfinite(eye.z))
@@ -456,10 +493,57 @@ void ApplyHmdToCam(Matrix44* mat) {
   mat->at = {ux, uy, uz, 0.f};
   mat->pos = eye;
 
+  const uint32_t n =
+      g_applyCount.fetch_add(1u, std::memory_order_acq_rel) + 1u;
+  AcquireSRWLockExclusive(&g_lastAppliedLock);
   g_lastAppliedPos = eye;
   g_haveLastApplied = true;
-
-  const uint32_t n = ++g_applyCount;
+  ReleaseSRWLockExclusive(&g_lastAppliedLock);
+  if (g_camBuildReceiptScope.active) {
+    const DWORD writerThreadId = GetCurrentThreadId();
+    if (writerThreadId !=
+            g_camBuildReceiptScope.writerThreadId ||
+        rightEye !=
+            g_camBuildReceiptScope.expectedRightEye) {
+      g_camBuildReceiptScope.eyeMismatch = true;
+    }
+    g_camBuildReceiptScope.applyGeneration = n;
+    ++g_camBuildReceiptScope.applyCount;
+    g_camBuildReceiptScope.lastRightEye = rightEye;
+    g_camBuildReceiptScope.lastPosition = eye;
+    if (!directOpenXrEyeOffsetApplied) {
+      g_camBuildReceiptScope.eyeOffsetMismatch = true;
+    } else if (!g_camBuildReceiptScope.eyeOffsetApplied) {
+      g_camBuildReceiptScope.eyeOffsetApplied = true;
+      g_camBuildReceiptScope.appliedEyeOffset =
+          {ipdX, ipdY, ipdZ, 0.f};
+      g_camBuildReceiptScope.selectedLocalEyeOffset = {
+          directOpenXrLocalEyeOffset.x,
+          directOpenXrLocalEyeOffset.y,
+          directOpenXrLocalEyeOffset.z,
+          0.f};
+    } else if (
+        std::fabs(
+            g_camBuildReceiptScope.appliedEyeOffset.x -
+            ipdX) > 1e-4f ||
+        std::fabs(
+            g_camBuildReceiptScope.appliedEyeOffset.y -
+            ipdY) > 1e-4f ||
+        std::fabs(
+            g_camBuildReceiptScope.appliedEyeOffset.z -
+            ipdZ) > 1e-4f ||
+        std::fabs(
+            g_camBuildReceiptScope.selectedLocalEyeOffset.x -
+            directOpenXrLocalEyeOffset.x) > 1e-4f ||
+        std::fabs(
+            g_camBuildReceiptScope.selectedLocalEyeOffset.y -
+            directOpenXrLocalEyeOffset.y) > 1e-4f ||
+        std::fabs(
+            g_camBuildReceiptScope.selectedLocalEyeOffset.z -
+            directOpenXrLocalEyeOffset.z) > 1e-4f) {
+      g_camBuildReceiptScope.eyeOffsetMismatch = true;
+    }
+  }
   if (n <= 5 || (n % 300) == 0) {
     Log("CamMatrix: FP lock #%u %s pos=(%.3f,%.3f,%.3f) ipd=(%.4f,%.4f,%.4f) sep=%.0fcm "
         "eyeFwd=%.0fcm fullHmdBasis=%d leveledPitchFlip=%d pitchStable=%d pedCoupled=%d",
@@ -717,6 +801,10 @@ void RefreshLiveCamForStereoEye() {
     ApplyHmdToCam(g_liveCamMat);
 }
 
+uint32_t GetStereoCamApplyGeneration() {
+  return g_applyCount.load(std::memory_order_acquire);
+}
+
 // Mode 22: world-space delta from LEFT eye to RIGHT eye = hmdRight * sep * scale
 // (the -eyeZ forward term in ApplyHmdToCam is identical for both eyes).
 bool GetStereoEyeRightDeltaWorld(float* dx, float* dy, float* dz) {
@@ -739,11 +827,63 @@ bool GetStereoEyeRightDeltaWorld(float* dx, float* dy, float* dz) {
 }
 
 bool GetLastStereoCamPos(float* x, float* y, float* z) {
-  if (!x || !y || !z || !g_haveLastApplied)
+  if (!x || !y || !z)
     return false;
+  AcquireSRWLockShared(&g_lastAppliedLock);
+  if (!g_haveLastApplied) {
+    ReleaseSRWLockShared(&g_lastAppliedLock);
+    return false;
+  }
   *x = g_lastAppliedPos.x;
   *y = g_lastAppliedPos.y;
   *z = g_lastAppliedPos.z;
+  ReleaseSRWLockShared(&g_lastAppliedLock);
+  return true;
+}
+
+void BeginStereoCamBuildReceipt(bool rightEye) {
+  g_camBuildReceiptScope = {};
+  g_camBuildReceiptScope.writerThreadId =
+      GetCurrentThreadId();
+  g_camBuildReceiptScope.expectedRightEye = rightEye;
+  g_camBuildReceiptScope.active = true;
+}
+
+bool EndStereoCamBuildReceipt(
+    StereoCamBuildReceipt* receipt) {
+  if (!receipt)
+    return false;
+  *receipt = {};
+  const CamBuildReceiptScope scope =
+      g_camBuildReceiptScope;
+  g_camBuildReceiptScope = {};
+  if (!scope.active ||
+      scope.applyCount == 0u ||
+      scope.applyGeneration == 0u ||
+      scope.writerThreadId != GetCurrentThreadId() ||
+      scope.eyeMismatch ||
+      !scope.eyeOffsetApplied ||
+      scope.eyeOffsetMismatch ||
+      scope.lastRightEye != scope.expectedRightEye) {
+    return false;
+  }
+  receipt->applyGeneration = scope.applyGeneration;
+  receipt->applyCount = scope.applyCount;
+  receipt->writerThreadId = scope.writerThreadId;
+  receipt->rightEye = scope.lastRightEye;
+  receipt->eyeOffsetApplied = scope.eyeOffsetApplied;
+  receipt->position[0] = scope.lastPosition.x;
+  receipt->position[1] = scope.lastPosition.y;
+  receipt->position[2] = scope.lastPosition.z;
+  receipt->eyeOffset[0] = scope.appliedEyeOffset.x;
+  receipt->eyeOffset[1] = scope.appliedEyeOffset.y;
+  receipt->eyeOffset[2] = scope.appliedEyeOffset.z;
+  receipt->localEyeOffset[0] =
+      scope.selectedLocalEyeOffset.x;
+  receipt->localEyeOffset[1] =
+      scope.selectedLocalEyeOffset.y;
+  receipt->localEyeOffset[2] =
+      scope.selectedLocalEyeOffset.z;
   return true;
 }
 
@@ -870,6 +1010,7 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         sm == StereoMode::HeadOwnedCamStereoSoftGuard ||
         sm == StereoMode::OpenXrImmersiveMono ||
         sm == StereoMode::OpenXrDrawSceneStereo ||
+        sm == StereoMode::OpenXrTemporalStereo ||
         IsCleanDualLookMove(sm))
       PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
 

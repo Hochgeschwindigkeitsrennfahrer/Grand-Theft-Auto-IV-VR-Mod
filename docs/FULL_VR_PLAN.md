@@ -5,16 +5,15 @@
 **Repository baseline:** upstream `01f355b` (Modes 50–53), merged on the
 `codex/openxr-sidecar-integration` branch
 
-**Status:** implementation plan, not a claim that the OpenXR product path is complete.
-The former GPU-only ABI-v5 bridge stalled GTA/DXVK during live gameplay while waiting
-for host release fences. ABI-v6 uses a FNVVR-style 1280x720 triple-slot CPU mailbox.
-Mode 55 is the mono reliability fallback; Mode 56 carries a same-tick guarded
-DrawScene x2 left/right pair into two host textures. Exact pose/FOV flow, Touch/XInput
-and haptics, mono/stereo mailbox ingest, stationary UI quad, original UI aspect, and
-sRGB decode pass offline self-tests, including actual WARP readback. Neither Mode 55
-nor Mode 56 has a live acceptance result. The Mode 54 runtime audit failed
-architecturally: GTA's real draws execute later on a replay thread, outside its
-`Execute`-twice window.
+**Status:** The corrected Mode 57 build-to-replay receipt chain passed a complete
+headless Elliott full-game run on 2026-07-28. GTA loaded into the world, sustained
+fresh producer/host frames, completed a pause-menu round trip, consumed Start, A,
+forward-stick and neutral input, and completed a scripted head-pose sweep without
+SteamVR. Four receipt-proven L/R pairs passed immediately and the run continued
+through accepted pair 600. Mode 55 remains the mono reliability fallback. Mode
+56's nominal same-frame DrawScene x2 outputs were byte-identical and that seam is
+rejected as the current stereo route. Real Quest 3 visual/comfort acceptance and
+the same-tick product stereo result required by Gate 6 remain pending.
 
 **Primary headset:** Meta Quest 3
 
@@ -380,8 +379,10 @@ exists.
 Live status on 2026-07-26: the guarded 23:11 run proved adapter import, timeline
 synchronization, transaction publication/acquisition, and clean shutdown while
 SteamVR remained absent. ABI-v5 presentation semantics, sRGB private views, and
-stationary UI placement pass offline and still need the complete Mode 55 headset
-acceptance.
+stationary UI placement passed offline for this route. This superseded GPU-fence
+route remains historical. The active v6 CPU-mailbox route subsequently passed the
+Mode 57 headless full-game proof; physical Quest visual acceptance is still
+required for it.
 
 ### Route C - last resort: minimal DXVK 3.0.2 patch
 
@@ -549,6 +550,56 @@ Pass:
 - adapter, format, color space, fence, frame age, and copy timing are logged;
 - backend `openvr` still starts the old path unchanged.
 
+### Current Mode 57 headless gate - temporal build-to-replay proof
+
+Mode 57 is the bounded temporal-stereo diagnostic on the way to Gate 6. Its
+corrected provenance chain is:
+
+```text
+BuildRootA pins the OpenXR pose and records the applied eye-camera result
+  -> ExecRoot consumes and forwards that exact build ticket
+  -> a successful D3D BeginScene consumes that exact replay ticket
+  -> EndScene captures on the same D3D device and thread
+```
+
+An Elliott proof is accepted only after four complete L/R pairs pass that chain.
+Each accepted pair must use consecutive build epochs, increasing pose and camera
+generations, and distinct raw held-render-target pixels before canvas conversion
+(`rawRgbAbsDiff >= 1024` on a 64x64 RGB grid, at least 16 changed pixels
+distributed across at least 4 of its 8x8 spatial tiles). This raw check is a
+non-identity corroboration; stereo causality comes from the ordered FIFO,
+matching D3D boundary, and exact applied head-local L/R camera receipts. The
+exact positive marker is:
+
+```text
+proof=buildroot-execroot-fifo-beginscene-endscene-entry
+```
+
+The pinned simulator manifest is:
+
+```text
+D:\code\gta-iv\out-openxr\external\OpenXR-Simulator\bin\openxr_simulator.json
+```
+
+Use that directory exactly. This gate runs the x64 OpenXR host with backend
+`openxr`, disables the game-side OpenVR DLL, and aborts if SteamVR appears. It
+does not initialize or submit through OpenVR. The corrected chain passed the
+full-game run archived at:
+
+```text
+out-openxr/runs/20260728-000001-steam-safe/
+```
+
+That run reached `outcome=PROOF_COMPLETE`, accepted receipt pair 600 with a
+6.40 cm applied-camera baseline and spatially distributed raw pixel differences,
+kept UI reasons at zero for 6549 ms while observing three fresh matching
+producer/host world transactions, and completed menu, controller, pose-sweep,
+cleanup, and exact-restore gates. The pre-pause continuous-frame marker covers
+transactions `1893 -> 2040`; the result's matching first/latest world endpoints
+are `1893 -> 2580`. The superseded 2026-07-27 run cannot close this gate. The
+accepted result is still temporal stereo rather than the same-tick product result
+required by Gate 6.
+
 ### Gate 6 - complete same-frame stereo through OpenXR
 
 Publish the locked same-frame `StereoPair`:
@@ -642,6 +693,7 @@ Presentation modes:
 |---|---|
 | world gameplay, Mode 55 fallback | immersive mono projection layer |
 | world gameplay, Mode 56 candidate | DrawScene-proof verified stereo projection layer |
+| world gameplay, Mode 57 diagnostic | receipt-proven temporal L/R projection layer |
 | pause/map/phone/menu/loading | stationary local-space mono quad layer |
 | invalid/stale transition | last safe UI quad for a bounded time, then blank |
 
@@ -664,12 +716,14 @@ Offline implementation status (2026-07-26):
   `XrCompositionLayerQuad` in `XR_REFERENCE_SPACE_TYPE_LOCAL`; its pose is latched
   1.8 m in front of the current view when the UI opens and remains fixed while the
   head turns or translates;
-- world mode remains strict: same source frame, pose sequence, and rendered
-  `XrTime`, with exact retained pose/FOV or black.
+- same-tick world routes remain strict: same source frame, pose sequence, and
+  rendered `XrTime`, with exact retained pose/FOV or black; Mode 57 is the
+  explicit temporal exception and requires the complete BuildRootA -> ExecRoot
+  -> BeginScene -> same-thread/device EndScene receipt described above.
 
 The earlier head-locked quad reached the headset. Stationary placement and aspect
-restoration now pass pure offline tests but still need the complete Mode 55/56 headset
-acceptance.
+restoration now pass both offline tests and the Mode 57 headless full-game
+pause-menu round trip. Physical Quest visual/comfort acceptance remains required.
 
 OpenXR actions:
 

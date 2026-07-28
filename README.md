@@ -12,22 +12,26 @@ GTAIV.exe (32-bit, D3D9)
       └─ direct: x86 CPU mailbox → gtaiv_xr_host.exe (x64) → Meta OpenXR
 ```
 
-**Status (WIP):** the latest `origin/master` camera/stereo code through Modes
-**50–53** is integrated. Direct-OpenXR Mode **56** now ports the newest upstream
-guarded DrawScene x2 seam into a two-image CPU-mailbox transaction; Mode **55** remains
-the center-eye mono fallback. The x86 ASI never initializes SteamVR on this route; the
-separate x64 host owns OpenXR. Pause/map, loading, and phone use a local-space quad
-fixed where it opens. Quest Touch maps through GTA's XInput path with haptics, and the
-host uses an explicit sRGB decode path.
+**Status (WIP):** the latest clean upstream camera/stereo release through Modes
+**120–136** is integrated as the explicit OpenVR fallback. Direct-OpenXR Mode **57**
+now has a complete headless in-game proof: temporal, pixel-distinct L/R frames,
+captured per-eye poses, sustained fully loaded gameplay, stationary menu/pause quad,
+sRGB color, Start/A, locomotion/neutral, and pose sweep. The x86 ASI never
+initializes SteamVR on this route; the separate x64 host owns OpenXR.
 
-Mode 56's distinct L/R transport, Mode 55 fallback, stationary UI, and color handling
-pass offline tests but are **not deployed or headset-tested**. The game remains `backend=off`, and
-`scripts/run-openxr-gta.ps1` is preflight-only: it cannot start GTA, the host, Steam,
-or SteamVR. See `docs/CURRENT-STATE.md`.
+Mode 57 is deliberately temporal stereo, not same-tick stereo. Mode **56** was
+rejected as the current candidate because its nominal DrawScene x2 outputs remained
+byte-identical. Mode **55** remains the center-eye mono fallback. Real Quest 3
+visual/comfort acceptance is still pending, and the installed game remains
+`backend=off`, `stereo=0` after every supervised run. See
+[`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) and
+[`docs/ELLIOTT_OPENXR_SIMULATOR_PROOF.md`](docs/ELLIOTT_OPENXR_SIMULATOR_PROOF.md).
 
 The separate x64 OpenXR calibration host now builds and reaches the installed Meta
 Quest 3 runtime. Build it with `.\scripts\build-openxr-host.ps1`, then follow
 [`docs/OPENXR_QUEST3_TEST.md`](docs/OPENXR_QUEST3_TEST.md) for the headset gate.
+Meta XR Simulator 205.0 is also supported as a no-headset OpenXR route; follow
+[`docs/META_XR_SIMULATOR_TEST.md`](docs/META_XR_SIMULATOR_TEST.md).
 For the direct host-to-GTA HMD and Quest Touch controller log gate, use
 [`docs/OPENXR_POSE_TOUCH_TEST.md`](docs/OPENXR_POSE_TOUCH_TEST.md).
 
@@ -84,6 +88,8 @@ Details: [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md), [`docs/STEREO_EYE_OFF
 | [docs/VR_STRATEGY.md](docs/VR_STRATEGY.md) | Strategy |
 | [docs/FULL_VR_PLAN.md](docs/FULL_VR_PLAN.md) | Quest 3 OpenXR-primary plan and acceptance gates |
 | [docs/OPENXR_QUEST3_TEST.md](docs/OPENXR_QUEST3_TEST.md) | Concrete Quest 3 calibration-host test |
+| [docs/ELLIOTT_OPENXR_SIMULATOR_PROOF.md](docs/ELLIOTT_OPENXR_SIMULATOR_PROOF.md) | Headless full-game stereo/input proof |
+| [docs/META_XR_SIMULATOR_TEST.md](docs/META_XR_SIMULATOR_TEST.md) | No-headset stereo/input test through Meta XR Simulator |
 | [docs/VR_MOD_PLAYBOOK.md](docs/VR_MOD_PLAYBOOK.md) | BotW / L4D2VR orientation |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Technical architecture |
 | [docs/BUILD.md](docs/BUILD.md) | Build notes |
@@ -106,6 +112,8 @@ Details: [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md), [`docs/STEREO_EYE_OFF
 | `scripts/build-openxr-host.ps1` | Fetch pinned Khronos SDK, build and verify the x64 host |
 | `scripts/run-openxr-gta.ps1` | Safe direct-OpenXR preflight only; launches nothing |
 | `scripts/run-openxr-calibration.ps1` | Run the generated Quest/OpenXR eye test |
+| `scripts/openxr-runtime-info.ps1` | Classify Quest Link, Meta XR Simulator, SteamVR, or other runtime |
+| `scripts/setup-elliott-openxr-simulator.ps1` | Build the pinned headless/file-IPC Elliott simulator package |
 | `scripts/fetch-minhook.ps1` | Clone MinHook into `thirdparty/minhook` |
 | `scripts/restart-gtaiv.ps1` | Quick restart via Steam |
 | `scripts/deploy.ps1` | Deploy a `d3d9.dll` (+ backup) |

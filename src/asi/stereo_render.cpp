@@ -86,6 +86,8 @@ std::atomic<uint32_t> g_temporalFrames{0};
 std::atomic<uint32_t> g_sameFrameCount{0};
 std::atomic<bool> g_openXrDrawSceneStereoDead{false};
 std::atomic<uint32_t> g_openXrDrawSceneStereoCount{0};
+std::atomic<bool> g_openXrRawStereoProved{false};
+std::atomic<uint32_t> g_openXrRawAuditAttempts{0};
 
 // Mode 30 phase machine (no prologue hooks — reuses Mode 23 exec path).
 enum class Mode30Phase : int { SoftStart = 0, Dual = 1, PairHold = 2 };
@@ -126,10 +128,111 @@ std::atomic<uint64_t> g_openXrPairId{0};
 bool g_openXrPairSameTick = false;
 bool g_openXrPairVerifiedWvp = false;
 bool g_openXrPairVerifiedDrawScene = false;
+bool g_openXrPairVerifiedTemporal = false;
 bool g_openXrPairUiQuad = false;
 bool g_openXrPairImmersiveMono = false;
 uint32_t g_openXrPairContentWidth = 0u;
 uint32_t g_openXrPairContentHeight = 0u;
+std::atomic<bool> g_openXrTemporalStereoProved{false};
+std::atomic<uint32_t> g_openXrTemporalStereoCount{0u};
+uint64_t g_holdOpenXrBuildEpoch[2] = {};
+
+struct OpenXrTemporalBuildTicket {
+  uint64_t generation = 0u;
+  uint64_t buildEpoch = 0u;
+  StereoEye eye = StereoEye::Left;
+  uint32_t cameraGeneration = 0u;
+  float cameraPos[3] = {};
+  bool cameraEyeOffsetApplied = false;
+  float cameraEyeOffset[3] = {};
+  float cameraEyeOffsetLocal[3] = {};
+  gtaiv_xr_bridge::PoseBridge pose{};
+  DWORD buildThreadId = 0u;
+  DWORD execThreadId = 0u;
+  bool valid = false;
+};
+
+OpenXrTemporalBuildTicket g_holdOpenXrTicket[2]{};
+DWORD g_holdOpenXrD3dThreadId[2]{};
+
+constexpr uint64_t OpenXrTemporalTicketCapacity = 64u;
+struct OpenXrTemporalTicketRing {
+  OpenXrTemporalBuildTicket slots[OpenXrTemporalTicketCapacity]{};
+  std::atomic<uint64_t> writeIndex{0u};
+  std::atomic<uint64_t> readIndex{0u};
+
+  bool push(const OpenXrTemporalBuildTicket& ticket,
+            uint64_t* publishedOrdinal = nullptr) {
+    const uint64_t write =
+        writeIndex.load(std::memory_order_relaxed);
+    const uint64_t read =
+        readIndex.load(std::memory_order_acquire);
+    if (write - read >= OpenXrTemporalTicketCapacity)
+      return false;
+    slots[write % OpenXrTemporalTicketCapacity] = ticket;
+    writeIndex.store(write + 1u, std::memory_order_release);
+    if (publishedOrdinal)
+      *publishedOrdinal = write + 1u;
+    return true;
+  }
+
+  bool pop(OpenXrTemporalBuildTicket* ticket,
+           uint64_t* consumedOrdinal = nullptr) {
+    if (!ticket)
+      return false;
+    const uint64_t read =
+        readIndex.load(std::memory_order_relaxed);
+    const uint64_t write =
+        writeIndex.load(std::memory_order_acquire);
+    if (read == write)
+      return false;
+    *ticket = slots[read % OpenXrTemporalTicketCapacity];
+    readIndex.store(read + 1u, std::memory_order_release);
+    if (consumedOrdinal)
+      *consumedOrdinal = read + 1u;
+    return true;
+  }
+
+  void resetQuiescent() {
+    readIndex.store(0u, std::memory_order_relaxed);
+    writeIndex.store(0u, std::memory_order_relaxed);
+  }
+
+};
+
+struct OpenXrTemporalActiveScene {
+  OpenXrTemporalBuildTicket ticket{};
+  IDirect3DDevice9* device = nullptr;
+  DWORD d3dThreadId = 0u;
+  uint64_t sceneOrdinal = 0u;
+  bool ticketAttached = false;
+  bool active = false;
+};
+
+OpenXrTemporalTicketRing g_openXrTemporalBuildTickets{};
+OpenXrTemporalTicketRing g_openXrTemporalSceneTickets{};
+std::atomic<uint64_t> g_openXrTemporalGeneration{1u};
+std::atomic<uint64_t> g_openXrTemporalBuildEpoch{0u};
+std::atomic<DWORD> g_openXrTemporalBuildThreadId{0u};
+std::atomic<DWORD> g_openXrTemporalExecThreadId{0u};
+std::atomic<DWORD> g_openXrTemporalD3dThreadId{0u};
+std::atomic<bool> g_openXrTemporalExecPrimed{false};
+std::atomic<bool> g_openXrTemporalResetRequested{true};
+std::atomic<bool> g_openXrTemporalStructuralFailure{false};
+std::atomic<uint32_t> g_openXrTemporalQueueFailures{0u};
+std::atomic<uint32_t> g_openXrTemporalWarmupMisses{0u};
+thread_local OpenXrTemporalActiveScene
+    g_openXrTemporalActiveScene{};
+thread_local const gtaiv_xr_bridge::PoseBridge*
+    g_openXrCanvasPoseOverride = nullptr;
+thread_local bool g_openXrTemporalInBuildRoot = false;
+thread_local bool g_openXrTemporalInExecRoot = false;
+int g_openXrTemporalNextEye = 0;
+int g_openXrTemporalLastUiState = -1;
+uint64_t g_openXrTemporalLastGeneration = 0u;
+uint32_t g_openXrTemporalCleanReceipts = 0u;
+uint64_t g_openXrTemporalLastReceiptBuildEpoch = 0u;
+int g_openXrTemporalLastReceiptEye = -1;
 gtaiv_xr_bridge::PoseBridge g_openXrRenderPose{};
 bool g_openXrRenderPoseValid = false;
 
@@ -139,6 +242,118 @@ enum class OpenXrCaptureRoute : uint32_t {
   WorldMono = 2u,
   WorldStereo = 3u,
 };
+
+bool IsValidOpenXrTemporalBuildPose(
+    const gtaiv_xr_bridge::PoseBridge& pose) {
+  constexpr uint32_t requiredFlags =
+      gtaiv_xr_bridge::PoseBridgeHostRunning |
+      gtaiv_xr_bridge::PoseBridgeSessionRunning |
+      gtaiv_xr_bridge::PoseBridgeViewsValid |
+      gtaiv_xr_bridge::PoseBridgeHmdValid;
+  return
+      (pose.flags & requiredFlags) == requiredFlags &&
+      pose.frameId != 0u &&
+      pose.predictedDisplayTime != 0;
+}
+
+bool BindOpenXrTemporalThread(
+    std::atomic<DWORD>* owner,
+    DWORD currentThreadId) {
+  if (!owner || currentThreadId == 0u)
+    return false;
+  DWORD expected = 0u;
+  if (owner->compare_exchange_strong(
+          expected,
+          currentThreadId,
+          std::memory_order_acq_rel,
+          std::memory_order_acquire)) {
+    return true;
+  }
+  return expected == currentThreadId;
+}
+
+void InvalidateOpenXrTemporalReceiptGeneration() {
+  g_openXrTemporalGeneration.fetch_add(
+      1u, std::memory_order_acq_rel);
+  g_openXrTemporalResetRequested.store(
+      true, std::memory_order_release);
+}
+
+void NoteOpenXrTemporalQueueFailure(const char* boundary) {
+  g_openXrTemporalStructuralFailure.store(
+      true, std::memory_order_release);
+  InvalidateOpenXrTemporalReceiptGeneration();
+  const uint32_t failures =
+      g_openXrTemporalQueueFailures.fetch_add(
+          1u, std::memory_order_relaxed) + 1u;
+  if (failures <= 6u || failures % 120u == 0u) {
+    Log(
+        "StereoOpenXRTemporalReceipt: withheld at %s "
+        "queueFailure=%u (nonblocking fail-closed)",
+        boundary ? boundary : "unknown",
+        failures);
+  }
+}
+
+void NoteOpenXrTemporalWarmupMiss(const char* boundary) {
+  const uint32_t misses =
+      g_openXrTemporalWarmupMisses.fetch_add(
+          1u, std::memory_order_relaxed) + 1u;
+  if (misses <= 4u || misses % 600u == 0u) {
+    Log(
+        "StereoOpenXRTemporalReceipt: waiting at %s "
+        "warmupMiss=%u (no generation reset)",
+        boundary ? boundary : "unknown",
+        misses);
+  }
+}
+
+void RequestOpenXrTemporalReceiptReset() {
+  InvalidateOpenXrTemporalReceiptGeneration();
+  g_openXrTemporalCleanReceipts = 0u;
+  g_openXrTemporalLastGeneration = 0u;
+  g_openXrTemporalLastReceiptBuildEpoch = 0u;
+  g_openXrTemporalLastReceiptEye = -1;
+  g_pairAwaitingR = false;
+  g_holdOpenXrStamp[0] = {};
+  g_holdOpenXrStamp[1] = {};
+  g_holdOpenXrBuildEpoch[0] = 0u;
+  g_holdOpenXrBuildEpoch[1] = 0u;
+  g_holdOpenXrTicket[0] = {};
+  g_holdOpenXrTicket[1] = {};
+  g_holdOpenXrD3dThreadId[0] = 0u;
+  g_holdOpenXrD3dThreadId[1] = 0u;
+}
+
+void ObserveOpenXrTemporalPresentationRoute(bool uiActive) {
+  const int routeState = uiActive ? 1 : 0;
+  if (g_openXrTemporalLastUiState == routeState)
+    return;
+  g_openXrTemporalLastUiState = routeState;
+  RequestOpenXrTemporalReceiptReset();
+  Log(
+      "StereoOpenXRTemporalReceipt: route generation=%llu ui=%d",
+      static_cast<unsigned long long>(
+          g_openXrTemporalGeneration.load(
+              std::memory_order_acquire)),
+      uiActive ? 1 : 0);
+}
+
+OpenXrCaptureStamp CaptureOpenXrStampFromBuildTicket(
+    const OpenXrTemporalBuildTicket& ticket) {
+  OpenXrCaptureStamp stamp{};
+  if (!ticket.valid ||
+      !IsValidOpenXrTemporalBuildPose(ticket.pose) ||
+      ticket.buildEpoch == 0u) {
+    return stamp;
+  }
+  stamp.sourceFrameId = ticket.buildEpoch;
+  stamp.poseSequence = ticket.pose.frameId;
+  stamp.renderedDisplayTime =
+      ticket.pose.predictedDisplayTime;
+  stamp.valid = true;
+  return stamp;
+}
 
 uint64_t g_lastOpenXrCapturePoseSequence = 0u;
 OpenXrCaptureRoute g_lastOpenXrCaptureRoute =
@@ -179,7 +394,8 @@ void CompleteOpenXrPair(const OpenXrCaptureStamp& left,
                         uint32_t contentHeight = 0u,
                         bool uiQuad = false,
                         bool immersiveMono = false,
-                        bool verifiedDrawSceneStereo = false) {
+                        bool verifiedDrawSceneStereo = false,
+                        bool verifiedTemporalStereo = false) {
   g_submitOpenXrStamp[0] = left;
   g_submitOpenXrStamp[1] = right;
   g_openXrPairSameTick =
@@ -190,6 +406,16 @@ void CompleteOpenXrPair(const OpenXrCaptureStamp& left,
       g_openXrPairSameTick && verifiedWvpStereo;
   g_openXrPairVerifiedDrawScene =
       g_openXrPairSameTick && verifiedDrawSceneStereo;
+  const bool orderedTemporalPair =
+      left.valid && right.valid &&
+      right.sourceFrameId > left.sourceFrameId &&
+      right.sourceFrameId - left.sourceFrameId == 1u &&
+      right.poseSequence > left.poseSequence &&
+      right.renderedDisplayTime > left.renderedDisplayTime;
+  g_openXrPairVerifiedTemporal =
+      !g_openXrPairSameTick &&
+      verifiedTemporalStereo &&
+      orderedTemporalPair;
   g_openXrPairUiQuad = uiQuad;
   g_openXrPairImmersiveMono = immersiveMono;
   g_openXrPairContentWidth =
@@ -215,6 +441,7 @@ bool UsesFovComfortPath(StereoMode mode) {
          mode == StereoMode::HeadOwnedCamStereoSwap ||
          mode == StereoMode::HeadOwnedCamStereoSoftGuard ||
          mode == StereoMode::OpenXrImmersiveMono ||
+         mode == StereoMode::OpenXrTemporalStereo ||
          IsCleanDualLookMove(mode);
 }
 
@@ -537,11 +764,35 @@ void ReleaseEyeRts() {
   g_submitOpenXrStamp[1] = {};
   g_openXrPairSameTick = false;
   g_openXrPairVerifiedWvp = false;
+  g_openXrPairVerifiedDrawScene = false;
+  g_openXrPairVerifiedTemporal = false;
+  g_openXrTemporalStereoProved.store(false);
+  g_holdOpenXrBuildEpoch[0] = 0u;
+  g_holdOpenXrBuildEpoch[1] = 0u;
 }
 
 bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
   if (!dev || w < 16 || h < 16)
     return false;
+  if (g_device && g_device != dev) {
+    Log("StereoRender: device changed %p -> %p - releasing eye RTs",
+        static_cast<void*>(g_device), static_cast<void*>(dev));
+    ReleaseEyeRts();
+  }
+  const HRESULT cooperativeLevel = dev->TestCooperativeLevel();
+  if (cooperativeLevel == D3DERR_DEVICELOST) {
+    const bool hadResources =
+        g_texL || g_texR || g_holdL || g_holdR || g_resolveSurf;
+    ReleaseEyeRts();
+    g_device = nullptr;
+    if (hadResources)
+      Log("DeviceReset: TestCooperativeLevel DEVICELOST - released eye RTs");
+    return false;
+  }
+  if (cooperativeLevel == D3DERR_DEVICENOTRESET) {
+    // Wait for HookReset instead of allocating resources into a dying device.
+    return false;
+  }
   const bool mode44 = UsesRtLockFovGate(GetStereoMode());
   const bool haveRts =
       g_texL && g_texR && g_holdL && g_holdR && g_device == dev && g_rtW > 0 && g_rtH > 0;
@@ -577,7 +828,8 @@ bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
       FAILED(dev->CreateTexture(w, h, 1, D3DUSAGE_RENDERTARGET, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT,
                                 &g_holdR, nullptr))) {
     ReleaseEyeRts();
-    Log("StereoRender: CreateTexture RT FAIL %ux%u", w, h);
+    Log("StereoRender: CreateTexture RT FAIL %ux%u (device may be Lost - retry after Reset)",
+        w, h);
     return false;
   }
   g_rtW = w;
@@ -591,7 +843,9 @@ bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
   return true;
 }
 
-bool PromoteHoldPair(IDirect3DDevice9* dev) {
+bool PromoteHoldPair(
+    IDirect3DDevice9* dev,
+    bool verifiedTemporalStereo = false) {
   if (!dev || !g_texL || !g_texR || !g_holdL || !g_holdR)
     return false;
   IDirect3DSurface9 *srcL = nullptr, *srcR = nullptr, *dstL = nullptr, *dstR = nullptr;
@@ -617,7 +871,16 @@ bool PromoteHoldPair(IDirect3DDevice9* dev) {
     g_submitPoseR = g_holdPoseR;
     g_submitPoseLValid = g_holdPoseLValid;
     g_submitPoseRValid = g_holdPoseRValid;
-    CompleteOpenXrPair(g_holdOpenXrStamp[0], g_holdOpenXrStamp[1]);
+    CompleteOpenXrPair(
+        g_holdOpenXrStamp[0],
+        g_holdOpenXrStamp[1],
+        false,
+        0u,
+        0u,
+        false,
+        false,
+        false,
+        verifiedTemporalStereo);
     const uint32_t n = ++g_pairPromoteCount;
     if (n <= 4 || (n % 300) == 0)
       Log("StereoPairHold: promoted pair #%u (both eyes update together) poseL=%d poseR=%d", n,
@@ -679,21 +942,34 @@ int PushDeviceVsEyeTranslate(IDirect3DDevice9* dev, const float cam[3], const fl
   return patched;
 }
 
+bool CopySurfaceToTexture(IDirect3DDevice9* dev,
+                          IDirect3DSurface9* source,
+                          IDirect3DTexture9* texture) {
+  if (!dev || !source || !texture)
+    return false;
+  IDirect3DSurface9* destination = nullptr;
+  if (FAILED(texture->GetSurfaceLevel(0, &destination)) ||
+      !destination) {
+    return false;
+  }
+  const HRESULT hr = dev->StretchRect(
+      source, nullptr, destination, nullptr, D3DTEXF_NONE);
+  destination->Release();
+  return SUCCEEDED(hr);
+}
+
 bool CopyBbToEye(IDirect3DDevice9* dev, IDirect3DTexture9* tex) {
   if (!dev || !tex)
     return false;
   IDirect3DSurface9* bb = nullptr;
-  IDirect3DSurface9* dst = nullptr;
-  if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb)
-    return false;
-  if (FAILED(tex->GetSurfaceLevel(0, &dst)) || !dst) {
-    bb->Release();
+  if (FAILED(dev->GetBackBuffer(
+          0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) ||
+      !bb) {
     return false;
   }
-  const HRESULT hr = dev->StretchRect(bb, nullptr, dst, nullptr, D3DTEXF_NONE);
-  dst->Release();
+  const bool copied = CopySurfaceToTexture(dev, bb, tex);
   bb->Release();
-  return SUCCEEDED(hr);
+  return copied;
 }
 
 // Prefer current color RT (offscreen); fall back to backbuffer.
@@ -741,11 +1017,17 @@ bool GetCanvasCoverFovTangents(float* horizontal, float* vertical) {
   if (!IsOpenXrDirectMode(GetStereoMode()))
     return GetCoverFovTangents(horizontal, vertical);
 
-  if (!g_openXrRenderPoseValid ||
-      (g_openXrRenderPose.flags &
+  const gtaiv_xr_bridge::PoseBridge* pose =
+      g_openXrCanvasPoseOverride
+          ? g_openXrCanvasPoseOverride
+          : g_openXrRenderPoseValid
+              ? &g_openXrRenderPose
+              : nullptr;
+  if (!pose ||
+      (pose->flags &
        gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
       !gtaiv_xr_bridge::ComputeOpenXrCoverTangents(
-          g_openXrRenderPose.eyeFovs,
+          pose->eyeFovs,
           horizontal,
           vertical)) {
     return false;
@@ -773,11 +1055,17 @@ bool GetCanvasEyeRawProjection(vr::EVREye eye,
 
   const uint32_t eyeIndex =
       eye == vr::Eye_Right ? 1u : 0u;
-  if (!g_openXrRenderPoseValid ||
-      (g_openXrRenderPose.flags &
+  const gtaiv_xr_bridge::PoseBridge* pose =
+      g_openXrCanvasPoseOverride
+          ? g_openXrCanvasPoseOverride
+          : g_openXrRenderPoseValid
+              ? &g_openXrRenderPose
+              : nullptr;
+  if (!pose ||
+      (pose->flags &
        gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
       !gtaiv_xr_bridge::ComputeOpenXrEyeRawTangents(
-          g_openXrRenderPose.eyeFovs,
+          pose->eyeFovs,
           eyeIndex,
           left,
           right,
@@ -800,7 +1088,8 @@ void ComputeCanvasSize(uint32_t bbW, uint32_t bbH, uint32_t* outW, uint32_t* out
   *outW = bbW;
   *outH = bbH;
   if (GetStereoMode() == StereoMode::OpenXrImmersiveMono ||
-      GetStereoMode() == StereoMode::OpenXrDrawSceneStereo) {
+      GetStereoMode() == StereoMode::OpenXrDrawSceneStereo ||
+      GetStereoMode() == StereoMode::OpenXrTemporalStereo) {
     // The advancing CPU mailbox uses a fixed 16:9 capture. GTA can keep its
     // desktop resolution, but neither the mono route nor the L/R pair route
     // reads back or uploads that 4K allocation.
@@ -930,6 +1219,13 @@ bool CaptureOpenXrUiPair(IDirect3DDevice9* device) {
   g_pairAwaitingR = false;
   g_holdOpenXrStamp[0] = {};
   g_holdOpenXrStamp[1] = {};
+  if (GetStereoMode() == StereoMode::OpenXrTemporalStereo) {
+    // Route-generation invalidation is observed at the EndScene boundary.
+    // Mode 57 eye state is owned only by game-thread BuildRootA.
+    ClearGameFovPairLatch();
+    g_holdOpenXrBuildEpoch[0] = 0u;
+    g_holdOpenXrBuildEpoch[1] = 0u;
+  }
 
   IDirect3DSurface9* backBuffer = nullptr;
   if (!device ||
@@ -1003,12 +1299,12 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
   float l = 0.f, r = 0.f, t = 0.f, b = 0.f;
   if (!GetCanvasEyeRawProjection(eye, &l, &r, &t, &b) ||
       !(r > l) || !(b > t))
-    return CopyBbToEye(dev, tex);
+    return CopySurfaceToTexture(dev, bb, tex);
   float gameH = 0.f, gameV = 0.f;
   if (!GetLatchedGameFovTangents(&gameH, &gameV))
     GetGameFovTangents(&gameH, &gameV);
   if (!(gameH > 0.05f) || !(gameV > 0.05f))
-    return CopyBbToEye(dev, tex);
+    return CopySurfaceToTexture(dev, bb, tex);
 
   bb->AddRef();
   IDirect3DSurface9* dst = nullptr;
@@ -1072,9 +1368,11 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
   const float tyLo = (std::max)(-gameV, t);
   const float tyHi = (std::min)(gameV, b);
   if (txHi - txLo < 0.05f || tyHi - tyLo < 0.05f) {
+    const bool copied = SUCCEEDED(
+        dev->StretchRect(bb, nullptr, dst, nullptr, D3DTEXF_NONE));
     dst->Release();
     bb->Release();
-    return CopyBbToEye(dev, tex);
+    return copied;
   }
 
   RECT src{};
@@ -1107,6 +1405,9 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
     dev->ColorFill(dst, nullptr, D3DCOLOR_XRGB(0, 0, 0));
     ok = SUCCEEDED(dev->StretchRect(bb, &src, dst, &rc, D3DTEXF_LINEAR));
   }
+  if (!ok)
+    ok = SUCCEEDED(
+        dev->StretchRect(bb, nullptr, dst, nullptr, D3DTEXF_NONE));
   dst->Release();
   bb->Release();
   if (!ok) {
@@ -1116,7 +1417,7 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
       Log("StereoCanvas: sub-rect StretchRect FAILED — falling back to full stretch "
           "(geometry will be wrong; report this log line)");
     }
-    return CopyBbToEye(dev, tex);
+    return false;
   }
 
   static bool s_loggedL = false, s_loggedR = false;
@@ -1436,6 +1737,103 @@ bool RunExecViewDualGuarded(void* self, void* edx) {
   }
 }
 
+void RunOpenXrTemporalExecRoot(void* self, void* edx) {
+  if (!g_origRoot[0])
+    return;
+  const bool reentrant = g_openXrTemporalInExecRoot;
+  if (reentrant) {
+    NoteOpenXrTemporalQueueFailure("reentrant ExecRoot");
+  } else {
+    g_openXrTemporalInExecRoot = true;
+  }
+
+  const DWORD execThreadId = GetCurrentThreadId();
+  const bool threadBound = BindOpenXrTemporalThread(
+      &g_openXrTemporalExecThreadId, execThreadId);
+  if (!threadBound) {
+    NoteOpenXrTemporalQueueFailure("ExecRoot thread changed");
+  }
+
+  if (threadBound) {
+    // Cardinality is fail-closed on the owned Exec lane: every native
+    // dispatch publishes exactly one scene token. Underflow/reentrant paths
+    // publish an invalid placeholder so a later valid ticket cannot slide
+    // onto the wrong BeginScene/EndScene boundary. A foreign Exec thread is
+    // permanently poisoned above and must not touch these SPSC rings.
+    OpenXrTemporalBuildTicket ticket{};
+    const bool wasPrimed =
+        g_openXrTemporalExecPrimed.load(
+            std::memory_order_acquire);
+    const bool popped =
+        wasPrimed &&
+        g_openXrTemporalBuildTickets.pop(&ticket);
+    if (!wasPrimed) {
+      NoteOpenXrTemporalWarmupMiss(
+          "first ExecRoot publishing invalid alignment token");
+    } else if (!popped) {
+      NoteOpenXrTemporalWarmupMiss(
+          "BuildRootA -> next-frame ExecRoot underflow");
+    }
+
+    const uint64_t currentGeneration =
+        g_openXrTemporalGeneration.load(
+            std::memory_order_acquire);
+    ticket.execThreadId = execThreadId;
+    ticket.valid =
+        ticket.valid &&
+        popped &&
+        !reentrant &&
+        !g_openXrTemporalStructuralFailure.load(
+            std::memory_order_acquire) &&
+        ticket.generation == currentGeneration &&
+        ticket.buildThreadId != 0u &&
+        ticket.buildThreadId ==
+            g_openXrTemporalBuildThreadId.load(
+                std::memory_order_acquire);
+
+    uint64_t sceneOrdinal = 0u;
+    const bool queued = g_openXrTemporalSceneTickets.push(
+        ticket, &sceneOrdinal);
+    if (!queued) {
+      NoteOpenXrTemporalQueueFailure(
+          "ExecRoot -> BeginScene overflow");
+    } else {
+      if (!wasPrimed &&
+          !reentrant &&
+          !g_openXrTemporalStructuralFailure.load(
+              std::memory_order_acquire)) {
+        // Release only after the first invalid scene token is visible. A
+        // concurrent BuildRoot cannot enter the build FIFO early and become
+        // falsely associated with this first Exec.
+        g_openXrTemporalExecPrimed.store(
+            true, std::memory_order_release);
+      }
+      static uint32_t enqueuedExecs = 0u;
+      const uint32_t accepted = ++enqueuedExecs;
+      if (accepted <= 6u || accepted % 300u == 0u) {
+        Log(
+            "StereoOpenXRTemporalReceipt: exec #%u "
+            "sceneOrdinal=%llu buildEpoch=%llu eye=%s "
+            "buildTid=%lu execTid=%lu generation=%llu valid=%d",
+            accepted,
+            static_cast<unsigned long long>(sceneOrdinal),
+            static_cast<unsigned long long>(
+                ticket.buildEpoch),
+            ticket.eye == StereoEye::Right ? "R" : "L",
+            static_cast<unsigned long>(ticket.buildThreadId),
+            static_cast<unsigned long>(ticket.execThreadId),
+            static_cast<unsigned long long>(
+                ticket.generation),
+            ticket.valid ? 1 : 0);
+      }
+    }
+  }
+
+  g_origRoot[0](self, edx);
+  if (!reentrant)
+    g_openXrTemporalInExecRoot = false;
+}
+
 void __fastcall HookRoot0(void* self, void* edx) {
   if (!g_root0Self)
     Log("StereoRootDual: ExecRoot first native call self=%p threadId=%u", self,
@@ -1454,6 +1852,11 @@ void __fastcall HookRoot0(void* self, void* edx) {
   }
   if (!g_origRoot[0])
     return;
+
+  if (mode == StereoMode::OpenXrTemporalStereo) {
+    RunOpenXrTemporalExecRoot(self, edx);
+    return;
+  }
 
   if (mode == StereoMode::ExecViewDual && !g_execDualDead.load() && !g_inDual.load() &&
       IsCamMatrixOverrideEnabled() && g_device && g_texL && g_texR) {
@@ -1585,6 +1988,167 @@ bool RunBuildDualViewShiftGuarded(void* self, void* edx) {
   }
 }
 
+void RunOpenXrTemporalBuildRoot(void* self, void* edx) {
+  if (!g_origRoot[1])
+    return;
+  if (g_openXrTemporalInBuildRoot) {
+    NoteOpenXrTemporalQueueFailure("reentrant BuildRootA");
+    g_origRoot[1](self, edx);
+    return;
+  }
+
+  g_openXrTemporalInBuildRoot = true;
+  const DWORD buildThreadId = GetCurrentThreadId();
+  const bool threadBound = BindOpenXrTemporalThread(
+      &g_openXrTemporalBuildThreadId, buildThreadId);
+  if (!threadBound) {
+    NoteOpenXrTemporalQueueFailure("BuildRootA thread changed");
+    SetStereoEye(StereoEye::Left);
+    g_origRoot[1](self, edx);
+    g_openXrTemporalInBuildRoot = false;
+    return;
+  }
+
+  if (g_openXrTemporalResetRequested.exchange(
+          false, std::memory_order_acq_rel)) {
+    g_openXrTemporalNextEye = 0;
+    SetStereoEye(StereoEye::Left);
+  }
+
+  // GTA runs BuildRootA long before its first real ExecRoot (menus/loading).
+  // Those pre-replay builds have no consumer and must not fill or poison the
+  // SPSC queue. The first observed Exec publishes one invalid warm-up scene
+  // token; its native dispatch then drives the first ticketed BuildRootA for
+  // the following Exec.
+  const bool execPrimed =
+      g_openXrTemporalExecPrimed.load(
+          std::memory_order_acquire);
+  if (!execPrimed ||
+      g_openXrTemporalStructuralFailure.load(
+          std::memory_order_acquire)) {
+    if (!execPrimed) {
+      NoteOpenXrTemporalWarmupMiss(
+          "BuildRootA waiting for first ExecRoot");
+    }
+    SetStereoEye(StereoEye::Left);
+    g_origRoot[1](self, edx);
+    g_openXrTemporalInBuildRoot = false;
+    return;
+  }
+
+  OpenXrTemporalBuildTicket ticket{};
+  ticket.generation =
+      g_openXrTemporalGeneration.load(
+          std::memory_order_acquire);
+  ticket.buildEpoch =
+      g_openXrTemporalBuildEpoch.fetch_add(
+          1u, std::memory_order_acq_rel) + 1u;
+  ticket.eye =
+      g_openXrTemporalNextEye == 0
+          ? StereoEye::Left
+          : StereoEye::Right;
+  ticket.buildThreadId = buildThreadId;
+
+  gtaiv_xr_bridge::PoseBridge pose{};
+  const bool poseReady =
+      GetLatestOpenXrPoseBridge(&pose) &&
+      IsValidOpenXrTemporalBuildPose(pose);
+  ticket.pose = pose;
+  const bool buildCandidate =
+      threadBound &&
+      poseReady &&
+      IsCamMatrixOverrideEnabled() &&
+      BeginPinnedOpenXrBuildPose(pose);
+
+  StereoCamBuildReceipt cameraReceipt{};
+  const uint32_t cameraGenerationBefore =
+      GetStereoCamApplyGeneration();
+  if (buildCandidate) {
+    SetStereoEye(ticket.eye);
+    BeginStereoCamBuildReceipt(
+        ticket.eye == StereoEye::Right);
+    RefreshLiveCamForStereoEye();
+  } else {
+    SetStereoEye(StereoEye::Left);
+  }
+
+  g_origRoot[1](self, edx);
+
+  const bool cameraReceiptReady =
+      buildCandidate &&
+      EndStereoCamBuildReceipt(&cameraReceipt);
+  if (buildCandidate)
+    EndPinnedOpenXrBuildPose();
+
+  const uint64_t currentGeneration =
+      g_openXrTemporalGeneration.load(
+          std::memory_order_acquire);
+  ticket.valid =
+      buildCandidate &&
+      cameraReceiptReady &&
+      ticket.generation == currentGeneration &&
+      cameraReceipt.writerThreadId == buildThreadId &&
+      cameraReceipt.applyGeneration >
+          cameraGenerationBefore &&
+      cameraReceipt.eyeOffsetApplied &&
+      cameraReceipt.rightEye ==
+          (ticket.eye == StereoEye::Right) &&
+      GetStereoEye() == ticket.eye;
+  if (ticket.valid) {
+    ticket.cameraGeneration =
+        cameraReceipt.applyGeneration;
+    ticket.cameraPos[0] = cameraReceipt.position[0];
+    ticket.cameraPos[1] = cameraReceipt.position[1];
+    ticket.cameraPos[2] = cameraReceipt.position[2];
+    ticket.cameraEyeOffsetApplied =
+        cameraReceipt.eyeOffsetApplied;
+    ticket.cameraEyeOffset[0] =
+        cameraReceipt.eyeOffset[0];
+    ticket.cameraEyeOffset[1] =
+        cameraReceipt.eyeOffset[1];
+    ticket.cameraEyeOffset[2] =
+        cameraReceipt.eyeOffset[2];
+    ticket.cameraEyeOffsetLocal[0] =
+        cameraReceipt.localEyeOffset[0];
+    ticket.cameraEyeOffsetLocal[1] =
+        cameraReceipt.localEyeOffset[1];
+    ticket.cameraEyeOffsetLocal[2] =
+        cameraReceipt.localEyeOffset[2];
+  } else {
+    SetStereoEye(StereoEye::Left);
+  }
+
+  const bool queued =
+      g_openXrTemporalBuildTickets.push(ticket);
+  if (!queued) {
+    NoteOpenXrTemporalQueueFailure(
+        "BuildRootA -> ExecRoot overflow");
+  } else if (ticket.valid) {
+    g_openXrTemporalNextEye =
+        ticket.eye == StereoEye::Left ? 1 : 0;
+    static uint32_t acceptedBuilds = 0u;
+    const uint32_t accepted = ++acceptedBuilds;
+    if (accepted <= 6u || accepted % 300u == 0u) {
+      Log(
+          "StereoOpenXRTemporalReceipt: build #%u "
+          "epoch=%llu eye=%s pose=%llu camGen=%u "
+          "camWrites=%u buildTid=%lu generation=%llu",
+          accepted,
+          static_cast<unsigned long long>(
+              ticket.buildEpoch),
+          ticket.eye == StereoEye::Right ? "R" : "L",
+          static_cast<unsigned long long>(
+              ticket.pose.frameId),
+          ticket.cameraGeneration,
+          cameraReceipt.applyCount,
+          static_cast<unsigned long>(buildThreadId),
+          static_cast<unsigned long long>(
+              ticket.generation));
+    }
+  }
+  g_openXrTemporalInBuildRoot = false;
+}
+
 void __fastcall HookRoot1(void* self, void* edx) {
   const StereoMode mode = GetStereoMode();
   if (mode == StereoMode::RootDispatchProbe) {
@@ -1601,6 +2165,11 @@ void __fastcall HookRoot1(void* self, void* edx) {
   }
   if (!g_origRoot[1])
     return;
+
+  if (mode == StereoMode::OpenXrTemporalStereo) {
+    RunOpenXrTemporalBuildRoot(self, edx);
+    return;
+  }
 
   // Mode 26: do NOT double-call BuildRootA (freeze risk; also produced only ONE
   // EndScene per tick so it never gave same-frame stereo). Single native build;
@@ -3443,25 +4012,48 @@ bool RunExecViewPhaseDualGuarded(void* edx) {
   }
 }
 
-// Definitive answer to "are both eyes the same image?": downsample both canvases
-// to 16x16, read back, sum absolute byte differences. 0 = identical (no parallax
-// reached the render). Called rarely (GetRenderTargetData syncs the GPU).
-long long CompareEyeCanvases(IDirect3DDevice9* dev, bool logResult) {
-  if (!dev || !g_texL || !g_texR)
+// Sample a normalized texture pair and sum RGB differences. Legacy routes use
+// 16x16. Mode 57 uses 64x64 because the sparse grid erased subpixel parallax
+// from a verified 6.4 cm eye baseline in GTA's 1280x720 backbuffer. Its absolute
+// sum is only a non-identity corroboration; the Mode 57 receipt also requires
+// spatial coverage plus the independent camera/FIFO provenance gates.
+long long CompareTexturePair(IDirect3DDevice9* dev,
+                             IDirect3DTexture9* left,
+                             IDirect3DTexture9* right,
+                             const char* label,
+                             bool logResult,
+                             UINT auditDim = 16u,
+                             uint32_t* changedPixelsOut = nullptr,
+                             uint32_t* changedTilesOut = nullptr) {
+  if (changedPixelsOut)
+    *changedPixelsOut = 0u;
+  if (changedTilesOut)
+    *changedTilesOut = 0u;
+  if (!dev || !left || !right)
+    return -1;
+  if (auditDim == 0u || auditDim > 256u)
     return -1;
   for (int i = 0; i < 2; ++i) {
     if (!g_diffSmall[i] &&
-        FAILED(dev->CreateRenderTarget(16, 16, D3DFMT_A8R8G8B8, D3DMULTISAMPLE_NONE, 0, FALSE,
+        FAILED(dev->CreateRenderTarget(
+            auditDim,
+            auditDim,
+            D3DFMT_A8R8G8B8,
+            D3DMULTISAMPLE_NONE, 0, FALSE,
                                        &g_diffSmall[i], nullptr)))
       return -1;
     if (!g_diffSys[i] &&
-        FAILED(dev->CreateOffscreenPlainSurface(16, 16, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM,
+        FAILED(dev->CreateOffscreenPlainSurface(
+            auditDim,
+            auditDim,
+            D3DFMT_A8R8G8B8,
+            D3DPOOL_SYSTEMMEM,
                                                 &g_diffSys[i], nullptr)))
       return -1;
   }
   for (int i = 0; i < 2; ++i) {
     IDirect3DSurface9* s = nullptr;
-    IDirect3DTexture9* t = i ? g_texR : g_texL;
+    IDirect3DTexture9* t = i ? right : left;
     if (FAILED(t->GetSurfaceLevel(0, &s)) || !s)
       return -1;
     const bool ok = SUCCEEDED(dev->StretchRect(s, nullptr, g_diffSmall[i], nullptr,
@@ -3479,17 +4071,60 @@ long long CompareEyeCanvases(IDirect3DDevice9* dev, bool logResult) {
     return -1;
   }
   long long sum = 0;
-  for (int y = 0; y < 16; ++y) {
+  uint32_t changedPixels = 0u;
+  uint64_t changedTileMask = 0u;
+  for (UINT y = 0; y < auditDim; ++y) {
     const uint8_t* pa = static_cast<const uint8_t*>(la.pBits) + y * la.Pitch;
     const uint8_t* pb = static_cast<const uint8_t*>(lb.pBits) + y * lb.Pitch;
-    for (int x = 0; x < 64; ++x)
-      sum += (pa[x] > pb[x]) ? (pa[x] - pb[x]) : (pb[x] - pa[x]);
+    for (UINT x = 0; x < auditDim; ++x) {
+      uint32_t pixelDifference = 0u;
+      for (int channel = 0; channel < 3; ++channel) {
+        const UINT byte = x * 4u + static_cast<UINT>(channel);
+        const uint32_t difference = (pa[byte] > pb[byte])
+            ? (pa[byte] - pb[byte])
+            : (pb[byte] - pa[byte]);
+        pixelDifference += difference;
+        sum += difference;
+      }
+      if (pixelDifference >= 3u) {
+        ++changedPixels;
+        const uint32_t tileX =
+            static_cast<uint32_t>(x * 8u / auditDim);
+        const uint32_t tileY =
+            static_cast<uint32_t>(y * 8u / auditDim);
+        changedTileMask |=
+            uint64_t{1u} << (tileY * 8u + tileX);
+      }
+    }
   }
   g_diffSys[1]->UnlockRect();
   g_diffSys[0]->UnlockRect();
+  uint32_t changedTiles = 0u;
+  for (uint64_t mask = changedTileMask;
+       mask != 0u;
+       mask >>= 1u) {
+    changedTiles += static_cast<uint32_t>(mask & 1u);
+  }
+  if (changedPixelsOut)
+    *changedPixelsOut = changedPixels;
+  if (changedTilesOut)
+    *changedTilesOut = changedTiles;
   if (logResult)
-    Log("StereoDiff: L-vs-R 16x16 absdiff=%lld (0 = identical images, no parallax)", sum);
+    Log(
+        "%s: L-vs-R raw RGB %ux%u absdiff=%lld "
+        "changedPixels=%u changedTiles=%u",
+        label ? label : "StereoDiff",
+        auditDim,
+        auditDim,
+        sum,
+        changedPixels,
+        changedTiles);
   return sum;
+}
+
+long long CompareEyeCanvases(IDirect3DDevice9* dev, bool logResult) {
+  return CompareTexturePair(
+      dev, g_texL, g_texR, "StereoDiff", logResult);
 }
 
 void Mode30FallbackPairHold(const char* why) {
@@ -5061,7 +5696,8 @@ void RunSameFrameDualFromDrawScene(void* drawSelf, void* edx, bool useCurrentRt)
 // Draw* interception. Unlike the legacy path, it uses only the cached OpenXR
 // pose and never queries or initializes OpenVR.
 bool RunOpenXrDrawSceneStereoGuarded(void* drawSelf, void* edx) {
-  if (!g_origBuild || !drawSelf || !g_device || !g_texL || !g_texR ||
+  if (!g_origBuild || !drawSelf || !g_device ||
+      !g_texL || !g_texR || !g_holdL || !g_holdR ||
       !g_openXrRenderPoseValid)
     return false;
 
@@ -5076,20 +5712,112 @@ bool RunOpenXrDrawSceneStereoGuarded(void* drawSelf, void* edx) {
 
     g_haveL = false;
     g_haveR = false;
+    float lx = 0.f, ly = 0.f, lz = 0.f;
+    float rx = 0.f, ry = 0.f, rz = 0.f;
     SetStereoEye(StereoEye::Left);
+    const uint32_t leftGenerationBefore =
+        GetStereoCamApplyGeneration();
     RefreshLiveCamForStereoEye();
+    const uint32_t leftGenerationAfter =
+        GetStereoCamApplyGeneration();
+    const bool leftCameraReady = GetLastStereoCamPos(&lx, &ly, &lz);
     g_origBuild(drawSelf, edx);
+    const bool leftRawReady = CopyBbToEye(g_device, g_holdL);
     const bool leftReady = CopyBbToEyeCanvas(g_device, g_texL, vr::Eye_Left);
 
     SetStereoEye(StereoEye::Right);
+    const uint32_t rightGenerationBefore =
+        GetStereoCamApplyGeneration();
     RefreshLiveCamForStereoEye();
+    const uint32_t rightGenerationAfter =
+        GetStereoCamApplyGeneration();
+    const bool rightCameraReady = GetLastStereoCamPos(&rx, &ry, &rz);
     g_origBuild(drawSelf, edx);
+    const bool rightRawReady = CopyBbToEye(g_device, g_holdR);
     const bool rightReady = CopyBbToEyeCanvas(g_device, g_texR, vr::Eye_Right);
 
     SetStereoEye(StereoEye::Left);
     RefreshLiveCamForStereoEye();
-    if (!leftReady || !rightReady)
-      return false;
+    const float dx = rx - lx;
+    const float dy = ry - ly;
+    const float dz = rz - lz;
+    const float cameraDistanceCm =
+        std::sqrt(dx * dx + dy * dy + dz * dz) * 100.f;
+    // Never publish nominal stereo when both GTA renders used the same
+    // camera origin. Valid OpenXR eye poses should normally yield an IPD-sized
+    // baseline; the upper bound rejects a corrupted coordinate transform.
+    const bool cameraBaselineValid =
+        leftCameraReady
+        && rightCameraReady
+        && leftGenerationAfter > leftGenerationBefore
+        && rightGenerationAfter > rightGenerationBefore
+        && std::isfinite(cameraDistanceCm)
+        && cameraDistanceCm >= 1.f
+        && cameraDistanceCm <= 20.f;
+    if (!leftReady || !rightReady || !leftRawReady || !rightRawReady ||
+        !cameraBaselineValid) {
+      static uint32_t rejectedPairs = 0u;
+      const uint32_t rejected = ++rejectedPairs;
+      if (rejected <= 4u || rejected % 120u == 0u) {
+        Log(
+            "StereoOpenXR: waiting for proved L/R pair canvas=%d/%d "
+            "raw=%d/%d camera=%d/%d applyGen=%u>%u/%u>%u "
+            "camDist=%.2fcm",
+            leftReady ? 1 : 0,
+            rightReady ? 1 : 0,
+            leftRawReady ? 1 : 0,
+            rightRawReady ? 1 : 0,
+            leftCameraReady ? 1 : 0,
+            rightCameraReady ? 1 : 0,
+            leftGenerationAfter,
+            leftGenerationBefore,
+            rightGenerationAfter,
+            rightGenerationBefore,
+            cameraDistanceCm);
+      }
+      // Both DrawScene calls already ran. Keep trying on later game frames,
+      // but publish no transaction and make no stereo claim.
+      return true;
+    }
+
+    const uint32_t prospectiveCount =
+        g_openXrDrawSceneStereoCount.load() + 1u;
+    const uint32_t rawAttempt = ++g_openXrRawAuditAttempts;
+    const bool rawStereoAlreadyProved =
+        g_openXrRawStereoProved.load();
+    const bool auditRawPair =
+        rawStereoAlreadyProved
+            ? prospectiveCount <= 4u || prospectiveCount % 120u == 0u
+            : rawAttempt <= 4u || rawAttempt % 30u == 0u;
+    constexpr long long RawStereoMinRgbAbsDiff = 1024;
+    long long rawAbsDiff = -1;
+    if (!rawStereoAlreadyProved && !auditRawPair) {
+      g_haveL = false;
+      g_haveR = false;
+      return true;
+    }
+    if (auditRawPair) {
+      rawAbsDiff = CompareTexturePair(
+          g_device, g_holdL, g_holdR, "StereoOpenXRRaw", false);
+      if (rawAbsDiff < RawStereoMinRgbAbsDiff) {
+        static uint32_t weakRawPairs = 0u;
+        const uint32_t weak = ++weakRawPairs;
+        if (weak <= 4u || weak % 120u == 0u) {
+          Log(
+              "StereoOpenXRRaw: withheld L/R pair RGB absdiff=%lld "
+              "threshold=%lld camDist=%.2fcm applyGen=%u/%u",
+              rawAbsDiff,
+              RawStereoMinRgbAbsDiff,
+              cameraDistanceCm,
+              leftGenerationAfter,
+              rightGenerationAfter);
+        }
+        g_haveL = false;
+        g_haveR = false;
+        return true;
+      }
+      g_openXrRawStereoProved.store(true);
+    }
 
     g_haveL = true;
     g_haveR = true;
@@ -5108,11 +5836,16 @@ bool RunOpenXrDrawSceneStereoGuarded(void* drawSelf, void* edx) {
     if (count <= 4u || count % 120u == 0u) {
       Log(
           "StereoOpenXR: DrawScene L/R pair #%u capture=%ux%u "
-          "pose=%llu proof=draw-scene",
+          "pose=%llu camDist=%.2fcm applyGen=%u/%u "
+          "rawRgbAbsDiff=%lld proof=draw-scene",
           count,
           g_rtW,
           g_rtH,
-          static_cast<unsigned long long>(stamp.poseSequence));
+          static_cast<unsigned long long>(stamp.poseSequence),
+          cameraDistanceCm,
+          leftGenerationAfter,
+          rightGenerationAfter,
+          rawAbsDiff);
     }
     return true;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
@@ -5159,6 +5892,7 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
 
   if (mode == StereoMode::OpenXrDrawSceneStereo) {
     if (g_openXrDrawSceneStereoDead.load() || g_inDual.load() ||
+        g_dualDoneThisFrame ||
         GetUiPresentationState() || !IsCamMatrixOverrideEnabled() ||
         !g_device || !g_texL || !g_texR ||
         !g_openXrRenderPoseValid ||
@@ -5176,6 +5910,10 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
     g_inDual.store(true);
     const bool captured = RunOpenXrDrawSceneStereoGuarded(self, edx);
     g_inDual.store(false);
+    // DrawScene may be invoked for more than one viewport/reflection before
+    // the next EndScene. Only the first eligible invocation may execute the
+    // expensive L/R replay or advance the accepted-pair ordinal.
+    g_dualDoneThisFrame = true;
     if (captured)
       return;
 
@@ -5556,13 +6294,14 @@ void TemporalCaptureThisFrame(IDirect3DDevice9* device) {
 void TemporalCapturePairHold(IDirect3DDevice9* device) {
   if (!device || !g_holdL || !g_holdR || !g_texL || !g_texR)
     return;
+  const StereoMode captureMode = GetStereoMode();
+  const StereoEye eye = GetStereoEye();
   LogCachedIpdOnce();
   // Mode 48–52: refresh tracked CopyMat matrices immediately before each eye capture
   // so a late follow-cam overwrite cannot stale the backbuffer view.
-  if (UsesPreCaptureCamRefresh(GetStereoMode()))
+  if (UsesPreCaptureCamRefresh(captureMode))
     RefreshLiveCamForStereoEye();
-  const StereoEye eye = GetStereoEye();
-  const bool latchPair = UsesFovComfortPath(GetStereoMode());
+  const bool latchPair = UsesFovComfortPath(captureMode);
   if (eye == StereoEye::Left) {
     if (latchPair)
       LatchGameFovForPair();
@@ -5578,7 +6317,7 @@ void TemporalCapturePairHold(IDirect3DDevice9* device) {
       g_holdOpenXrStamp[1] = CaptureOpenXrStamp();
       float rotDeg = 0.f, moveCm = 0.f;
       bool directSubmitGuard = false;
-      const StereoMode sm = GetStereoMode();
+      const StereoMode sm = captureMode;
       if (sm == StereoMode::HeadOwnedCamStereoSoftGuard) {
         if (ComputeHoldPoseDelta(&rotDeg, &moveCm)) {
           const SoftGuardAction action = Mode53SoftGuardAction(rotDeg, moveCm);
@@ -5648,9 +6387,10 @@ void TemporalCapturePairHold(IDirect3DDevice9* device) {
           Log("Mode40: motion guard copy failed; promoting normal temporal pair");
         }
       }
-      if (!directSubmitGuard)
+      if (!directSubmitGuard) {
         PromoteHoldPair(device);
-      if (UsesStereoAlwaysDistinct(GetStereoMode())) {
+      }
+      if (UsesStereoAlwaysDistinct(captureMode)) {
         const long long diff = CompareEyeCanvases(device, false);
         if (diff >= 0) {
           const uint32_t pairs = ++g_stereoAuditPairs;
@@ -5705,15 +6445,545 @@ bool InstallAllThreePhases() {
 
 }  // namespace
 
+void StereoMode57BeginScene(IDirect3DDevice9* device) {
+  if (GetStereoMode() !=
+      StereoMode::OpenXrTemporalStereo) {
+    return;
+  }
+
+  if (g_openXrTemporalActiveScene.active) {
+    g_openXrTemporalActiveScene = {};
+    NoteOpenXrTemporalQueueFailure(
+        "nested BeginScene before matching EndScene");
+  }
+
+  const DWORD d3dThreadId = GetCurrentThreadId();
+  const bool threadBound = BindOpenXrTemporalThread(
+      &g_openXrTemporalD3dThreadId, d3dThreadId);
+  if (!threadBound) {
+    NoteOpenXrTemporalQueueFailure(
+        "BeginScene thread changed");
+    return;
+  }
+  OpenXrTemporalBuildTicket ticket{};
+  uint64_t sceneOrdinal = 0u;
+  const bool popped = g_openXrTemporalSceneTickets.pop(
+      &ticket, &sceneOrdinal);
+  if (!popped) {
+    NoteOpenXrTemporalWarmupMiss(
+        "ExecRoot -> later successful BeginScene underflow");
+  }
+  const uint64_t currentGeneration =
+      g_openXrTemporalGeneration.load(
+          std::memory_order_acquire);
+  ticket.valid =
+      popped &&
+      ticket.valid &&
+      !g_openXrTemporalStructuralFailure.load(
+          std::memory_order_acquire) &&
+      ticket.generation == currentGeneration &&
+      ticket.buildThreadId != 0u &&
+      ticket.buildThreadId ==
+          g_openXrTemporalBuildThreadId.load(
+              std::memory_order_acquire) &&
+      ticket.execThreadId != 0u &&
+      ticket.execThreadId ==
+          g_openXrTemporalExecThreadId.load(
+              std::memory_order_acquire);
+
+  g_openXrTemporalActiveScene.ticket = ticket;
+  g_openXrTemporalActiveScene.device = device;
+  g_openXrTemporalActiveScene.d3dThreadId =
+      d3dThreadId;
+  g_openXrTemporalActiveScene.sceneOrdinal =
+      sceneOrdinal;
+  g_openXrTemporalActiveScene.ticketAttached =
+      popped;
+  g_openXrTemporalActiveScene.active = true;
+
+  if (popped) {
+    static uint32_t boundScenes = 0u;
+    const uint32_t accepted = ++boundScenes;
+    if (accepted <= 6u || accepted % 300u == 0u) {
+      Log(
+          "StereoOpenXRTemporalReceipt: begin #%u "
+          "sceneOrdinal=%llu buildEpoch=%llu eye=%s "
+          "execTid=%lu d3dTid=%lu generation=%llu valid=%d",
+          accepted,
+          static_cast<unsigned long long>(sceneOrdinal),
+          static_cast<unsigned long long>(
+              ticket.buildEpoch),
+          ticket.eye == StereoEye::Right ? "R" : "L",
+          static_cast<unsigned long>(ticket.execThreadId),
+          static_cast<unsigned long>(d3dThreadId),
+          static_cast<unsigned long long>(
+              ticket.generation),
+          ticket.valid ? 1 : 0);
+    }
+  }
+}
+
+bool TakeOpenXrTemporalSceneReceipt(
+    IDirect3DDevice9* device,
+    OpenXrTemporalBuildTicket* ticket,
+    DWORD* d3dThreadId) {
+  if (!ticket || !d3dThreadId)
+    return false;
+  *ticket = {};
+  *d3dThreadId = 0u;
+
+  const OpenXrTemporalActiveScene active =
+      g_openXrTemporalActiveScene;
+  g_openXrTemporalActiveScene = {};
+  if (!active.active) {
+    NoteOpenXrTemporalQueueFailure(
+        "EndScene without matching BeginScene");
+    return false;
+  }
+
+  *ticket = active.ticket;
+  *d3dThreadId = active.d3dThreadId;
+  const DWORD currentThreadId = GetCurrentThreadId();
+  const bool boundaryMatches =
+      active.device == device &&
+      active.d3dThreadId == currentThreadId &&
+      active.d3dThreadId ==
+          g_openXrTemporalD3dThreadId.load(
+              std::memory_order_acquire);
+  if (!boundaryMatches) {
+    NoteOpenXrTemporalQueueFailure(
+        "BeginScene -> EndScene boundary mismatch");
+    return false;
+  }
+  if (!active.ticketAttached) {
+    NoteOpenXrTemporalWarmupMiss(
+        "BeginScene -> EndScene without queued ExecRoot ticket");
+    return false;
+  }
+
+  const uint64_t currentGeneration =
+      g_openXrTemporalGeneration.load(
+          std::memory_order_acquire);
+  return active.ticket.valid &&
+      !g_openXrTemporalStructuralFailure.load(
+          std::memory_order_acquire) &&
+      active.ticket.generation == currentGeneration &&
+      active.ticket.buildThreadId != 0u &&
+      active.ticket.buildThreadId ==
+          g_openXrTemporalBuildThreadId.load(
+              std::memory_order_acquire) &&
+      active.ticket.execThreadId != 0u &&
+      active.ticket.execThreadId ==
+          g_openXrTemporalExecThreadId.load(
+              std::memory_order_acquire);
+}
+
+void ResetOpenXrTemporalPendingPair() {
+  g_pairAwaitingR = false;
+  g_holdOpenXrStamp[0] = {};
+  g_holdOpenXrStamp[1] = {};
+  g_holdOpenXrBuildEpoch[0] = 0u;
+  g_holdOpenXrBuildEpoch[1] = 0u;
+  g_holdOpenXrTicket[0] = {};
+  g_holdOpenXrTicket[1] = {};
+  g_holdOpenXrD3dThreadId[0] = 0u;
+  g_holdOpenXrD3dThreadId[1] = 0u;
+}
+
+bool PromoteOpenXrTemporalReceiptPair(
+    IDirect3DDevice9* device,
+    const OpenXrTemporalBuildTicket& leftTicket,
+    const OpenXrTemporalBuildTicket& rightTicket) {
+  if (!device || !g_holdL || !g_holdR ||
+      !g_texL || !g_texR) {
+    return false;
+  }
+
+  IDirect3DSurface9* leftSource = nullptr;
+  IDirect3DSurface9* rightSource = nullptr;
+  if (FAILED(g_holdL->GetSurfaceLevel(
+          0u, &leftSource)) ||
+      !leftSource ||
+      FAILED(g_holdR->GetSurfaceLevel(
+          0u, &rightSource)) ||
+      !rightSource) {
+    if (leftSource)
+      leftSource->Release();
+    if (rightSource)
+      rightSource->Release();
+    return false;
+  }
+
+  g_openXrCanvasPoseOverride = &leftTicket.pose;
+  const bool leftReady = CopySurfToEyeCanvas(
+      device, leftSource, g_texL, vr::Eye_Left);
+  g_openXrCanvasPoseOverride = &rightTicket.pose;
+  const bool rightReady = CopySurfToEyeCanvas(
+      device, rightSource, g_texR, vr::Eye_Right);
+  g_openXrCanvasPoseOverride = nullptr;
+  leftSource->Release();
+  rightSource->Release();
+  if (!leftReady || !rightReady)
+    return false;
+
+  g_haveL = true;
+  g_haveR = true;
+  g_holdPoseLValid = false;
+  g_holdPoseRValid = false;
+  g_submitPoseLValid = false;
+  g_submitPoseRValid = false;
+  CompleteOpenXrPair(
+      g_holdOpenXrStamp[0],
+      g_holdOpenXrStamp[1],
+      false,
+      g_rtW,
+      g_rtH,
+      false,
+      false,
+      false,
+      true);
+  return true;
+}
+
+void CaptureOpenXrTemporalReceiptPair(
+    IDirect3DDevice9* device,
+    const OpenXrTemporalBuildTicket& ticket,
+    DWORD d3dThreadId,
+    bool haveReceipt) {
+  if (!device || !g_holdL || !g_holdR ||
+      !g_texL || !g_texR) {
+    ResetOpenXrTemporalPendingPair();
+    return;
+  }
+
+  const uint64_t currentGeneration =
+      g_openXrTemporalGeneration.load(
+          std::memory_order_acquire);
+  const int eyeIndex =
+      ticket.eye == StereoEye::Right ? 1 : 0;
+  const bool receiptValid =
+      haveReceipt &&
+      ticket.valid &&
+      !g_openXrTemporalStructuralFailure.load(
+          std::memory_order_acquire) &&
+      ticket.generation == currentGeneration &&
+      ticket.buildEpoch != 0u &&
+      IsValidOpenXrTemporalBuildPose(ticket.pose) &&
+      ticket.cameraGeneration != 0u &&
+      ticket.buildThreadId ==
+          g_openXrTemporalBuildThreadId.load(
+              std::memory_order_acquire) &&
+      ticket.execThreadId ==
+          g_openXrTemporalExecThreadId.load(
+              std::memory_order_acquire) &&
+      d3dThreadId ==
+          g_openXrTemporalD3dThreadId.load(
+              std::memory_order_acquire) &&
+      ticket.buildThreadId != 0u &&
+      ticket.execThreadId != 0u &&
+      d3dThreadId != 0u;
+  if (!receiptValid) {
+    g_openXrTemporalCleanReceipts = 0u;
+    g_openXrTemporalLastGeneration = 0u;
+    g_openXrTemporalLastReceiptBuildEpoch = 0u;
+    g_openXrTemporalLastReceiptEye = -1;
+    ResetOpenXrTemporalPendingPair();
+    return;
+  }
+
+  const bool sameGeneration =
+      g_openXrTemporalLastGeneration ==
+      ticket.generation;
+  const bool consecutiveReceipt =
+      g_openXrTemporalLastReceiptBuildEpoch == 0u ||
+      ticket.buildEpoch ==
+          g_openXrTemporalLastReceiptBuildEpoch + 1u;
+  const bool alternatingReceipt =
+      g_openXrTemporalLastReceiptEye < 0 ||
+      eyeIndex != g_openXrTemporalLastReceiptEye;
+  if (!sameGeneration ||
+      !consecutiveReceipt ||
+      !alternatingReceipt) {
+    g_openXrTemporalCleanReceipts = 1u;
+    ResetOpenXrTemporalPendingPair();
+  } else {
+    ++g_openXrTemporalCleanReceipts;
+  }
+  g_openXrTemporalLastGeneration = ticket.generation;
+  g_openXrTemporalLastReceiptBuildEpoch =
+      ticket.buildEpoch;
+  g_openXrTemporalLastReceiptEye = eyeIndex;
+  if (g_openXrTemporalCleanReceipts < 4u)
+    return;
+
+  const OpenXrCaptureStamp stamp =
+      CaptureOpenXrStampFromBuildTicket(ticket);
+  if (!stamp.valid) {
+    ResetOpenXrTemporalPendingPair();
+    return;
+  }
+
+  if (ticket.eye == StereoEye::Left) {
+    ResetOpenXrTemporalPendingPair();
+    if (!CopyBbToEye(device, g_holdL))
+      return;
+    g_holdOpenXrStamp[0] = stamp;
+    g_holdOpenXrBuildEpoch[0] = ticket.buildEpoch;
+    g_holdOpenXrTicket[0] = ticket;
+    g_holdOpenXrD3dThreadId[0] = d3dThreadId;
+    g_pairAwaitingR = true;
+    return;
+  }
+
+  if (!g_pairAwaitingR)
+    return;
+  if (!CopyBbToEye(device, g_holdR)) {
+    ResetOpenXrTemporalPendingPair();
+    return;
+  }
+  g_holdOpenXrStamp[1] = stamp;
+  g_holdOpenXrBuildEpoch[1] = ticket.buildEpoch;
+  g_holdOpenXrTicket[1] = ticket;
+  g_holdOpenXrD3dThreadId[1] = d3dThreadId;
+
+  const OpenXrTemporalBuildTicket& leftTicket =
+      g_holdOpenXrTicket[0];
+  const OpenXrTemporalBuildTicket& rightTicket =
+      g_holdOpenXrTicket[1];
+  const OpenXrCaptureStamp& leftStamp =
+      g_holdOpenXrStamp[0];
+  const OpenXrCaptureStamp& rightStamp =
+      g_holdOpenXrStamp[1];
+  const bool buildEpochsOrdered =
+      leftTicket.eye == StereoEye::Left &&
+      rightTicket.eye == StereoEye::Right &&
+      rightTicket.buildEpoch == leftTicket.buildEpoch + 1u &&
+      rightTicket.generation == leftTicket.generation;
+  const bool stampsOrdered =
+      leftStamp.valid &&
+      rightStamp.valid &&
+      rightStamp.sourceFrameId ==
+          leftStamp.sourceFrameId + 1u &&
+      rightStamp.poseSequence > leftStamp.poseSequence &&
+      rightStamp.renderedDisplayTime >
+          leftStamp.renderedDisplayTime;
+  const bool threadsOrdered =
+      leftTicket.buildThreadId ==
+          rightTicket.buildThreadId &&
+      leftTicket.execThreadId ==
+          rightTicket.execThreadId &&
+      g_holdOpenXrD3dThreadId[0] ==
+          g_holdOpenXrD3dThreadId[1] &&
+      leftTicket.buildThreadId != 0u &&
+      leftTicket.execThreadId != 0u &&
+      g_holdOpenXrD3dThreadId[0] != 0u;
+  // Prove the binocular baseline in head-local space from the exact selected
+  // eye offsets carried by the two pinned BuildRootA receipts. The applied
+  // world-space vectors use different temporal HMD orientations, so
+  // subtracting them could mistake head rotation for a binocular baseline.
+  const float dx =
+      rightTicket.cameraEyeOffsetLocal[0] -
+      leftTicket.cameraEyeOffsetLocal[0];
+  const float dy =
+      rightTicket.cameraEyeOffsetLocal[1] -
+      leftTicket.cameraEyeOffsetLocal[1];
+  const float dz =
+      rightTicket.cameraEyeOffsetLocal[2] -
+      leftTicket.cameraEyeOffsetLocal[2];
+  const float cameraDistanceCm =
+      std::sqrt(dx * dx + dy * dy + dz * dz) *
+      100.f;
+  const auto offsetMagnitude = [](
+      const float offset[3]) {
+    return std::sqrt(
+        offset[0] * offset[0] +
+        offset[1] * offset[1] +
+        offset[2] * offset[2]);
+  };
+  const float leftLocalMagnitude =
+      offsetMagnitude(leftTicket.cameraEyeOffsetLocal);
+  const float rightLocalMagnitude =
+      offsetMagnitude(rightTicket.cameraEyeOffsetLocal);
+  const float leftAppliedMagnitude =
+      offsetMagnitude(leftTicket.cameraEyeOffset);
+  const float rightAppliedMagnitude =
+      offsetMagnitude(rightTicket.cameraEyeOffset);
+  constexpr float EyeOffsetMagnitudeTolerance = 1e-3f;
+  const bool appliedOffsetsMatchSelected =
+      std::isfinite(leftLocalMagnitude) &&
+      std::isfinite(rightLocalMagnitude) &&
+      std::isfinite(leftAppliedMagnitude) &&
+      std::isfinite(rightAppliedMagnitude) &&
+      std::fabs(
+          leftAppliedMagnitude -
+          leftLocalMagnitude) <=
+          EyeOffsetMagnitudeTolerance &&
+      std::fabs(
+          rightAppliedMagnitude -
+          rightLocalMagnitude) <=
+          EyeOffsetMagnitudeTolerance;
+  const bool cameraBaselineValid =
+      leftTicket.cameraEyeOffsetApplied &&
+      rightTicket.cameraEyeOffsetApplied &&
+      appliedOffsetsMatchSelected &&
+      rightTicket.cameraGeneration >
+          leftTicket.cameraGeneration &&
+      std::isfinite(cameraDistanceCm) &&
+      cameraDistanceCm >= 1.f &&
+      cameraDistanceCm <= 20.f;
+
+  const uint32_t prospectivePair =
+      g_openXrTemporalStereoCount.load(
+          std::memory_order_acquire) + 1u;
+  const bool auditPixels =
+      !g_openXrTemporalStereoProved.load(
+          std::memory_order_acquire) ||
+      prospectivePair <= 4u ||
+      prospectivePair % 120u == 0u;
+  constexpr long long TemporalStereoMinRgbAbsDiff =
+      1024;
+  constexpr uint32_t TemporalStereoMinChangedPixels =
+      16u;
+  constexpr uint32_t TemporalStereoMinChangedTiles =
+      4u;
+  long long rawAbsDiff = -1;
+  uint32_t changedPixels = 0u;
+  uint32_t changedTiles = 0u;
+  bool pixelsProved =
+      g_openXrTemporalStereoProved.load(
+          std::memory_order_acquire);
+  if (auditPixels) {
+    rawAbsDiff = CompareTexturePair(
+        device,
+        g_holdL,
+        g_holdR,
+        "StereoOpenXRTemporalRaw",
+        false,
+        64u,
+        &changedPixels,
+        &changedTiles);
+    pixelsProved =
+        rawAbsDiff >= TemporalStereoMinRgbAbsDiff &&
+        changedPixels >= TemporalStereoMinChangedPixels &&
+        changedTiles >= TemporalStereoMinChangedTiles;
+  }
+
+  const bool promoted =
+      buildEpochsOrdered &&
+      stampsOrdered &&
+      threadsOrdered &&
+      cameraBaselineValid &&
+      pixelsProved &&
+      PromoteOpenXrTemporalReceiptPair(
+          device, leftTicket, rightTicket);
+  if (promoted) {
+    g_openXrTemporalStereoProved.store(
+        true, std::memory_order_release);
+    const uint32_t pairNumber =
+        g_openXrTemporalStereoCount.fetch_add(
+            1u, std::memory_order_acq_rel) + 1u;
+    if (pairNumber <= 4u ||
+        pairNumber % 120u == 0u) {
+      Log(
+          "StereoOpenXRTemporal: pair #%u "
+          "build=%llu/%llu pose=%llu/%llu "
+          "display=%lld/%lld rawRgbAbsDiff=%lld "
+          "changedPixels=%u changedTiles=%u "
+          "camDist=%.2fcm camGen=%u/%u "
+          "buildTid=%lu execTid=%lu d3dTid=%lu "
+          "proof=buildroot-execroot-fifo-beginscene-endscene-entry",
+          pairNumber,
+          static_cast<unsigned long long>(
+              leftTicket.buildEpoch),
+          static_cast<unsigned long long>(
+              rightTicket.buildEpoch),
+          static_cast<unsigned long long>(
+              leftTicket.pose.frameId),
+          static_cast<unsigned long long>(
+              rightTicket.pose.frameId),
+          static_cast<long long>(
+              leftTicket.pose.predictedDisplayTime),
+          static_cast<long long>(
+              rightTicket.pose.predictedDisplayTime),
+          rawAbsDiff,
+          changedPixels,
+          changedTiles,
+          cameraDistanceCm,
+          leftTicket.cameraGeneration,
+          rightTicket.cameraGeneration,
+          static_cast<unsigned long>(
+              leftTicket.buildThreadId),
+          static_cast<unsigned long>(
+              leftTicket.execThreadId),
+          static_cast<unsigned long>(
+              g_holdOpenXrD3dThreadId[0]));
+    }
+  } else {
+    static uint32_t rejectedPairs = 0u;
+    const uint32_t rejected = ++rejectedPairs;
+    if (rejected <= 6u || rejected % 120u == 0u) {
+      Log(
+          "StereoOpenXRTemporal: withheld receipt pair #%u "
+          "build=%d stamps=%d threads=%d camera=%d "
+          "pixels=%d rawRgbAbsDiff=%lld "
+          "changedPixels=%u changedTiles=%u "
+          "camDist=%.2fcm",
+          rejected,
+          buildEpochsOrdered ? 1 : 0,
+          stampsOrdered ? 1 : 0,
+          threadsOrdered ? 1 : 0,
+          cameraBaselineValid ? 1 : 0,
+          pixelsProved ? 1 : 0,
+          rawAbsDiff,
+          changedPixels,
+          changedTiles,
+          cameraDistanceCm);
+    }
+  }
+  ResetOpenXrTemporalPendingPair();
+}
+
+void StereoNotifyDeviceLost() {
+  const bool hadResources =
+      g_texL || g_texR || g_holdL || g_holdR || g_resolveSurf;
+  if (GetStereoMode() ==
+      StereoMode::OpenXrTemporalStereo) {
+    g_openXrTemporalActiveScene = {};
+    RequestOpenXrTemporalReceiptReset();
+  }
+  ReleaseEyeRts();
+  g_device = nullptr;
+  g_openXrRawStereoProved.store(false);
+  g_openXrRawAuditAttempts.store(0u);
+  if (hadResources) {
+    Log("DeviceReset: released eye RTs (POOL_DEFAULT) before/after Lost - will recreate");
+  }
+}
+
 void StereoSetOpenXrRenderPose(
     const gtaiv_xr_bridge::PoseBridge* pose) {
-  if (!pose ||
-      (pose->flags & gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
-      pose->frameId == 0u ||
-      pose->predictedDisplayTime == 0) {
+  const bool newPoseValid =
+      pose &&
+      (pose->flags &
+       gtaiv_xr_bridge::PoseBridgeViewsValid) != 0u &&
+      pose->frameId != 0u &&
+      pose->predictedDisplayTime != 0;
+  if (!newPoseValid) {
+    if (g_openXrRenderPoseValid &&
+        GetStereoMode() ==
+            StereoMode::OpenXrTemporalStereo) {
+      RequestOpenXrTemporalReceiptReset();
+    }
     g_openXrRenderPose = {};
     g_openXrRenderPoseValid = false;
     return;
+  }
+  if (GetStereoMode() ==
+          StereoMode::OpenXrTemporalStereo &&
+      (!g_openXrRenderPoseValid ||
+       g_openXrRenderPose.producerEpoch !=
+           pose->producerEpoch)) {
+    RequestOpenXrTemporalReceiptReset();
   }
   g_openXrRenderPose = *pose;
   g_openXrRenderPoseValid = true;
@@ -5757,6 +7027,8 @@ bool InstallStereoRenderHooks() {
     g_openXrPairVerifiedDrawScene = false;
     g_openXrDrawSceneStereoDead.store(false);
     g_openXrDrawSceneStereoCount.store(0u);
+    g_openXrRawStereoProved.store(false);
+    g_openXrRawAuditAttempts.store(0u);
     const bool fovReady = InstallFovRecomputeSiteHook();
     const uintptr_t drawScene = FindDrawSceneBuildRenderList();
     const bool drawReady = HookOneBuild(
@@ -5772,6 +7044,57 @@ bool InstallStereoRenderHooks() {
         fovReady ? 1 : 0,
         drawReady ? 1 : 0);
     Log("StereoRender: Mode55 is the immediate fallback if the guarded seam disables");
+    return g_ok.load();
+  }
+
+  if (mode == StereoMode::OpenXrTemporalStereo) {
+    SetStereoEye(StereoEye::Left);
+    g_haveL = false;
+    g_haveR = false;
+    g_pairAwaitingR = false;
+    g_loggedIpd = false;
+    g_openXrPairSameTick = false;
+    g_openXrPairVerifiedWvp = false;
+    g_openXrPairVerifiedDrawScene = false;
+    g_openXrPairVerifiedTemporal = false;
+    g_openXrTemporalStereoProved.store(false);
+    g_openXrTemporalStereoCount.store(0u);
+    g_holdOpenXrStamp[0] = {};
+    g_holdOpenXrStamp[1] = {};
+    g_openXrTemporalNextEye = 0;
+    g_openXrTemporalLastUiState = -1;
+    g_openXrTemporalBuildEpoch.store(
+        0u, std::memory_order_release);
+    g_openXrTemporalBuildThreadId.store(
+        0u, std::memory_order_release);
+    g_openXrTemporalExecThreadId.store(
+        0u, std::memory_order_release);
+    g_openXrTemporalD3dThreadId.store(
+        0u, std::memory_order_release);
+    g_openXrTemporalExecPrimed.store(
+        false, std::memory_order_release);
+    // Root producers are not installed yet, so both SPSC rings are quiescent.
+    // Reset them before clearing the session poison.
+    g_openXrTemporalBuildTickets.resetQuiescent();
+    g_openXrTemporalSceneTickets.resetQuiescent();
+    g_openXrTemporalStructuralFailure.store(
+        false, std::memory_order_release);
+    g_openXrTemporalQueueFailures.store(
+        0u, std::memory_order_release);
+    g_openXrTemporalWarmupMisses.store(
+        0u, std::memory_order_release);
+    g_openXrTemporalActiveScene = {};
+    RequestOpenXrTemporalReceiptReset();
+    const bool fovReady = InstallFovRecomputeSiteHook();
+    const bool rootReady = InstallRootProbeHooks(2);
+    g_ok = fovReady && rootReady;
+    Log(
+        "StereoRender: mode 57 OPENXR TEMPORAL STEREO "
+        "(BuildRootA eye/pose/camera FIFO -> ExecRoot FIFO -> later "
+        "successful BeginScene -> matching EndScene; atomic ordered pair, "
+        "no OpenVR calls) fovOk=%d rootOk=%d",
+        fovReady ? 1 : 0,
+        rootReady ? 1 : 0);
     return g_ok.load();
   }
 
@@ -6486,7 +7809,21 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
   const bool mode54DrawReady =
       mode != StereoMode::OpenXrSameFrameWvp ||
       InstallStereoDrawPatchHooks(device);
-  if (GetUiPresentationState()) {
+  const UiPresentationState uiState =
+      GetUiPresentationState();
+  OpenXrTemporalBuildTicket temporalTicket{};
+  DWORD temporalD3dThreadId = 0u;
+  bool haveTemporalReceipt = false;
+  if (mode == StereoMode::OpenXrTemporalStereo) {
+    ObserveOpenXrTemporalPresentationRoute(
+        static_cast<bool>(uiState));
+    haveTemporalReceipt =
+        TakeOpenXrTemporalSceneReceipt(
+            device,
+            &temporalTicket,
+            &temporalD3dThreadId);
+  }
+  if (uiState) {
     if (!CaptureOpenXrUiPair(device)) {
       static uint64_t lastFailureTick = 0u;
       const uint64_t now = GetTickCount64();
@@ -6544,6 +7881,77 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
         lastFailureTick = now;
       }
     }
+    return;
+  }
+  if (mode == StereoMode::OpenXrTemporalStereo) {
+    IDirect3DSurface9* backBuffer = nullptr;
+    if (FAILED(device->GetBackBuffer(
+            0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) ||
+        !backBuffer) {
+      CaptureOpenXrTemporalReceiptPair(
+          device,
+          temporalTicket,
+          temporalD3dThreadId,
+          false);
+      return;
+    }
+    D3DSURFACE_DESC description{};
+    const HRESULT described = backBuffer->GetDesc(&description);
+    backBuffer->Release();
+    if (FAILED(described)) {
+      CaptureOpenXrTemporalReceiptPair(
+          device,
+          temporalTicket,
+          temporalD3dThreadId,
+          false);
+      return;
+    }
+    uint32_t textureWidth = description.Width;
+    uint32_t textureHeight = description.Height;
+    ComputeCanvasSize(
+        description.Width,
+        description.Height,
+        &textureWidth,
+        &textureHeight);
+    if (!EnsureEyeRts(device, textureWidth, textureHeight)) {
+      static uint64_t lastFailureTick = 0u;
+      const uint64_t now = GetTickCount64();
+      if (lastFailureTick == 0u ||
+          now - lastFailureTick >= 2000u) {
+        Log(
+            "StereoOpenXRTemporal: could not allocate the "
+            "ordered L/R CPU-mailbox canvases");
+        lastFailureTick = now;
+      }
+      CaptureOpenXrTemporalReceiptPair(
+          device,
+          temporalTicket,
+          temporalD3dThreadId,
+          false);
+      return;
+    }
+    if (!IsCamMatrixOverrideEnabled()) {
+      static uint64_t lastCameraFailureTick = 0u;
+      const uint64_t now = GetTickCount64();
+      if (lastCameraFailureTick == 0u ||
+          now - lastCameraFailureTick >= 2000u) {
+        Log(
+            "StereoOpenXRTemporal: camera override unavailable; "
+            "world pair withheld");
+        lastCameraFailureTick = now;
+      }
+      CaptureOpenXrTemporalReceiptPair(
+          device,
+          temporalTicket,
+          temporalD3dThreadId,
+          false);
+      return;
+    }
+    CaptureOpenXrTemporalReceiptPair(
+        device,
+        temporalTicket,
+        temporalD3dThreadId,
+        haveTemporalReceipt);
     return;
   }
   if (!mode54DrawReady) {
@@ -6934,6 +8342,7 @@ bool StereoAcquireOpenXrPair(OpenXrStereoPair* output) {
       g_submitOpenXrStamp[0].valid && g_submitOpenXrStamp[1].valid;
   output->verifiedWvpStereo = g_openXrPairVerifiedWvp;
   output->verifiedDrawSceneStereo = g_openXrPairVerifiedDrawScene;
+  output->verifiedTemporalStereo = g_openXrPairVerifiedTemporal;
   output->uiQuad = g_openXrPairUiQuad;
   output->immersiveMono = g_openXrPairImmersiveMono;
   return true;

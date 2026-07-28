@@ -22,6 +22,10 @@ struct OpenXrStereoPair {
   bool poseStamped = false;
   bool verifiedWvpStereo = false;
   bool verifiedDrawSceneStereo = false;
+  // True only for the explicit direct-OpenXR temporal mode: the two
+  // non-aliased images came from an ordered L->R pair of complete native GTA
+  // frames. This is deliberately separate from every same-tick proof bit.
+  bool verifiedTemporalStereo = false;
   bool uiQuad = false;
   bool immersiveMono = false;
 };
@@ -30,6 +34,11 @@ bool InstallStereoRenderHooks();
 
 // Create/resize eye RTs when mode >= 4.
 void StereoRenderOnDevice(IDirect3DDevice9* device);
+// Mode 57: bind the ExecRoot receipt to the exact successful D3D scene.
+// Called only by the already-installed IDirect3DDevice9::BeginScene hook.
+void StereoMode57BeginScene(IDirect3DDevice9* device);
+// Release every D3DPOOL_DEFAULT capture resource before/after device Reset.
+void StereoNotifyDeviceLost();
 // Pose/FOV that GTA used to render the frame currently at EndScene.
 // Null invalidates capture after host loss and before the first owned frame.
 void StereoSetOpenXrRenderPose(
