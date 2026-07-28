@@ -1,6 +1,35 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-28 04:44 PT
+**As of:** 2026-07-28 06:01 PT
+
+## Latest launcher cleanup: audited Steam route, no continuous process polling
+
+The supervised launcher no longer enumerates SteamVR processes every 100 ms while
+waiting for the OpenXR host, Steam/Rockstar authentication, gameplay, or Elliott
+command acknowledgments. It performs three one-time checks on the normal path:
+initial preflight, immediately before starting the x64 OpenXR host, and immediately
+before the normal Steam authentication request. If Rockstar requires the single
+permitted authentication retry, that retry repeats the same one-time boundary check.
+
+The remaining prevention is deterministic and stays active for the whole run:
+
+- the game-folder `openvr_api.dll` is backed up and absent;
+- `gtaiv_dxvk_vr.disable` is present and `backend=openxr`;
+- the x64 host always receives the already-validated OpenXR manifest as a child-only
+  override, closing a registry-change window before `xrCreateInstance`;
+- every non-empty GTA IV Steam launch-options value is rejected;
+- the only Steam command is exactly `steam.exe -applaunch 12210`, with no title
+  arguments; the one permitted Rockstar handoff retry repeats that exact command;
+- the ASI fails closed if OpenVR is selected or `openvr_api.dll` becomes loaded.
+
+The launcher's AST safety contract now proves exactly two process-start primitives:
+one x64 host start plus one audited normal-Steam helper. Both initial authentication
+and the single retry call that same helper, whose only command is
+`steam.exe -applaunch 12210`. The contract also proves no SteamVR boundary check
+inside any `while` loop, no dashboard URI, and no restart-script route. The
+launcher-safety, Elliott proof-contract, and OpenXR runtime-classifier tests pass.
+This was a script/test-only change; no GTA, Steam, OpenXR, or SteamVR process was
+started.
 
 ## Latest producer pacing pass: two-boundary Mode 57 readback (full-game proof PASS)
 
@@ -358,8 +387,8 @@ It defaults to Mode 55; the explicit Mode 56 test command is:
 ```
 
 It removes/backups `openvr_api.dll`, writes the disable sentinel, checks the Meta
-OpenXR runtime, polls for every SteamVR process every 100 ms, and aborts if SteamVR
-appears. It has not been run against Mode 56. A single supervised headset result must
+OpenXR runtime, and uses audited one-time launch-boundary checks rather than
+continuous SteamVR process polling. It has not been run against Mode 56. A single supervised headset result must
 prove smooth world motion, real L/R depth, stationary menus, color, and controls
 before this can be called working.
 

@@ -82,7 +82,8 @@ This is a live, supervised operation and remains locked behind `-Authorized`:
 
 Regular Steam may open solely for GTA IV authentication. The script removes the
 game-folder OpenVR DLL during the run, writes the OpenVR disable sentinel, watches
-for SteamVR processes every 100 ms, aborts if one appears, and restores the prior
+for SteamVR only at audited launch boundaries, performs no continuous process
+polling, and restores the prior
 game files afterward.
 
 For the fully automated no-window proof, use the pinned Elliott simulator instead:

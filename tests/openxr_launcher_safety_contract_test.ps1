@@ -109,6 +109,18 @@ $requiredPatterns = [ordered]@{
     '"archiveFailures=\$\(\$archiveFailures -join '' \| ''\)"'
   BestEffortRestoreStatus =
     'Write-StatusBestEffort \(\s*"RESTORE WARNING:'
+  OpenXrBackendDeploy =
+    'Set-Content -LiteralPath \$BackendFile -Value "openxr"'
+  OpenVrDisableSentinel =
+    'Set-Content -LiteralPath \$DisableFile -Value "1"'
+  OpenVrDllRemoval =
+    'Remove-Item -LiteralPath \$InstalledOpenVr -Force'
+  SteamLaunchOptionsEmpty =
+    '\-not \[string\]::IsNullOrWhiteSpace\(\$launchOptions\)'
+  ValidatedRuntimePinned =
+    '\$env:XR_RUNTIME_JSON\s*=\s*\$runtime'
+  NoContinuousSteamVrStatus =
+    'no continuous SteamVR process polling'
 }
 foreach ($entry in $requiredPatterns.GetEnumerator()) {
   if ($launcher -notmatch $entry.Value) {
@@ -121,6 +133,12 @@ $forbiddenPatterns = [ordered]@{
     '(?s)Stop-ByName\s+@\([^\)]*"PlayGTAIV"'
   RockstarSiblingPrefix =
     '(?s)GetFullPath\(\$processPath\)\.StartsWith\(\s*\$rockstarRoot'
+  OldContinuousSteamVrStatus =
+    'SteamVR polled every 100 ms'
+  DashboardLaunchUri =
+    'vrmonitor://'
+  RestartScriptLaunch =
+    'restart-gtaiv'
 }
 foreach ($entry in $forbiddenPatterns.GetEnumerator()) {
   if ($launcher -match $entry.Value) {
@@ -156,9 +174,105 @@ if ($barrier.Finally.Extent.Text -notmatch 'Write-StatusBestEffort') {
   throw "Restoration loop can still be interrupted by a status-log failure."
 }
 
+$steamVrBoundaryName = "Assert-And-Stop-SteamVrAtLaunchBoundary"
+$steamVrBoundaryCalls = @($launcherAst.FindAll(
+  {
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and
+    $node.GetCommandName() -eq $steamVrBoundaryName
+  },
+  $true
+))
+if ($steamVrBoundaryCalls.Count -ne 3) {
+  throw (
+    "Expected exactly three one-time SteamVR launch-boundary checks; found " +
+    "$($steamVrBoundaryCalls.Count)."
+  )
+}
+
+$steamVrPollingLoops = @($launcherAst.FindAll(
+  {
+    param($node)
+    $node -is [System.Management.Automation.Language.WhileStatementAst] -and
+    $node.Extent.Text -match [regex]::Escape($steamVrBoundaryName)
+  },
+  $true
+))
+if ($steamVrPollingLoops.Count -ne 0) {
+  throw (
+    "SteamVR process checks must not run inside a watchdog/polling loop; found " +
+    "$($steamVrPollingLoops.Count)."
+  )
+}
+
+$startProcessCommands = @($launcherAst.FindAll(
+  {
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and
+    $node.GetCommandName() -eq "Start-Process"
+  },
+  $true
+))
+$hostStartCommands = @($startProcessCommands | Where-Object {
+  $_.Extent.Text -match '-FilePath\s+\$HostExe\b'
+})
+$steamStartCommands = @($startProcessCommands | Where-Object {
+  $_.Extent.Text -match '-FilePath\s+\$SteamExe\b'
+})
+if ($startProcessCommands.Count -ne 2 -or
+    $hostStartCommands.Count -ne 1 -or
+    $steamStartCommands.Count -ne 1) {
+  throw (
+    "Launcher process-start surface changed: total=$($startProcessCommands.Count) " +
+    "host=$($hostStartCommands.Count) steam=$($steamStartCommands.Count)."
+  )
+}
+foreach ($steamStart in $steamStartCommands) {
+  if ($steamStart.Extent.Text -notmatch
+      '(?s)-ArgumentList\s+@\(\s*"-applaunch"\s*,\s*"12210"\s*\)') {
+    throw "Steam launch is not the exact argument-free GTA IV app 12210 route."
+  }
+  if ($steamStart.Extent.Text -match
+      '(?i)(vrmonitor|steamvr|openvr|vrmode|\-vr\b)') {
+    throw "Steam launch contains a forbidden VR argument or target."
+  }
+}
+
+$steamAuthFunctionName = "Start-AuditedGtaSteamAuthentication"
+$steamAuthFunctions = @($launcherAst.FindAll(
+  {
+    param($node)
+    $node -is
+      [System.Management.Automation.Language.FunctionDefinitionAst] -and
+    $node.Name -eq $steamAuthFunctionName
+  },
+  $true
+))
+if ($steamAuthFunctions.Count -ne 1 -or
+    $steamAuthFunctions[0].Extent.Text -notmatch
+      '(?s)Assert-And-Stop-SteamVrAtLaunchBoundary.*Start-Process') {
+  throw "Steam authentication is not isolated behind one audited launch helper."
+}
+$steamAuthCalls = @($launcherAst.FindAll(
+  {
+    param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and
+    $node.GetCommandName() -eq $steamAuthFunctionName
+  },
+  $true
+))
+if ($steamAuthCalls.Count -ne 2) {
+  throw (
+    "Expected initial authentication plus one audited retry call site; found " +
+    "$($steamAuthCalls.Count)."
+  )
+}
+
 Write-Output (
   "OpenXrLauncherSafetyContractTest: PASS " +
   "rootCases=$($rootCases.Count) exactPath=2 " +
   "required=$($requiredPatterns.Count) forbidden=$($forbiddenPatterns.Count) " +
-  "restorationBarrier=1"
+  "restorationBarrier=1 boundaryChecks=$($steamVrBoundaryCalls.Count) " +
+  "pollingLoops=0 processStarts=$($startProcessCommands.Count) " +
+  "steamAuthCalls=$($steamAuthCalls.Count)"
 )

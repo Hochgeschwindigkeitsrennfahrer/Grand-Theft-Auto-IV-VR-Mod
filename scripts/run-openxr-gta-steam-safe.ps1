@@ -226,7 +226,7 @@ function Stop-StaleRockstarLauncherSession([string]$Reason) {
   }
 }
 
-function Assert-And-Stop-SteamVr {
+function Assert-And-Stop-SteamVrAtLaunchBoundary {
   $steamVr = @(Get-ByName $SteamVrNames)
   if ($steamVr.Count -eq 0) {
     return
@@ -238,6 +238,16 @@ function Assert-And-Stop-SteamVr {
     "{0}(pid={1})" -f $_.ProcessName, $_.Id
   }) -join ", "
   throw "STEAMVR SAFETY ABORT: $summary"
+}
+
+function Start-AuditedGtaSteamAuthentication([string]$Reason) {
+  Assert-And-Stop-SteamVrAtLaunchBoundary
+  Start-Process `
+    -FilePath $SteamExe `
+    -ArgumentList @("-applaunch", "12210") `
+    -WorkingDirectory (Split-Path -Parent $SteamExe) `
+    -WindowStyle Hidden | Out-Null
+  Write-Status "AUTH: $Reason; regular Steam app 12210 with no custom arguments"
 }
 
 function Read-Text([string]$Path) {
@@ -402,7 +412,6 @@ function Wait-ElliottCommandAck(
   $script:ElliottLastAckFailure =
     "$Command acknowledgment timed out after ${TimeoutMs}ms"
   while ([DateTime]::UtcNow -lt $deadline) {
-    Assert-And-Stop-SteamVr
     if ($hostProcess) {
       $hostProcess.Refresh()
       if ($hostProcess.HasExited) {
@@ -752,7 +761,7 @@ if ($runtimeInfo.RequiresOvrService) {
 }
 $inspectionTarget = if ($runtimeInfo.IsSimulator) { "SIMULATOR" } else { "HEADSET" }
 
-Assert-And-Stop-SteamVr
+Assert-And-Stop-SteamVrAtLaunchBoundary
 $conflicts = @(Get-ByName @("GTAIV", "PlayGTAIV", "gtaiv_xr_host"))
 if ($conflicts.Count -gt 0) {
   throw "GTA/host process already exists; refusing an ambiguous run."
@@ -913,17 +922,24 @@ $priorSimulatorExternalFocus =
 try {
   Write-Status "SAFETY: $($runtimeInfo.DisplayName) selected; SteamVR absent"
   Write-Status "SAFETY: runtimeKind=$($runtimeInfo.Kind)"
-  if ($RuntimeManifest) {
-    Write-Status "SAFETY: child-only XR_RUNTIME_JSON override; system ActiveRuntime unchanged"
-  }
-  Write-Status "SAFETY: normal Steam authentication allowed; SteamVR polled every 100 ms"
+  Write-Status (
+    "SAFETY: validated manifest pinned child-only with XR_RUNTIME_JSON; " +
+    "system ActiveRuntime unchanged"
+  )
+  Write-Status (
+    "SAFETY: normal Steam authentication only; audited launch-boundary " +
+    "checks; no continuous SteamVR process polling"
+  )
   $gtaLaunchOptions = @(Get-SteamAppLaunchOptions "12210")
   foreach ($launchOptions in $gtaLaunchOptions) {
-    if ($launchOptions -match '(?i)(openvr|steamvr|vrmode|\-vr\b)') {
-      throw "GTA IV Steam launch options request VR: '$launchOptions'. Clear them in Steam before this no-SteamVR test."
+    if (-not [string]::IsNullOrWhiteSpace($launchOptions)) {
+      throw (
+        "GTA IV Steam launch options must be empty for this audited route: " +
+        "'$launchOptions'. Clear them in Steam before testing."
+      )
     }
   }
-  Write-Status "SAFETY: GTA IV Steam launch options contain no OpenVR/SteamVR request"
+  Write-Status "SAFETY: GTA IV Steam launch options are empty"
   Write-Status "ARTIFACT: ASI sha256=$(Get-Sha256 $CandidateAsi)"
   Write-Status "ARTIFACT: host sha256=$(Get-Sha256 $HostExe)"
   if ($ElliottCliProof) {
@@ -971,7 +987,7 @@ try {
     default { "immersive mono baseline" }
   }
   Write-Status "DEPLOYED: backend=openxr stereo=$StereoMode ($stereoDescription)"
-  Write-Status "OPENVR HARD-BLOCKED: disable sentinel present; openvr_api.dll removed and backed up"
+  Write-Status "OPENVR ISOLATED: disable sentinel present; openvr_api.dll removed and backed up"
 
   & $HostExe --self-test | Out-Null
   if ($LASTEXITCODE -ne 0) {
@@ -984,11 +1000,9 @@ try {
   }
   Write-Status "OFFLINE GATES: protocol v6, CPU mono/stereo mailbox, stationary UI, and sRGB decode PASS"
 
-  Assert-And-Stop-SteamVr
+  Assert-And-Stop-SteamVrAtLaunchBoundary
   try {
-    if ($RuntimeManifest) {
-      $env:XR_RUNTIME_JSON = $runtime
-    }
+    $env:XR_RUNTIME_JSON = $runtime
     if ($runtimeInfo.Kind -eq "ElliottSimulator") {
       $env:OPENXR_SIMULATOR_HEADLESS = "1"
       $env:OPENXR_SIMULATOR_EXTERNAL_FOCUS_EXE = "GTAIV.exe"
@@ -1033,7 +1047,6 @@ try {
 
   $focusDeadline = [DateTime]::UtcNow.AddSeconds(30)
   while ([DateTime]::UtcNow -lt $focusDeadline) {
-    Assert-And-Stop-SteamVr
     $hostProcess.Refresh()
     if ($hostProcess.HasExited) {
       throw "OpenXR host exited before launch, exit=$($hostProcess.ExitCode)"
@@ -1058,19 +1071,12 @@ try {
     Write-Status "ELLIOTT CLI: initial both-controller neutral established"
   }
 
-  Assert-And-Stop-SteamVr
-  Start-Process `
-    -FilePath $SteamExe `
-    -ArgumentList @("-applaunch", "12210") `
-    -WorkingDirectory (Split-Path -Parent $SteamExe) `
-    -WindowStyle Hidden | Out-Null
-  Write-Status "AUTH: requested GTA IV app 12210 through regular Steam; no custom arguments"
+  Start-AuditedGtaSteamAuthentication "requested GTA IV"
 
   $launchDeadline = [DateTime]::UtcNow.AddSeconds(120)
   $authRetryAt = [DateTime]::UtcNow.AddSeconds(60)
   $authRetryAttempted = $false
   while ([DateTime]::UtcNow -lt $launchDeadline) {
-    Assert-And-Stop-SteamVr
     $hostProcess.Refresh()
     if ($hostProcess.HasExited) {
       throw "OpenXR host exited while GTA authenticated, exit=$($hostProcess.ExitCode)"
@@ -1086,12 +1092,7 @@ try {
         $PlayGtaExe `
         "stalled Rockstar handoff retry"
       Stop-StaleRockstarLauncherSession "stalled Rockstar handoff retry"
-      Assert-And-Stop-SteamVr
-      Start-Process `
-        -FilePath $SteamExe `
-        -ArgumentList @("-applaunch", "12210") `
-        -WorkingDirectory (Split-Path -Parent $SteamExe) `
-        -WindowStyle Hidden | Out-Null
+      Start-AuditedGtaSteamAuthentication "Rockstar handoff retry"
       $authRetryAttempted = $true
       Write-Status (
         "AUTH RETRY: Rockstar did not hand off to GTAIV.exe; requested " +
@@ -1144,7 +1145,6 @@ try {
     )
   }
   while ([DateTime]::UtcNow -lt $runDeadline) {
-    Assert-And-Stop-SteamVr
     $hostProcess.Refresh()
     if ($hostProcess.HasExited) {
       throw "OpenXR host exited during gameplay, exit=$($hostProcess.ExitCode)"

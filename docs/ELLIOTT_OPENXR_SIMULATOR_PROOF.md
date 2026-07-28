@@ -169,7 +169,8 @@ The launcher:
 3. deploys the candidate ASI with `backend=openxr` and `stereo=57`;
 4. backs up/removes `openvr_api.dll` and creates the OpenVR disable sentinel;
 5. starts the x64 host with a child-only Elliott runtime override;
-6. polls all SteamVR process names every 100 ms and aborts if any appears;
+6. checks SteamVR absence at the three launch boundaries, with no continuous
+   process polling;
 7. uses ordinary Steam app 12210 authentication with no title arguments and one
    bounded Rockstar handoff retry;
 8. drives Start/A/stick/neutral/pose through acknowledged JSON command files;
