@@ -57,6 +57,17 @@ enum FrameFlags : uint32_t
     // A same-tick L/R pair created by the known working DrawScene x2 seam.
     // This is deliberately distinct from the stricter WVP-draw proof above.
     VerifiedDrawSceneStereo = 1u << 10u,
+    // A same-tick L/R pair created at GTA IV CE's proven Mode 204 parent-dual
+    // seam. This route must also carry FirstPersonCamera and NativeHeadHidden;
+    // the x64 host then requires the exact shared capture pose before submit.
+    VerifiedParentDualStereo = 1u << 11u,
+    // The accepted world pair was rendered by the forced first-person camera
+    // path. This is a proof bit, not a request for the host to move a camera.
+    FirstPersonCamera = 1u << 12u,
+    // GTA's native player-head suppression was operational for this pair.
+    // It is required with VerifiedParentDualStereo so a third-person or
+    // inside-head frame cannot be mislabeled as the Mode 58 shipping route.
+    NativeHeadHidden = 1u << 13u,
 };
 
 enum class PresentationMode : uint32_t

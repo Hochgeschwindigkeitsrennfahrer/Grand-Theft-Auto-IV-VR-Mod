@@ -3,7 +3,7 @@ param(
   [string]$GameDir = "D:\SteamLibrary\steamapps\common\Grand Theft Auto IV\GTAIV",
   [ValidateRange(120, 1800)]
   [uint32]$MaxSeconds = 900,
-  [ValidateSet(55, 56, 57)]
+  [ValidateSet(55, 56, 57, 58)]
   [uint32]$StereoMode = 55,
   [switch]$Authorized,
   [string]$RuntimeManifest = "",
@@ -806,6 +806,8 @@ $hostConnected = $false
 $hostAcquired = $false
 $gamePoseMatched = $false
 $hostSwapchainReuseReady = $false
+$hostSwapchainFreshUpdatesReady = $false
+$hostSwapchainFreshWorldUpdateSamples = 0
 $hostSwapchainReuseFramesLowerBound = [uint64]0
 $hostSwapchainUpdatesLowerBound = [uint64]0
 $stereoCameraDistanceReady = $StereoMode -eq 55
@@ -825,6 +827,24 @@ $mode56PrePauseProducerTransactions = 0
 $mode56PrePauseHostTransactions = 0
 $mode56PrePauseSharedTransaction = $false
 $mode56PrePauseContinuityReady = $StereoMode -ne 56
+$mode58PrePauseFirstPairOrdinal = [uint32]0
+$mode58PrePauseAcceptedPairSpan = [uint32]0
+$mode58PrePauseProducerTransactions = 0
+$mode58PrePauseHostTransactions = 0
+$mode58PrePauseSharedTransaction = $false
+$mode58PrePauseContinuityReady = $StereoMode -ne 58
+$parentDualFusedPairReady = $StereoMode -ne 58
+$parentDualProducerReady = $StereoMode -ne 58
+$parentDualProofComplete = $StereoMode -ne 58
+$parentDualPairPose = [uint64]0
+$parentDualPairSource = [uint64]0
+$parentDualProducerTransaction = [uint64]0
+$parentDualHostExactPoseReady = $StereoMode -ne 58
+$firstPersonHardHookReady = $StereoMode -ne 58
+$firstPersonGameplayReady = $StereoMode -ne 58
+$firstPersonPedHideReady = $StereoMode -ne 58
+$firstPersonPedHideSuccesses = [uint32]0
+$firstPersonProofComplete = $StereoMode -ne 58
 $temporalPairReady = $StereoMode -ne 57
 $temporalPixelDistinct = $StereoMode -ne 57
 $temporalHostAccepted = $StereoMode -ne 57
@@ -845,7 +865,14 @@ $temporalSplitPhaseGateCall = [uint64]0
 $temporalSplitPhaseCurrentCall = [uint64]0
 $temporalSplitPhaseEpoch = [uint64]0
 $temporalSplitPhaseGapMs = [double]0
-$stereoProofComplete =
+$stereoProofComplete = if ($StereoMode -eq 58) {
+  $stereoCameraDistanceReady -and
+  $stereoPixelDistinct -and
+  $stereoApplyGenerationFresh -and
+  $parentDualProofComplete -and
+  $mode58PrePauseContinuityReady
+}
+else {
   $stereoCameraDistanceReady -and
   $stereoPixelDistinct -and
   $stereoRawRgbReady -and
@@ -857,6 +884,7 @@ $stereoProofComplete =
   $temporalBuildReplayReceiptReady -and
   $temporalSplitStageReady -and
   $temporalSplitReadbackReady
+}
 $controllerProofComplete = $false
 $deviceResetObserved = $false
 $deviceResetRecovered = $false
@@ -901,6 +929,8 @@ $worldLoadSustainedMilliseconds = [int64]0
 $pauseRoundTrip = $false
 $pauseTestStarted = $false
 $pauseUiObserved = $false
+$gameplaySettleProducerBaseline = [uint64]0
+$gameplaySettleHostBaseline = [uint64]0
 $pauseStartPacketBaseline = [uint64]0
 $pauseResumePacketBaseline = [uint64]0
 $pauseUiProducerBaselineCount = 0
@@ -988,6 +1018,7 @@ try {
   $stereoDescription = switch ($StereoMode) {
     56 { "DrawScene same-frame L/R stereo candidate"; break }
     57 { "temporal native-frame L/R stereo"; break }
+    58 { "Mode204 fused same-tick OpenXR first-person stereo"; break }
     default { "immersive mono baseline" }
   }
   Write-Status "DEPLOYED: backend=openxr stereo=$StereoMode ($stereoDescription)"
@@ -1132,6 +1163,10 @@ try {
     }
     57 {
       Write-Status "${inspectionTarget}: inspect temporal distinct L/R world stereo, stationary menus, color, and Touch controls"
+      break
+    }
+    58 {
+      Write-Status "${inspectionTarget}: inspect Mode204 fused first-person L/R world stereo, stationary menus, color, and Touch controls"
       break
     }
     default {
@@ -1438,6 +1473,167 @@ try {
         Write-Status "MARKER: Mode56 mailbox contains pixel-distinct L/R eyes"
       }
     }
+    if ($StereoMode -eq 58) {
+      if (-not $firstPersonHardHookReady -and
+          $gameText -match
+          "CamMatrix: \d+/4 hooked [^\r\n]*HARD FP on ped") {
+        $firstPersonHardHookReady = $true
+        Write-Status "MARKER: Mode58 hard first-person camera hooks READY"
+      }
+      if (-not $firstPersonGameplayReady -and
+          $gameText -match
+          "CamMatrix: gameplay ACTIVE [^\r\n]*FP lock armed") {
+        $firstPersonGameplayReady = $true
+        Write-Status "MARKER: Mode58 gameplay first-person lock ACTIVE"
+      }
+      foreach ($pedHideMatch in [regex]::Matches(
+          $gameText,
+          "PedHide: #\d+ ok=\d+ dead=0 native=1 " +
+          "passes=(\d+) mode=58"
+        )) {
+        $pedHideSuccesses = [uint32]$pedHideMatch.Groups[1].Value
+        if ($pedHideSuccesses -gt $firstPersonPedHideSuccesses) {
+          $firstPersonPedHideSuccesses = $pedHideSuccesses
+        }
+      }
+      $nativeHideProof = [regex]::Match(
+        $gameText,
+        "PedHide: native proof pass=(\d+) mode=58 components=5"
+      )
+      if ($nativeHideProof.Success) {
+        $nativeHideProofPass =
+          [uint32]$nativeHideProof.Groups[1].Value
+        if ($nativeHideProofPass -gt
+            $firstPersonPedHideSuccesses) {
+          $firstPersonPedHideSuccesses =
+            $nativeHideProofPass
+        }
+      }
+      if (-not $firstPersonPedHideReady -and
+          $firstPersonPedHideSuccesses -gt 0) {
+        $firstPersonPedHideReady = $true
+        Write-Status (
+          "MARKER: Mode58 native player head hide operational ok={0}" -f
+          $firstPersonPedHideSuccesses
+        )
+      }
+
+      $fusedPairPattern =
+        "StereoOpenXRFused: accepted pair #(\d+) " +
+        "pose=(\d+) source=(\d+) sameTick=1 " +
+        "parentDual=1 firstPerson=1 headHide=1 " +
+        "[^\r\n]*camGen=(\d+)/(\d+) " +
+        "camDist=([0-9]+(?:\.[0-9]+)?)cm[^\r\n]*" +
+        "parent=0x4DE020"
+      $fusedPairMatches = [regex]::Matches(
+        $gameText,
+        $fusedPairPattern
+      )
+      $priorFusedGenerationLeft = [uint32]0
+      $priorFusedGenerationRight = [uint32]0
+      foreach ($fusedPairMatch in $fusedPairMatches) {
+        $fusedPairOrdinal =
+          [uint32]$fusedPairMatch.Groups[1].Value
+        $fusedPose = [uint64]$fusedPairMatch.Groups[2].Value
+        $fusedSource = [uint64]$fusedPairMatch.Groups[3].Value
+        $fusedGenerationLeft =
+          [uint32]$fusedPairMatch.Groups[4].Value
+        $fusedGenerationRight =
+          [uint32]$fusedPairMatch.Groups[5].Value
+        $fusedDistanceCm = [double]::Parse(
+          $fusedPairMatch.Groups[6].Value,
+          [Globalization.CultureInfo]::InvariantCulture
+        )
+        $fusedPairValid =
+          $fusedPairOrdinal -gt 0 -and
+          $fusedPose -gt 0 -and
+          $fusedSource -gt 0 -and
+          $fusedGenerationLeft -gt 0 -and
+          $fusedGenerationRight -gt $fusedGenerationLeft -and
+          $fusedDistanceCm -ge 1.0 -and
+          $fusedDistanceCm -le 20.0
+        if ($fusedPairValid) {
+          $parentDualFusedPairReady = $true
+          $parentDualPairPose = $fusedPose
+          $parentDualPairSource = $fusedSource
+          $stereoCameraDistanceReady = $true
+          $stereoCameraDistanceCm = $fusedDistanceCm
+          if ($fusedPairOrdinal -gt $stereoAcceptedPairOrdinal) {
+            $stereoAcceptedPairOrdinal = $fusedPairOrdinal
+          }
+          if ($priorFusedGenerationLeft -gt 0 -and
+              $priorFusedGenerationRight -gt 0 -and
+              $fusedGenerationLeft -gt
+                $priorFusedGenerationLeft -and
+              $fusedGenerationRight -gt
+                $priorFusedGenerationRight) {
+            $stereoApplyGenerationFresh = $true
+          }
+          if ($fusedGenerationLeft -gt
+              $priorFusedGenerationLeft) {
+            $priorFusedGenerationLeft = $fusedGenerationLeft
+          }
+          if ($fusedGenerationRight -gt
+              $priorFusedGenerationRight) {
+            $priorFusedGenerationRight = $fusedGenerationRight
+          }
+          if ($fusedGenerationLeft -gt
+              $stereoApplyGenerationLeft) {
+            $stereoApplyGenerationLeft = $fusedGenerationLeft
+          }
+          if ($fusedGenerationRight -gt
+              $stereoApplyGenerationRight) {
+            $stereoApplyGenerationRight =
+              $fusedGenerationRight
+          }
+        }
+      }
+      if (-not $worldCaptureReady -and
+          $parentDualFusedPairReady) {
+        $worldCaptureReady = $true
+        $orderedUiToWorld = $stationaryUiQuad
+        Write-Status (
+          "MARKER: Mode58 fused Mode204 parent L/R capture READY"
+        )
+      }
+
+      $parentDualProducerPattern =
+        "OpenXRBridge: CPU mailbox transaction=(\d+)[^\r\n]*" +
+        "pair=(\d+) presentation=world-parent-dual-stereo eyes=2 " +
+        "sameTick=1 temporal=0 parentDual=1 fp=1 headHide=1" +
+        "[^\r\n]*atomic=1[^\r\n]*pixelDistinct=1"
+      foreach ($parentDualProducerMatch in [regex]::Matches(
+          $gameText,
+          $parentDualProducerPattern
+        )) {
+        $candidateParentTransaction =
+          [uint64]$parentDualProducerMatch.Groups[1].Value
+        $candidateParentPair =
+          [uint64]$parentDualProducerMatch.Groups[2].Value
+        if ($candidateParentTransaction -gt 0 -and
+            $candidateParentPair -gt 0) {
+          $parentDualProducerReady = $true
+          $stereoPixelDistinct = $true
+          if ($candidateParentTransaction -gt
+              $parentDualProducerTransaction) {
+            $parentDualProducerTransaction =
+              $candidateParentTransaction
+          }
+        }
+      }
+      $parentDualProofComplete =
+        $parentDualFusedPairReady -and
+        $parentDualProducerReady -and
+        $parentDualHostExactPoseReady -and
+        $stereoCameraDistanceReady -and
+        $stereoApplyGenerationFresh -and
+        $stereoPixelDistinct
+      $firstPersonProofComplete =
+        $firstPersonHardHookReady -and
+        $firstPersonGameplayReady -and
+        $firstPersonPedHideReady -and
+        $parentDualFusedPairReady
+    }
     if ($StereoMode -eq 57) {
       $temporalBuildReplayProofPattern =
         "StereoOpenXRTemporal: pair #(\d+) " +
@@ -1717,6 +1913,7 @@ try {
     $expectedProducerPresentation = switch ($StereoMode) {
       56 { "world-drawscene-stereo"; break }
       57 { "world-temporal-stereo"; break }
+      58 { "world-parent-dual-stereo"; break }
       default { "world-immersive-mono" }
     }
     if (-not $producerTransaction -and
@@ -1752,6 +1949,7 @@ try {
     $expectedHostReusePresentation = switch ($StereoMode) {
       56 { "world-stereo"; break }
       57 { "world-temporal-stereo"; break }
+      58 { "world-parent-dual-stereo"; break }
       default { "world-headtracked-mono-projection" }
     }
     $hostSwapchainUpdateMatches = [regex]::Matches(
@@ -1764,6 +1962,36 @@ try {
         [uint64]$hostSwapchainUpdateMatches[
         $hostSwapchainUpdateMatches.Count - 1
       ].Groups[1].Value
+    }
+    $hostSwapchainFreshWorldUpdateMatches = [regex]::Matches(
+      $hostText,
+      "XRHost: game swapchain updated transaction=(\d+) " +
+      "presentation=$expectedHostReusePresentation updates=(\d+)"
+    )
+    $hostSwapchainFreshWorldUpdateSamples =
+      $hostSwapchainFreshWorldUpdateMatches.Count
+    if ($StereoMode -eq 58 -and
+        -not $hostSwapchainFreshUpdatesReady -and
+        $hostSwapchainFreshWorldUpdateSamples -ge 3) {
+      $firstFreshWorldUpdateTransaction =
+        [uint64]$hostSwapchainFreshWorldUpdateMatches[
+        0
+      ].Groups[1].Value
+      $latestFreshWorldUpdateTransaction =
+        [uint64]$hostSwapchainFreshWorldUpdateMatches[
+        $hostSwapchainFreshWorldUpdateMatches.Count - 1
+      ].Groups[1].Value
+      if ($latestFreshWorldUpdateTransaction -gt
+          $firstFreshWorldUpdateTransaction -and
+          $parentDualHostExactPoseReady) {
+        $hostSwapchainFreshUpdatesReady = $true
+        Write-Status (
+          "MARKER: Mode58 fresh OpenXR world swapchain updates READY " +
+          "presentation=$expectedHostReusePresentation samples=" +
+          "$hostSwapchainFreshWorldUpdateSamples transaction=" +
+          "$firstFreshWorldUpdateTransaction->$latestFreshWorldUpdateTransaction"
+        )
+      }
     }
     $hostSwapchainReuseMatches = [regex]::Matches(
       $hostText,
@@ -1782,7 +2010,8 @@ try {
         [uint64]$latestHostSwapchainReuse.Groups[2].Value
       if (-not $hostSwapchainReuseReady -and
           $hostSwapchainReuseFramesLowerBound -gt 0 -and
-          ($StereoMode -ne 57 -or $temporalCapturePoseActive)) {
+          ($StereoMode -ne 57 -or $temporalCapturePoseActive) -and
+          ($StereoMode -ne 58 -or $parentDualHostExactPoseReady)) {
         $hostSwapchainReuseReady = $true
         Write-Status (
           "MARKER: unchanged OpenXR world swapchain reuse READY " +
@@ -1881,6 +2110,61 @@ try {
         )
       }
     }
+    if ($StereoMode -eq 58 -and
+        -not $pauseTestStarted -and
+        -not $mode58PrePauseContinuityReady) {
+      $producerUiBoundary =
+        $gameText.LastIndexOf("presentation=stationary-ui-quad")
+      $hostUiBoundary =
+        $hostText.LastIndexOf("presentation=stationary-ui-quad")
+      $producerPrePause = Get-MonotonicTransactionSequence `
+        -Text $gameText `
+        -Pattern $producerPattern `
+        -AfterIndex $producerUiBoundary
+      $hostPrePause = Get-MonotonicTransactionSequence `
+        -Text $hostText `
+        -Pattern $hostPattern `
+        -AfterIndex $hostUiBoundary
+      $mode58PrePauseProducerTransactions = $producerPrePause.Count
+      $mode58PrePauseHostTransactions = $hostPrePause.Count
+      $prePauseFusedPairMatches = @($fusedPairMatches | Where-Object {
+        $_.Index -gt $producerUiBoundary
+      })
+      if ($prePauseFusedPairMatches.Count -gt 0) {
+        $mode58PrePauseFirstPairOrdinal =
+          [uint32]$prePauseFusedPairMatches[0].Groups[1].Value
+        $prePauseLatestFusedPairOrdinal =
+          [uint32]$prePauseFusedPairMatches[
+            $prePauseFusedPairMatches.Count - 1
+          ].Groups[1].Value
+        $mode58PrePauseAcceptedPairSpan =
+          $prePauseLatestFusedPairOrdinal -
+          $mode58PrePauseFirstPairOrdinal +
+          1
+      }
+      $mode58PrePauseSharedTransaction =
+        @($producerPrePause.Ids | Where-Object {
+          $hostPrePause.Ids -contains $_
+        }).Count -gt 0
+      if ($mode58PrePauseAcceptedPairSpan -ge 120 -and
+          $producerPrePause.Count -ge 2 -and
+          $hostPrePause.Count -ge 2 -and
+          $producerPrePause.Monotonic -and
+          $hostPrePause.Monotonic -and
+          $mode58PrePauseSharedTransaction) {
+        $mode58PrePauseContinuityReady = $true
+        $continuousWorldFrames = $true
+        Write-Status (
+          "MARKER: Mode58 uninterrupted pre-pause fused world continuity PASS " +
+          "pairSpan={0} ({1}->{2}) producerIds={3} hostIds={4} shared=1" -f
+          $mode58PrePauseAcceptedPairSpan,
+          $mode58PrePauseFirstPairOrdinal,
+          $stereoAcceptedPairOrdinal,
+          $mode58PrePauseProducerTransactions,
+          $mode58PrePauseHostTransactions
+        )
+      }
+    }
     $intentionalPauseActive = $elliottProofState -in @(
       "PAUSE_PRESS",
       "PAUSE_RELEASE",
@@ -1954,12 +2238,29 @@ try {
     $expectedHostPresentation = switch ($StereoMode) {
       56 { "world-stereo"; break }
       57 { "world-temporal-stereo"; break }
+      58 { "world-parent-dual-stereo"; break }
       default { "world-headtracked-mono-projection" }
     }
-    if (-not $gamePoseMatched -and
-        $hostText -match "XRHost: presentation=$expectedHostPresentation") {
+    if ($StereoMode -eq 58 -and
+        -not $parentDualHostExactPoseReady -and
+        $hostText -match
+          "XRHost: parent-dual exact capture pose active " +
+          "transaction=\d+ sharedPose=(\d+) displayTime=-?\d+ " +
+          "parentDual=1 fp=1 headHide=1 pixelDistinct=1") {
+      $parentDualHostExactPoseReady = $true
       $gamePoseMatched = $true
-      Write-Status "MARKER: OpenXR $expectedHostPresentation presentation active"
+      Write-Status (
+        "MARKER: Mode58 parent-dual exact capture pose active in OpenXR host"
+      )
+    }
+    elseif ($StereoMode -ne 58 -and
+            -not $gamePoseMatched -and
+            $hostText -match
+              "XRHost: presentation=$expectedHostPresentation") {
+      $gamePoseMatched = $true
+      Write-Status (
+        "MARKER: OpenXR $expectedHostPresentation presentation active"
+      )
     }
     if (-not $srgbDecodeReady -and
         $hostText -match "CONNECTED FNVVR-style CPU mailbox.*sRGB decode SRV") {
@@ -2269,6 +2570,12 @@ try {
               $continuousWorldFrames
               break
             }
+            58 {
+              $parentDualProofComplete -and
+              $firstPersonProofComplete -and
+              $mode58PrePauseContinuityReady
+              break
+            }
             default { $continuousWorldFrames }
           }
           if ($worldRouteActive -and
@@ -2281,35 +2588,17 @@ try {
               Send-ElliottPoseSweep -Enabled $false
               $elliottPoseSweepEnabled = $false
             }
-            $pauseUiProducerBaselineCount = (
-              [regex]::Matches(
-                $gameText,
-                "OpenXRBridge: CPU mailbox transaction=[^\r\n]*" +
-                "presentation=stationary-ui-quad"
-              )
-            ).Count
-            $pauseUiHostBaselineCount = (
-              [regex]::Matches(
-                $hostText,
-                "GameBridge: CPU mailbox acquired transaction=[^\r\n]*" +
-                "presentation=stationary-ui-quad"
-              )
-            ).Count
-            $pauseWorldProducerBaselineCount = $producerMatches.Count
-            $pauseWorldHostBaselineCount = $hostMatches.Count
-            $pauseWorldProducerBaselineTransaction =
+            $elliottProofState = "WAIT_GAMEPLAY_SETTLE"
+            $gameplaySettleProducerBaseline =
               $producerLatestTransaction
-            $pauseWorldHostBaselineTransaction =
+            $gameplaySettleHostBaseline =
               $hostLatestTransaction
-            $pauseStartPacketBaseline = $controllerStartConsumedPacket
-            $pauseTestStarted = $true
-            [void](Send-ElliottControllerSnapshot -Kind "MenuStart")
-            $elliottProofState = "PAUSE_RELEASE"
-            $elliottNextActionAt =
-              [DateTime]::UtcNow.AddMilliseconds(350)
+            $elliottNextActionAt = [DateTime]::UtcNow.AddSeconds(3)
+            $elliottInputProofDeadline =
+              [DateTime]::UtcNow.AddSeconds(15)
             Write-Status (
-              "ELLIOTT CLI: pre-pause world proof PASS; " +
-              "in-game Start pause pulse sent"
+              "ELLIOTT CLI: pre-pause world proof PASS; requiring " +
+              "3 continuous, advancing gameplay seconds before in-game Start"
             )
           }
           elseif ($proofNow -ge $elliottInputProofDeadline) {
@@ -2317,6 +2606,68 @@ try {
               "WORLD_PROOF_TIMEOUT: uninterrupted pre-pause world/color/" +
               "stereo proof did not complete within 90 seconds."
             )
+          }
+          break
+        }
+        "WAIT_GAMEPLAY_SETTLE" {
+          if ($proofNow -ge $elliottInputProofDeadline) {
+            throw (
+              "GAMEPLAY_SETTLE_TIMEOUT: a continuous gameplay route was not " +
+              "held with advancing frames for 3 seconds before the pause test."
+            )
+          }
+          if (-not $worldRouteActive) {
+            $gameplaySettleProducerBaseline =
+              $producerLatestTransaction
+            $gameplaySettleHostBaseline =
+              $hostLatestTransaction
+            $elliottNextActionAt = $proofNow.AddSeconds(3)
+          }
+          elseif ($proofNow -ge $elliottNextActionAt) {
+            $gameplayAdvanced =
+              $producerLatestTransaction -gt
+                $gameplaySettleProducerBaseline -and
+              $hostLatestTransaction -gt
+                $gameplaySettleHostBaseline
+            if (-not $gameplayAdvanced) {
+              $gameplaySettleProducerBaseline =
+                $producerLatestTransaction
+              $gameplaySettleHostBaseline =
+                $hostLatestTransaction
+              $elliottNextActionAt = $proofNow.AddSeconds(3)
+            }
+            else {
+              $pauseUiProducerBaselineCount = (
+                [regex]::Matches(
+                  $gameText,
+                  "OpenXRBridge: CPU mailbox transaction=[^\r\n]*" +
+                  "presentation=stationary-ui-quad"
+                )
+              ).Count
+              $pauseUiHostBaselineCount = (
+                [regex]::Matches(
+                  $hostText,
+                  "GameBridge: CPU mailbox acquired transaction=[^\r\n]*" +
+                  "presentation=stationary-ui-quad"
+                )
+              ).Count
+              $pauseWorldProducerBaselineCount = $producerMatches.Count
+              $pauseWorldHostBaselineCount = $hostMatches.Count
+              $pauseWorldProducerBaselineTransaction =
+                $producerLatestTransaction
+              $pauseWorldHostBaselineTransaction =
+                $hostLatestTransaction
+              $pauseStartPacketBaseline = $controllerStartConsumedPacket
+              $pauseTestStarted = $true
+              [void](Send-ElliottControllerSnapshot -Kind "MenuStart")
+              $elliottProofState = "PAUSE_RELEASE"
+              $elliottNextActionAt =
+                [DateTime]::UtcNow.AddMilliseconds(350)
+              Write-Status (
+                "ELLIOTT CLI: gameplay settle PASS with advancing producer/" +
+                "host transactions; in-game Start pause pulse sent"
+              )
+            }
           }
           break
         }
@@ -2390,14 +2741,29 @@ try {
             $pauseRoundTrip = $true
             $producerLastAdvancedAt = [DateTime]::UtcNow
             $hostLastAdvancedAt = [DateTime]::UtcNow
+            if ($StereoMode -eq 58 -and
+                -not $elliottPoseSweepEnabled) {
+              Send-ElliottPoseSweep -Enabled $true
+              $elliottPoseSweepEnabled = $true
+              Write-Status (
+                "ELLIOTT CLI: Mode58 pose sweep active for recorded walk"
+              )
+            }
             [void](Send-ElliottControllerSnapshot -Kind "StickForward")
             $elliottStickCommanded = $true
             $elliottProofState = "STICK_HOLD"
             $elliottNextActionAt =
               [DateTime]::UtcNow.AddSeconds($ElliottWalkSeconds)
+            $walkPoseDetail = if ($StereoMode -eq 58) {
+              "; Mode58 pose sweep active=$elliottPoseSweepEnabled"
+            }
+            else {
+              ""
+            }
             $walkReadyLine = (
               "ELLIOTT CLI: in-game world->pause UI->world round trip PASS; " +
-              "holding left stick Y=0.8 for $ElliottWalkSeconds seconds"
+              "holding left stick Y=0.8 for $ElliottWalkSeconds seconds" +
+              $walkPoseDetail
             )
             Write-Status $walkReadyLine
             $walkReadyTemporary = "$ElliottWalkReadyMarker.tmp"
@@ -2434,14 +2800,29 @@ try {
         "WAIT_STICK_INPUT_PROOF" {
           if ($controllerStickConsumed -and
               $controllerStickNeutralConsumed) {
-            Send-ElliottPoseSweep -Enabled $true
-            $elliottPoseSweepEnabled = $true
-            $elliottProofState = "POSE_SWEEP"
-            $elliottNextActionAt = [DateTime]::UtcNow.AddSeconds(8)
-            Write-Status (
-              "ELLIOTT CLI: stick/neutral proof PASS; " +
-              "8-second head-pose sweep started"
-            )
+            if ($StereoMode -eq 58) {
+              if ($elliottPoseSweepEnabled) {
+                Send-ElliottPoseSweep -Enabled $false
+                $elliottPoseSweepEnabled = $false
+              }
+              $elliottPoseSweepCompleted = $true
+              $elliottProofAutomationComplete = $true
+              $elliottProofState = "COMPLETE"
+              Write-Status (
+                "ELLIOTT CLI: Mode58 recorded walk pose sweep and " +
+                "stick/neutral automation COMPLETE"
+              )
+            }
+            else {
+              Send-ElliottPoseSweep -Enabled $true
+              $elliottPoseSweepEnabled = $true
+              $elliottProofState = "POSE_SWEEP"
+              $elliottNextActionAt = [DateTime]::UtcNow.AddSeconds(8)
+              Write-Status (
+                "ELLIOTT CLI: stick/neutral proof PASS; " +
+                "8-second head-pose sweep started"
+              )
+            }
           }
           elseif ($proofNow -ge $elliottInputProofDeadline) {
             throw (
@@ -2484,6 +2865,19 @@ try {
         "StereoOpenXR: DrawScene stereo capture failed") {
       throw "Mode56 DrawScene stereo capture failed."
     }
+    if ($StereoMode -eq 58 -and
+        $gameText -match
+        "Mode58: (?:FAIL|KILL)[^\r\n]*wrote stereo=57") {
+      throw "Mode58 fused parent-dual path failed closed to Mode57."
+    }
+    if ($StereoMode -eq 58 -and
+        $hostText -match
+        "XRHost: parent-dual exact capture pose missing; projection layer held") {
+      throw (
+        "Mode58 exact capture pose was missing; the OpenXR host held the " +
+        "projection layer instead of presenting a mismatched frame."
+      )
+    }
     $controllerProofComplete = if ($ElliottCliProof) {
       $controllerAConsumed -and
       $controllerStartConsumed -and
@@ -2495,7 +2889,14 @@ try {
     else {
       $controllerInputConsumed -and $controllerReleaseConsumed
     }
-    $stereoProofComplete =
+    $stereoProofComplete = if ($StereoMode -eq 58) {
+      $stereoCameraDistanceReady -and
+      $stereoPixelDistinct -and
+      $stereoApplyGenerationFresh -and
+      $parentDualProofComplete -and
+      $mode58PrePauseContinuityReady
+    }
+    else {
       $stereoCameraDistanceReady -and
       $stereoPixelDistinct -and
       $stereoRawRgbReady -and
@@ -2507,12 +2908,22 @@ try {
       $temporalBuildReplayReceiptReady -and
       $temporalSplitStageReady -and
       $temporalSplitReadbackReady
+    }
+    $hostPresentationContinuityReady = if ($StereoMode -eq 58) {
+      $hostSwapchainFreshUpdatesReady
+    }
+    else {
+      $hostSwapchainReuseReady
+    }
     if ($StopWhenProofComplete -and
         ((-not $deviceResetObserved) -or $deviceResetRecovered) -and
         $postResetProducerFresh -and
         $postResetHostFresh -and
         $controllerProofComplete -and
         $stereoProofComplete -and
+        ($StereoMode -ne 58 -or
+          ($parentDualProofComplete -and
+           $firstPersonProofComplete)) -and
         $bridgeReady -and
         $worldCaptureReady -and
         $continuousWorldFrames -and
@@ -2523,11 +2934,11 @@ try {
         $hostConnected -and
         $hostAcquired -and
         $gamePoseMatched -and
-        $hostSwapchainReuseReady) {
+        $hostPresentationContinuityReady) {
       $outcome = "PROOF_COMPLETE"
       Write-Status (
         "PROOF COMPLETE: reset, exact input, UI, continuous world frames, " +
-        "color, stereo gates, and OpenXR presentation"
+        "color, stereo, first-person, and OpenXR presentation gates"
       )
       break
     }
@@ -2766,7 +3177,14 @@ finally {
   else {
     $controllerInputConsumed -and $controllerReleaseConsumed
   }
-  $stereoProofComplete =
+  $stereoProofComplete = if ($StereoMode -eq 58) {
+    $stereoCameraDistanceReady -and
+    $stereoPixelDistinct -and
+    $stereoApplyGenerationFresh -and
+    $parentDualProofComplete -and
+    $mode58PrePauseContinuityReady
+  }
+  else {
     $stereoCameraDistanceReady -and
     $stereoPixelDistinct -and
     $stereoRawRgbReady -and
@@ -2778,6 +3196,13 @@ finally {
     $temporalBuildReplayReceiptReady -and
     $temporalSplitStageReady -and
     $temporalSplitReadbackReady
+  }
+  $hostPresentationContinuityReady = if ($StereoMode -eq 58) {
+    $hostSwapchainFreshUpdatesReady
+  }
+  else {
+    $hostSwapchainReuseReady
+  }
   $result = @(
     "outcome=$outcome"
     "failure=$failure"
@@ -2813,7 +3238,10 @@ finally {
     "hostConnected=$hostConnected"
     "hostAcquired=$hostAcquired"
     "gamePoseMatched=$gamePoseMatched"
+    "hostPresentationContinuityReady=$hostPresentationContinuityReady"
     "hostSwapchainReuseReady=$hostSwapchainReuseReady"
+    "hostSwapchainFreshUpdatesReady=$hostSwapchainFreshUpdatesReady"
+    "hostSwapchainFreshWorldUpdateSamples=$hostSwapchainFreshWorldUpdateSamples"
     "hostSwapchainReuseFramesLowerBound=$hostSwapchainReuseFramesLowerBound"
     "hostSwapchainUpdatesLowerBound=$hostSwapchainUpdatesLowerBound"
     "deviceResetObserved=$deviceResetObserved"
@@ -2841,6 +3269,24 @@ finally {
     "mode56PrePauseHostTransactions=$mode56PrePauseHostTransactions"
     "mode56PrePauseSharedTransaction=$mode56PrePauseSharedTransaction"
     "mode56PrePauseContinuityReady=$mode56PrePauseContinuityReady"
+    "mode58PrePauseFirstPairOrdinal=$mode58PrePauseFirstPairOrdinal"
+    "mode58PrePauseAcceptedPairSpan=$mode58PrePauseAcceptedPairSpan"
+    "mode58PrePauseProducerTransactions=$mode58PrePauseProducerTransactions"
+    "mode58PrePauseHostTransactions=$mode58PrePauseHostTransactions"
+    "mode58PrePauseSharedTransaction=$mode58PrePauseSharedTransaction"
+    "mode58PrePauseContinuityReady=$mode58PrePauseContinuityReady"
+    "parentDualFusedPairReady=$parentDualFusedPairReady"
+    "parentDualProducerReady=$parentDualProducerReady"
+    "parentDualPairPose=$parentDualPairPose"
+    "parentDualPairSource=$parentDualPairSource"
+    "parentDualProducerTransaction=$parentDualProducerTransaction"
+    "parentDualHostExactPoseReady=$parentDualHostExactPoseReady"
+    "parentDualProofComplete=$parentDualProofComplete"
+    "firstPersonHardHookReady=$firstPersonHardHookReady"
+    "firstPersonGameplayReady=$firstPersonGameplayReady"
+    "firstPersonPedHideReady=$firstPersonPedHideReady"
+    "firstPersonPedHideSuccesses=$firstPersonPedHideSuccesses"
+    "firstPersonProofComplete=$firstPersonProofComplete"
     "temporalPairReady=$temporalPairReady"
     "temporalPixelDistinct=$temporalPixelDistinct"
     "temporalHostAccepted=$temporalHostAccepted"

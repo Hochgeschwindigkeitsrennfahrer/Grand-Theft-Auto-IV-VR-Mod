@@ -32,6 +32,17 @@ struct GameFrameView
     // two different GTA frames. The host accepts this route only when its
     // command line opted in to temporal stereo.
     bool temporalStereo = false;
+    // Mode 58 proof: the two images came from the Mode 204 parent-dual seam,
+    // with GTA's first-person camera and native player-head hide active.
+    bool parentDualStereo = false;
+    bool firstPersonCamera = false;
+    bool nativeHeadHidden = false;
+    bool pixelDistinct = false;
+
+    bool requiresExactCapturePose() const noexcept
+    {
+        return temporalStereo || parentDualStereo;
+    }
 
     explicit operator bool() const noexcept
     {

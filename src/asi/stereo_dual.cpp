@@ -184,6 +184,17 @@ uint32_t StereoDualHitchMs() {
 }
 
 uint32_t StereoDualEveryN() {
+  // Mode 168/170: everyN=1 (no off-tick HOLD of stale L/R).
+  // Mode 168 also Flushed (DEVICE_LOST). Mode 170 = everyN=1 without Flush.
+  if (IsOursFpFlashStable(GetStereoMode()) || IsOursFpFreshDual(GetStereoMode())) {
+    if (!g_loggedN.exchange(true)) {
+      if (IsOursFpFreshDual(GetStereoMode()))
+        Log("StereoDual: everyN=1 (Mode170 FRESH; no off-tick HOLD; NO Flush)");
+      else
+        Log("StereoDual: everyN=1 (Mode168 STABLE; no off-tick HOLD; dual every DrawScene)");
+    }
+    return 1u;
+  }
   uint32_t n = g_everyN.load();
   if (n == 0) {
     const StereoMode mode = GetStereoMode();

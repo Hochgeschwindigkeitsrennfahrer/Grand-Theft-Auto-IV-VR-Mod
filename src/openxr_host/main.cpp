@@ -565,6 +565,10 @@ gtaiv_xr_host::GamePresentationKey makeGamePresentationKey(
     key.uiEye = frame.uiEye;
     key.sameSimulationTick = frame.sameSimulationTick;
     key.temporalStereo = frame.temporalStereo;
+    key.parentDualStereo = frame.parentDualStereo;
+    key.firstPersonCamera = frame.firstPersonCamera;
+    key.nativeHeadHidden = frame.nativeHeadHidden;
+    key.pixelDistinct = frame.pixelDistinct;
     return key;
 }
 
@@ -579,6 +583,8 @@ const char* gamePresentationRoute(
         return "world-headtracked-mono-projection";
     if (mode == gtaiv_xr_bridge::PresentationMode::WorldStereo)
     {
+        if (key.parentDualStereo)
+            return "world-parent-dual-stereo";
         return key.temporalStereo
             ? "world-temporal-stereo"
             : "world-stereo";
@@ -2159,11 +2165,22 @@ private:
                                 : gameFrame_.presentationMode
                                         == gtaiv_xr_bridge::PresentationMode::WorldMono
                                     ? "world-headtracked-mono-projection"
-                                    : gameFrame_.temporalStereo
-                                        ? "world-temporal-stereo"
-                                        : "world-stereo")
+                                    : gameFrame_.parentDualStereo
+                                        ? "world-parent-dual-stereo"
+                                        : gameFrame_.temporalStereo
+                                            ? "world-temporal-stereo"
+                                            : "world-stereo")
                         << " reasons=0x" << std::hex
-                        << gameFrame_.uiReasonFlags;
+                        << gameFrame_.uiReasonFlags
+                        << std::dec
+                        << " parentDual="
+                        << (gameFrame_.parentDualStereo ? 1 : 0)
+                        << " fp="
+                        << (gameFrame_.firstPersonCamera ? 1 : 0)
+                        << " headHide="
+                        << (gameFrame_.nativeHeadHidden ? 1 : 0)
+                        << " pixelDistinct="
+                        << (gameFrame_.pixelDistinct ? 1 : 0);
                 logger_.write(message.str());
                 lastLoggedPresentationMode_ =
                     gameFrame_.presentationMode;
@@ -2219,12 +2236,13 @@ private:
                 && gameFrame_
                 && !quadPresentation)
             {
-                if (gameFrame_.temporalStereo)
+                if (gameFrame_.requiresExactCapturePose())
                 {
-                    // Each eye was rendered on a different GTA frame. Submit
-                    // that eye's actual capture pose/FOV so the OpenXR runtime
-                    // can reproject it from the correct origin. Never pretend a
-                    // temporal pair was rendered at the current shared pose.
+                    // Temporal eyes were rendered on different GTA frames;
+                    // parent-dual eyes were rendered from one shared Mode 58
+                    // pose. In both cases submit each eye's exact capture
+                    // pose/FOV from the retained history. Never silently
+                    // substitute the host's latest view for a proved route.
                     std::array<XrView, EyeCount> renderedViews {
                         XrView { XR_TYPE_VIEW },
                         XrView { XR_TYPE_VIEW }
@@ -2245,38 +2263,79 @@ private:
                     if (gameFramePoseMatched_)
                     {
                         submittedViews = renderedViews;
-                        if (lastTemporalPoseLogTransaction_ == 0u
+                        uint64_t& lastPoseLogTransaction =
+                            gameFrame_.parentDualStereo
+                                ? lastParentDualPoseLogTransaction_
+                                : lastTemporalPoseLogTransaction_;
+                        if (lastPoseLogTransaction == 0u
                             || gameFrame_.transactionId
-                                >= lastTemporalPoseLogTransaction_ + 120u)
+                                >= lastPoseLogTransaction + 120u)
                         {
                             std::ostringstream message;
-                            message
-                                << "XRHost: temporal pair capture poses active "
-                                << "transaction=" << gameFrame_.transactionId
-                                << " source="
-                                << gameFrame_.sourceFrameId[0] << '/'
-                                << gameFrame_.sourceFrameId[1]
-                                << " pose="
-                                << gameFrame_.poseSequence[0] << '/'
-                                << gameFrame_.poseSequence[1];
+                            if (gameFrame_.parentDualStereo)
+                            {
+                                message
+                                    << "XRHost: parent-dual exact capture pose "
+                                       "active transaction="
+                                    << gameFrame_.transactionId
+                                    << " sharedPose="
+                                    << gameFrame_.poseSequence[0]
+                                    << " displayTime="
+                                    << gameFrame_.renderedDisplayTime[0]
+                                    << " parentDual=1 fp="
+                                    << (gameFrame_.firstPersonCamera ? 1 : 0)
+                                    << " headHide="
+                                    << (gameFrame_.nativeHeadHidden ? 1 : 0)
+                                    << " pixelDistinct="
+                                    << (gameFrame_.pixelDistinct ? 1 : 0);
+                            }
+                            else
+                            {
+                                message
+                                    << "XRHost: temporal pair capture poses active "
+                                    << "transaction=" << gameFrame_.transactionId
+                                    << " source="
+                                    << gameFrame_.sourceFrameId[0] << '/'
+                                    << gameFrame_.sourceFrameId[1]
+                                    << " pose="
+                                    << gameFrame_.poseSequence[0] << '/'
+                                    << gameFrame_.poseSequence[1];
+                            }
                             logger_.write(message.str());
-                            lastTemporalPoseLogTransaction_ =
+                            lastPoseLogTransaction =
                                 gameFrame_.transactionId;
                         }
                     }
                     else
                     {
                         const uint64_t now = GetTickCount64();
-                        if (lastTemporalPoseMissLogTick_ == 0u
-                            || now - lastTemporalPoseMissLogTick_ >= 2000u)
+                        uint64_t& lastPoseMissLogTick =
+                            gameFrame_.parentDualStereo
+                                ? lastParentDualPoseMissLogTick_
+                                : lastTemporalPoseMissLogTick_;
+                        if (lastPoseMissLogTick == 0u
+                            || now - lastPoseMissLogTick >= 2000u)
                         {
                             std::ostringstream message;
-                            message
-                                << "XRHost: temporal pair capture pose missing; "
-                                   "projection layer held transaction="
-                                << gameFrame_.transactionId;
+                            if (gameFrame_.parentDualStereo)
+                            {
+                                message
+                                    << "XRHost: parent-dual exact capture pose "
+                                       "missing; projection layer held "
+                                       "transaction="
+                                    << gameFrame_.transactionId
+                                    << " sharedPose="
+                                    << gameFrame_.poseSequence[0];
+                            }
+                            else
+                            {
+                                message
+                                    << "XRHost: temporal pair capture pose missing; "
+                                       "projection layer held transaction="
+                                    << gameFrame_.transactionId;
+                            }
                             logger_.write(message.str());
-                            lastTemporalPoseMissLogTick_ = now;
+                            lastPoseMissLogTick = now;
                         }
                     }
                 }
@@ -2394,7 +2453,7 @@ private:
             }
             else if (!gameMode_
                      || !gameFrame_
-                     || !gameFrame_.temporalStereo
+                     || !gameFrame_.requiresExactCapturePose()
                      || gameFramePoseMatched_)
             {
                 if (!reusedGamePresentation)
@@ -2438,7 +2497,7 @@ private:
                 ? quadPoseReady
                 : !gameMode_
                     || !gameFrame_
-                    || !gameFrame_.temporalStereo
+                    || !gameFrame_.requiresExactCapturePose()
                     || gameFramePoseMatched_;
         }
 
@@ -2820,6 +2879,8 @@ private:
     bool loggedGamePoseMatch_ = false;
     uint64_t lastTemporalPoseLogTransaction_ = 0u;
     uint64_t lastTemporalPoseMissLogTick_ = 0u;
+    uint64_t lastParentDualPoseLogTransaction_ = 0u;
+    uint64_t lastParentDualPoseMissLogTick_ = 0u;
     bool gameMode_ = false;
     bool allowTemporalStereo_ = false;
     gtaiv_xr_bridge::PresentationMode lastLoggedPresentationMode_ =
@@ -2941,10 +3002,11 @@ int main(int argc, char** argv)
             logger->write(
                 "SelfTest: PASS pointerBits=64 shaders=ok protocol=v6 "
                 "worldStrict=1 wvpProof=1 drawSceneProof=1 "
+                "parentDualProof=1 firstPersonProof=1 headHideProof=1 "
                 "temporalOptIn=1 immersiveMono=1 "
                 "cpuMailbox=1 cpuMailboxStereo=1 cpuMailboxWorldUi=1 "
                 "stationaryUiQuad=1 uiAspect=1 routeSwitch=1 "
-                "heldFrameReuse=1 exactPoseCache=1 "
+                "heldFrameReuse=1 exactPoseCache=1 parentExactPose=1 "
                 "strictSwapchainWait=1 referenceSpaceReset=1 "
                 "srgbDecode=1 "
                 "runtimeUntouched=1");

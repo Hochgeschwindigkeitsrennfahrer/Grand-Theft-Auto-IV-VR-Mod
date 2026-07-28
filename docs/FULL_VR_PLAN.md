@@ -1,20 +1,22 @@
 # Full VR Plan - Quest 3 OpenXR Primary, OpenVR Preserved
 
-**Plan date:** 2026-07-23 PT
+**Plan date:** 2026-07-28 PT
 
-**Repository baseline:** upstream `01f355b` (Modes 50–53), merged on the
-`codex/openxr-sidecar-integration` branch
+**Repository baseline:** upstream `715d40f` (Mode 204 fused-stereo milestone),
+merged on the `codex/openxr-sidecar-integration` branch
 
-**Status:** The corrected Mode 57 build-to-replay receipt chain and its
-two-boundary CPU-readback scheduler passed a complete headless Elliott full-game
-run on 2026-07-28. GTA loaded into the world, sustained matching producer/host
-transactions `1906 -> 2520`, completed a pause-menu round trip, consumed Start,
-A, forward-stick and neutral input, and completed a scripted head-pose sweep
-without SteamVR. The run continued through accepted receipt pair 600. Mode 55
-remains the mono reliability fallback. Mode 56's nominal same-frame DrawScene x2
-outputs were byte-identical and that seam is rejected as the current stereo
-route. Real Quest 3 visual/comfort acceptance and the same-tick product stereo
-result required by Gate 6 remain pending.
+**Status:** Mode 58 is the direct-OpenXR first-person primary. It keeps the
+upstream Mode 204 parent-render seam and adds the x86-to-x64 OpenXR bridge. A
+supervised Elliott full-game run passed on 2026-07-28 with an immediate,
+same-tick, pixel-distinct L/R pair, one exact retained capture pose/FOV,
+first-person camera and native head-hide proof, continuous world presentation,
+controller locomotion, a stationary pause-menu quad, and the sRGB color path.
+The 12-second 3840x1920 side-by-side recording contains 713 frames, no freeze
+event of 250 ms or longer, and about 7.1 m of camera translation. SteamVR was
+absent at every audited launch boundary. Mode 57 remains the temporal diagnostic
+fallback and Mode 55 remains the mono reliability fallback. Physical Quest 3
+fusion, comfort, and performance acceptance—and replacement of the current
+1280x720 CPU mailbox with production GPU-shared transport—remain pending.
 
 **Primary headset:** Meta Quest 3
 
@@ -533,8 +535,9 @@ Pass:
 - no CPU image transfer or per-frame handle recreation;
 - 10,000 transactions complete without a stale/torn frame or leaked handle.
 
-Route B is selected in source, but this gate remains open until its first controlled
-live GPU-transport test produces the evidence above.
+Route B remains the production transport target. The functional Mode 58 proof
+temporarily uses the ABI-v6 1280x720 CPU mailbox; that proves stereo causality,
+OpenXR composition, UI, and input, but does not close this GPU-transport gate.
 
 ### Gate 5 - GTA mono through OpenXR, no SteamVR
 
@@ -551,7 +554,7 @@ Pass:
 - adapter, format, color space, fence, frame age, and copy timing are logged;
 - backend `openvr` still starts the old path unchanged.
 
-### Current Mode 57 headless gate - temporal build-to-replay proof
+### Historical Mode 57 headless gate - temporal build-to-replay proof
 
 Mode 57 is the bounded temporal-stereo diagnostic on the way to Gate 6. Its
 corrected provenance chain is:
@@ -617,6 +620,21 @@ not Gate 6: it adds bounded delivery latency, remains a CPU pixel path, and does
 not make the two eye images same-tick.
 
 ### Gate 6 - complete same-frame stereo through OpenXR
+
+**Simulator result:** functionally passed by Mode 58 on 2026-07-28. The x86
+producer published a fresh atomic parent-render L/R pair from one source tick;
+the x64 host required the exact shared capture pose and rejected incomplete,
+temporal, mono, or mislabeled transactions. The accepted full-game run reached
+producer transaction `8040`, host transaction `7740`, and accepted pair ordinal
+`6240`, with a 9.1 cm applied-camera baseline and pixel-distinct eyes. Start, A,
+forward stick, neutral, pose sweep, first-person camera, native head hide,
+stationary menu quad, menu round trip, and exact cleanup/restore gates all
+passed without SteamVR.
+
+**Still open:** physical Quest 3 fusion/comfort validation, driving/aiming
+acceptance, and the production GPU-shared transport/performance gate. A
+simulator recording proves the implemented frame and input path; it is not a
+claim of physical-headset comfort.
 
 Publish the locked same-frame `StereoPair`:
 
@@ -707,6 +725,7 @@ Presentation modes:
 
 | Game state | OpenXR presentation |
 |---|---|
+| world gameplay, Mode 58 primary | receipt-proven same-tick parent-dual stereo projection layer |
 | world gameplay, Mode 55 fallback | immersive mono projection layer |
 | world gameplay, Mode 56 candidate | DrawScene-proof verified stereo projection layer |
 | world gameplay, Mode 57 diagnostic | receipt-proven temporal L/R projection layer |
@@ -716,11 +735,11 @@ Presentation modes:
 Add a read-only GTA UI-state probe before suppressing or moving any draw. Do not infer
 all menu state from pixels.
 
-Offline implementation status (2026-07-26):
+Implementation status (2026-07-28):
 
-- frame ABI v5 stamps `WorldMono`, `WorldStereo`, or `UiQuad`, reason flags,
-  immersive-mono/WVP-proof flags, original content dimensions, and the freshest
-  source eye as one GPU transaction;
+- frame ABI v6 stamps `WorldMono`, `WorldStereo`, or `UiQuad`, reason flags,
+  immersive-mono/WVP/parent-dual/first-person/head-hidden proof flags, original
+  content dimensions, and the complete eye pair as one transaction;
 - GTA IV CE 1.2.0.59 pause/map, loading, and phone bytes are resolved read-only from
   unique AOB signatures; all probes are required or presentation fails closed;
 - at `EndScene`, UI mode copies the unwarped GTA backbuffer into two distinct stable
@@ -733,13 +752,15 @@ Offline implementation status (2026-07-26):
   1.8 m in front of the current view when the UI opens and remains fixed while the
   head turns or translates;
 - same-tick world routes remain strict: same source frame, pose sequence, and
-  rendered `XrTime`, with exact retained pose/FOV or black; Mode 57 is the
+  rendered `XrTime`, with exact retained pose/FOV or black; Mode 58 additionally
+  requires parent-dual, first-person, head-hide, and pixel-distinct proof. Mode 57 is the
   explicit temporal exception and requires the complete BuildRootA -> ExecRoot
   -> BeginScene -> same-thread/device EndScene receipt described above.
 
-The earlier head-locked quad reached the headset. Stationary placement and aspect
-restoration now pass both offline tests and the Mode 57 headless full-game
-pause-menu round trip. Physical Quest visual/comfort acceptance remains required.
+The earlier head-locked quad reached the headset. Stationary placement, aspect
+restoration, and the pause-menu round trip now pass both offline tests and the
+Mode 58 full-game simulator proof. Physical Quest visual/comfort acceptance
+remains required.
 
 OpenXR actions:
 
@@ -777,10 +798,19 @@ them in GTA or capture them to a dedicated quad/layer.
 
 ### Gate 10 - performance and pacing
 
-Current evidence suggests a true second render costs roughly half of the 90 FPS mono
-rate. Do not hide that with a misleading FPS counter.
+Current evidence suggests a true second render can cost roughly half of the 90 FPS
+mono rate. Do not hide that with a misleading FPS counter.
 
-The 2026-07-28 Mode 57 headless profile separates the present bottlenecks:
+The 2026-07-28 Mode 58 full-game proof produced fresh, immediate same-tick pairs
+throughout the accepted world interval. Its 12-second preview recording contains
+713 frames (about 59.4 captured frames/s), 120/120 unique 10 Hz samples, and no
+freeze event of 250 ms or longer. This proves continuity at the Elliott simulator
+preview and recorder boundary. It does not establish physical-headset latency or
+shipping performance: the current producer still performs a 1280x720 CPU readback
+and mailbox copy.
+
+The earlier 2026-07-28 Mode 57 headless profile separated the temporal-path
+bottlenecks:
 
 - the world produced about 31 accepted temporal pairs per second because one pair
   consumes consecutive L/R GTA frames; sampled eye-capture skew was about 16.7 ms;

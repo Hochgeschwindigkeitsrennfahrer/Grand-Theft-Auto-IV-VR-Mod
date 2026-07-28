@@ -32,6 +32,12 @@ void EndPinnedOpenXrBuildPose();
 bool GetHmdPoseMatrix(vr::HmdMatrix34_t* out);
 bool IsHmdPoseValid();
 
+// Mode 203: latch ONE HMD pose for a parent-dual L/R pair (same orientation;
+// only ±IPD differs via RefreshLiveCam). Not the Mode201 ped/basis freeze.
+void BeginDualHmdPoseLatch();
+void EndDualHmdPoseLatch();
+bool IsDualHmdPoseLatchActive();
+
 // Mode 136: sample HMD pose immediately before Submit (late latch). Uses
 // GetDeviceToAbsoluteTrackingPose with a short photon prediction — not the
 // capture-time WaitGetPoses snapshot. Call from the Submit thread only.

@@ -1,29 +1,38 @@
 # gtaiv-dxvk-vr
 
 Standalone project: **GTA IV Complete Edition in VR** — stock DXVK **3.0.2** +
-Win32 ASI glue. The proven baseline uses **OpenVR/SteamVR**; the post-v0 target adds a
-separate **x64 OpenXR host** for Quest 3 while preserving OpenVR/Reverb G2 fallback.
+Win32 ASI glue. The current primary path is direct **OpenXR** through a separate
+x64 host. OpenVR/SteamVR is retained as the Reverb G2 fallback and as development
+history.
 
 ```
 GTAIV.exe (32-bit, D3D9)
   → d3d9.dll              (DXVK 3.0.2 — flat / desktop OK)
   → gtaiv_dxvk_vr.asi     (x86 GTA hooks + stereo capture)
-      ├─ fallback: OpenVR Submit via ID3D9VkInterop → SteamVR
-      └─ direct: x86 CPU mailbox → gtaiv_xr_host.exe (x64) → Meta OpenXR
+      ├─ primary: x86 CPU mailbox → gtaiv_xr_host.exe (x64) → OpenXR
+      └─ fallback: OpenVR Submit via ID3D9VkInterop → SteamVR
 ```
 
-**Status (WIP):** the latest clean upstream camera/stereo release through Modes
-**120–136** is integrated as the explicit OpenVR fallback. Direct-OpenXR Mode **57**
-now has a complete headless in-game proof: temporal, pixel-distinct L/R frames,
-captured per-eye poses, sustained fully loaded gameplay, stationary menu/pause quad,
-sRGB color, Start/A, locomotion/neutral, and pose sweep. The x86 ASI never
-initializes SteamVR on this route; the separate x64 host owns OpenXR.
+**Current status:** direct-OpenXR Mode **58** is the proved primary. The supervised
+Elliott run `20260728-150553-steam-safe` completed `PROOF_COMPLETE` in full GTA
+gameplay with a hard first-person camera, native head hide, controller input,
+stationary menu/pause quad, sRGB swapchain format `29`, and a world → pause UI →
+world round trip. Mode 58 minimally reuses upstream Mode 204's same-tick parent
+dual at `0x4DE020`; the run accepted 6,240 fused pairs at a 9.1 cm camera baseline
+and moved the player about 7.1 m.
 
-Mode 57 is deliberately temporal stereo, not same-tick stereo. Mode **56** was
-rejected as the current candidate because its nominal DrawScene x2 outputs remained
-byte-identical. Mode **55** remains the center-eye mono fallback. Real Quest 3
-visual/comfort acceptance is still pending, and the installed game remains
-`backend=off`, `stereo=0` after every supervised run. See
+The matching 12-second composed OpenXR SBS video contains 713 frames; all 120
+sampled frames are unique and freeze detection found zero events. Tested SHA-256:
+ASI `39F9D931D95998BEB6A7111DF33ABC9661B2466B9AEA4BB3CA44B9192C3C9F4A`,
+host `22272C3B7EA21396C39438CD351344C0C26253DAF18888060D5B04661F6ECEBC`,
+video `CE09CAF99F8CF51272E89C70A412C6A4B9CEF30FEE19A131AF08DD16F55F998D`.
+Fetched `origin/master` is `715d40f` (Mode 204) and is contained by this work.
+
+The x86 ASI does not initialize SteamVR on the OpenXR route; the x64 host owns the
+runtime. Mode **57** remains the temporal OpenXR diagnostic fallback, Mode **55**
+the center-eye mono fallback, and the imported OpenVR modes remain available for
+Reverb G2. Real Quest 3 visual/comfort acceptance is still pending. Every
+supervised run restores the installed game to `backend=off`, `stereo=0`. See
 [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md) and
 [`docs/ELLIOTT_OPENXR_SIMULATOR_PROOF.md`](docs/ELLIOTT_OPENXR_SIMULATOR_PROOF.md).
 
@@ -60,23 +69,120 @@ Daily work is **on your Windows PC** (Cursor Desktop local agent + VS2022). Not 
    .\scripts\build-openxr-host.ps1
    ```
 4. No headset runtime is required for these offline builds.
+## Imported upstream OpenVR history
 
-Log file (next to the game EXE): `gtaiv_dxvk_vr.log`
+The material below records the upstream OpenVR line that culminated in Mode
+204. It is retained for provenance and fallback use. It is not the current
+direct-OpenXR launch path or acceptance result.
+
+**WIP** VR glue for **GTA IV Complete Edition** (Steam): stock **DXVK 3.0.2** `d3d9.dll` + our **Win32 ASI** + **OpenVR / SteamVR**. Target headset in development: **HP Reverb G2**.
+
+```
+GTAIV.exe (x86 / D3D9)
+  → d3d9.dll              Stock DXVK 3.0.2 (flat desktop OK)
+  → FusionFix             ASI loader + CE fixes (install separately)
+  → gtaiv_dxvk_vr.asi     OpenVR init + stereo / camera glue
+       → ID3D9VkInterop*  → IVRCompositor::Submit (Vulkan textures)
+  → SteamVR → HMD
+```
+
+This is **not** a polished commercial VR port. It is an experimental singleplayer / offline project. Stereo is **real IPD parallax** via same-tick **DrawScene×2** (Praydog-style sequential dual), not Luke Ross AER v2.
 
 ---
 
-## Stereo modes (`gtaiv_dxvk_vr.stereo`)
+## Historical OpenVR snapshot — Mode **170** (`clean/mode-170`)
 
-| Mode | Meaning |
+| Item | Value |
+|------|--------|
+| Stereo file | `gtaiv_dxvk_vr.stereo` = **`170`** |
+| What it is | FP-style cam + **fresh DrawScene dual every frame** (`everyN=1`), no Flush; hitch → HOLD |
+| Feel (headset) | Strong FPS; **driving can still flicker** |
+| Kill | Write **`167`** or **`0`** into `gtaiv_dxvk_vr.stereo`, restart |
+| Prebuilt drop | [`prebuilt/mode170/`](prebuilt/mode170/) |
+
+Earlier clean LKG (smoother, dual every 2nd DrawScene): Mode **120**. Safer car/HUD family: Mode **167**.
+
+Live lab notes: [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md).
+
+---
+
+## Historical OpenVR requirements (fallback only)
+
+1. **GTA IV Complete Edition** (Steam) — 32-bit `GTAIV.exe`
+2. **[FusionFix](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix)** (ASI loader + CE fixes). Graphics API = **DirectX 9** (not FusionFix Vulkan)
+3. **SteamVR** running; headset tracked (Reverb G2 via WMR → SteamVR is fine)
+4. **Singleplayer / offline** while developing
+5. Optional build PC: VS 2022 C++ x86 tools, PowerShell, Git
+
+**Still-current hard rule:** everything that loads into `GTAIV.exe` is **Win32 /
+x86**. OpenXR therefore lives in the separate x64 host. The statement that v0 was
+OpenVR-only is historical; Mode 58 is now the primary proved OpenXR path. Do not
+drop a foreign game's `d3d9.dll` and call it GTA VR.
+
+---
+
+## Historical OpenVR quick install (prebuilt Mode 170)
+
+1. Install FusionFix into the GTAIV folder (official release).
+2. Close GTA IV.
+3. Copy everything from [`prebuilt/mode170/drop-into-GTAIV/`](prebuilt/mode170/drop-into-GTAIV/) into the folder that contains `GTAIV.exe` (overwrite VR files when asked).
+4. Start **SteamVR**, put the headset on, then launch GTA IV (offline / SP).
+5. Check `gtaiv_dxvk_vr.log` next to the EXE:
+   - `VR_Init OK`
+   - `StereoMode: 170`
+   - `StereoSubmit: L=1 R=1 mode=170`
+
+Full steps: [`prebuilt/mode170/INSTALL.txt`](prebuilt/mode170/INSTALL.txt).
+
+**Kill VR:** `gtaiv_dxvk_vr.stereo` → `0` (flat DXVK on monitor).<br>
+**Safer stereo fallback:** `167` or `120`.
+
+### Hotkeys
+
+| Key | Action |
+|-----|--------|
+| F5 | Cycle VR eye-canvas resolution |
+| F6 | Stereo scale |
+| F7 | World-scale / FOV presets |
+| F8 | IPD / separation |
+| F9 | Recenter look |
+| F10 | 6DoF / seated lean reset |
+
+---
+
+## Build from source
+
+```powershell
+git clone --recurse-submodules https://github.com/Hochgeschwindigkeitsrennfahrer/gtaiv-dxvk-vr.git
+cd gtaiv-dxvk-vr
+git checkout clean/mode-170
+.\scripts\fetch-minhook.ps1
+git clone --depth 1 --branch v2.12.14 https://github.com/ValveSoftware/openvr.git thirdparty\openvr
+.\scripts\build-asi.ps1
+.\scripts\deploy-asi.ps1   # copies into Steam GTAIV (edit path if needed)
+```
+
+Use **OpenVR SDK v2.12.14** (`IVRSystem_023`) with SteamVR **2.12.x**. Newer OpenVR headers against older SteamVR → `VR_Init` error **105**.
+
+Pack a Mode 170 drop after build:
+
+```powershell
+.\scripts\pack-mode170-zip.ps1
+```
+
+---
+
+## Historical OpenVR stereo modes
+
+| Path | Meaning |
 |------|---------|
-| **0** | Off — mono Submit, best FPS (~90) |
-| 4 / 13 | Temporal L/R (real parallax; ~half FPS) |
-| 7 | Same-frame dual (experimental) |
-| 11 | **Do not use** (blackscreen / freeze) |
+| **Mode 170** | Same-tick **DrawScene×2** with IPD (sequential L then R). Real parallax. Can flicker under motion. |
+| **Mode 120** | Cleaner cadence dual (`everyN=2` + HOLD) — former clean LKG |
+| **Mode 0** | Mono Submit — one image both eyes |
+| **AER / temporal** | Older modes (e.g. 38/51); **not** the Mode 170 product path |
+| **AER v2** | Optical-flow synthesis (Luke Ross) — **not implemented** |
 
-Hotkeys: **F6** stereo scale, **F7** world scale (VRScale), **F8** eye separation, **F9** recenter, **F10** 6DoF reset.
-
-Details: [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md), [`docs/STEREO_EYE_OFFSET.md`](docs/STEREO_EYE_OFFSET.md), [`docs/VR_MOD_PLAYBOOK.md`](docs/VR_MOD_PLAYBOOK.md).
+True simultaneous same-moment stereo (frozen game time between eyes / SPS) remains an open research item.
 
 ---
 
@@ -96,10 +202,18 @@ Details: [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md), [`docs/STEREO_EYE_OFF
 | [docs/HOME_CURSOR.md](docs/HOME_CURSOR.md) | Cursor setup (German) |
 | [AGENTS.md](AGENTS.md) | Agent contract |
 | [HANDOFF.md](HANDOFF.md) | Short handoff |
+| [docs/CURRENT-STATE.md](docs/CURRENT-STATE.md) | Headset status / next |
+| [docs/VR_STRATEGY.md](docs/VR_STRATEGY.md) | Stock DXVK 3.0.2 + interop |
+| [docs/CONSTRAINTS.md](docs/CONSTRAINTS.md) | Hard rules |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Modules |
+| [docs/BUILD.md](docs/BUILD.md) | Build detail |
+| [docs/REFERENCES.md](docs/REFERENCES.md) | Links |
+| [CREDITS.md](CREDITS.md) | Credits & licenses |
+| [AGENTS.md](AGENTS.md) | Agent / contributor contract |
 
 ---
 
-## Scripts
+## Credits & sources
 
 | Script | Purpose |
 |--------|---------|
@@ -117,27 +231,31 @@ Details: [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md), [`docs/STEREO_EYE_OFF
 | `scripts/fetch-minhook.ps1` | Clone MinHook into `thirdparty/minhook` |
 | `scripts/restart-gtaiv.ps1` | Quick restart via Steam |
 | `scripts/deploy.ps1` | Deploy a `d3d9.dll` (+ backup) |
+See **[CREDITS.md](CREDITS.md)** for the full dependency and license list.
 
----
+- **DXVK** — [doitsujin/dxvk](https://github.com/doitsujin/dxvk) (stock **v3.0.2** deliverable)
+- **OpenVR / SteamVR** — [ValveSoftware/openvr](https://github.com/ValveSoftware/openvr)
+- **FusionFix** — [ThirteenAG/GTAIV.EFLC.FusionFix](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix)
+- **Architecture inspiration** — [sd805/l4d2vr](https://github.com/sd805/l4d2vr), HL2VR patterns (concept only)
+- **Stereo / FOV lessons** — [praydog/UEVR](https://github.com/praydog/UEVR), [Halo-MCC-VR](https://github.com/pancreations/Halo-MCC-VR), public Luke Ross / R.E.A.L. writeups (**techniques only** — no closed binaries)
+- **Historical DXVK VR mailbox** — [TheIronWolfModding/dxvk](https://github.com/TheIronWolfModding/dxvk) (reference; **not** our ship base)
+- **MinHook** — TsudaKageyu / related MinHook tree
 
-## Invite someone (private repo)
-
-GitHub private repos are **not** “unlisted with a link”. Viewers need an invite:
-
-1. Open: https://github.com/Hochgeschwindigkeitsrennfahrer/gtaiv-dxvk-vr/settings/access  
-2. Click **Add people**  
-3. Enter their GitHub username or email  
-4. Choose a role (usually **Write** if they should push, else **Read**)  
-5. They accept the email / notification invite  
-
-Or with GitHub CLI (your machine):
-
-```powershell
-gh api -X PUT repos/Hochgeschwindigkeitsrennfahrer/gtaiv-dxvk-vr/collaborators/THEIR_USERNAME -f permission=push
-```
+GTA IV belongs to Rockstar Games / Take-Two. This project does **not** redistribute Rockstar game assets or closed third-party VR binaries.
 
 ---
 
 ## License
 
-MIT for *our* scaffolding / ASI sources. DXVK, OpenVR, MinHook, and any referenced mods keep their own licenses.
+MIT for *our* ASI / scaffolding sources. DXVK, OpenVR, MinHook, FusionFix, and referenced projects keep their own licenses — see [CREDITS.md](CREDITS.md).
+
+---
+
+## Status / invite
+
+Repository may be **private**. A link alone is not enough — ask the owner for a collaborator invite.
+
+**Earlier milestone:** flat DXVK 3.0.2 OK + ASI Mono-Submit in SteamVR.
+
+**Current proved primary:** direct-OpenXR Mode 58 first-person same-tick parent-dual
+gameplay. Next acceptance gate: real Quest 3 visual comfort and scale.

@@ -1,128 +1,138 @@
 # Elliott OpenXR Simulator headless full-game proof
 
-This is the repeatable, no-headset validation route for GTA IV OpenXR Mode 57.
-It does not open or control a simulator window and it never registers a system
-OpenXR runtime. The launcher supplies the Elliott manifest only to the x64 host
-through its child `XR_RUNTIME_JSON` environment.
+This is the repeatable, no-headset validation route for GTA IV's current
+direct-OpenXR primary, Mode **58**. It does not control a simulator window and it
+does not register a system OpenXR runtime. The launcher supplies the pinned
+Elliott manifest only to the x64 host through its child `XR_RUNTIME_JSON`
+environment.
 
-## Verification status
+## Current verification status: Mode 58 PASS
 
-The two-boundary Mode 57 CPU-readback scheduler passed the current complete
-full-game regression:
-
-```text
-out-openxr/runs/20260728-044211-steam-safe/
-```
-
-That run reports `outcome=PROOF_COMPLETE`, matching producer/host world endpoints
-`1906 -> 2520`, receipt-proven pair 600, and every menu, input, color, pose,
-swapchain-reuse, cleanup, and restoration gate. It additionally requires a
-deferred-left stage plus a completed `split=1 atomic=1 pixelDistinct=1`
-transaction. The recorded split advanced host pose `6830/6831` and producer call
-`34544/34547` over `6.88 ms`; the launcher accepts only a positive gap no greater
-than the producer's 250 ms safety bound. SteamVR remained absent.
-
-Twelve sparse world samples reduced readback mean/p95 from `6.55/9.55 ms` in
-`040944` to `5.73/8.81 ms`; mean wait was about 12.6% lower. This validates the
-two-boundary scheduling mitigation, but Mode 57 remains temporal and CPU-backed.
-It is not the same-frame/GPU-only product result.
-
-The preceding `20260728-043350-steam-safe` attempt is a retained negative test.
-Its two-call pending-age rule expired before a new host pose because GTA invokes
-the producer far faster than runtime pose cadence. The ten-second transaction
-stall gate aborted that run, and cleanup/restoration still passed. The accepted
-implementation uses monotonic elapsed time, not producer-call count, as its
-bounded-age safety rule.
-
-The batched DXVK CPU-readback ordering passed a further complete full-game
-regression:
+The authoritative full-game run is:
 
 ```text
-out-openxr/runs/20260728-040944-steam-safe/
+out-openxr/runs/20260728-150553-steam-safe/
 ```
 
-That run reports `outcome=PROOF_COMPLETE`, accepted Mode 57 pair 600, matching
-producer/host endpoints `1940 -> 2580`, all menu/input/color/pose/reuse gates,
-`steamVrProcessCount=0`, and no cleanup or restoration failure. The producer
-queued both eye readbacks before either lock and logged separate enqueue/wait
-times. Enqueue rounded to `0.00 ms`; total readback mean/p95 remained
-`6.55/9.55 ms`, statistically unchanged from the prior sparse baseline
-`6.49/9.36 ms`. This validates the ordering and shows that the GPU completion
-wait, rather than the second command submission, is the remaining CPU-mailbox
-spike. It is a correctness/performance diagnostic, not a headset-smoothness
-claim.
+Its `result.txt` reports `outcome=PROOF_COMPLETE`. This is the first complete
+Mode 58 result and supersedes Mode 57 as the current simulator acceptance result.
+The run proved:
 
-The held-frame OpenXR swapchain-reuse change passed a second complete full-game
-regression:
+- OpenXR backend active with SteamVR absent and `openvr_api.dll` isolated;
+- hard first-person GTA camera hooks active, first-person gameplay lock active,
+  and native five-component player-head hide operational;
+- same-tick L/R rendering through upstream Mode 204's exact parent at
+  `0x4DE020`, with one pinned OpenXR pose/FOV sample across both walks;
+- 6,240 accepted parent-dual pairs and a final measured camera baseline of
+  `9.1 cm`;
+- pixel-distinct L/R mailbox content, fresh camera generations
+  `30708/30709`, exact host capture pose `12485`, and producer transaction
+  `8040`;
+- stationary menu/loading/pause presentation, followed by a proved
+  world -> pause UI -> world round trip;
+- Touch-to-XInput Start, A, forward-stick, release, and neutral behavior;
+- a 20-second commanded forward walk that moved the first-person camera about
+  `7.1 m`, from approximately world Y `-499.7` to `-492.6`;
+- sRGB decode and OpenXR swapchain format `29`;
+- advancing producer/host world traffic, device-Reset recovery, final neutral,
+  cleanup, and exact installed-file restoration.
+
+The pre-pause gate observed 120 uninterrupted Mode 58 pairs, shared advancing
+producer/host transactions, then required three additional continuous gameplay
+seconds before sending Start. That settling gate is important: an earlier
+`20260728-145535-steam-safe` attempt sent Start too soon and never entered pause.
+It is a retained automation-timing negative test, not a Mode 58 stereo failure.
+
+Tested binary hashes:
 
 ```text
-out-openxr/runs/20260728-035722-steam-safe/
+x86 ASI SHA-256:
+39F9D931D95998BEB6A7111DF33ABC9661B2466B9AEA4BB3CA44B9192C3C9F4A
+
+x64 host SHA-256:
+22272C3B7EA21396C39438CD351344C0C26253DAF18888060D5B04661F6ECEBC
 ```
 
-That run reports `outcome=PROOF_COMPLETE`,
-`hostSwapchainReuseReady=True`, lower-bound counters of 2700 unchanged host frames
-reused and 2400 new-transaction updates, accepted Mode 57 pair 600, matching
-producer/host world endpoints `1940 -> 2580`, complete menu/input/pose automation,
-no SteamVR, and exact installed-file restoration. The reuse gate is asserted only
-for `presentation=world-temporal-stereo` after exact temporal capture poses are
-active; menu reuse cannot satisfy it. The host continues tracking, input,
-`xrWaitFrame`, and `xrEndFrame` at runtime cadence; only redundant D3D11 rendering
-of an unchanged GTA transaction is skipped. Cached temporal submissions retain the
-original per-eye capture poses/FOVs even after the live pose-history ring advances.
+The run was made after fetching `origin/master` at
+`715d40f0c57a648041a5b4f585602b07c664a7d0` ("Ship Mode 204 fused stereo
+milestone as the master build"). That upstream state is contained by the
+integration work; Mode 58 adds the OpenXR layer without replacing the proven
+Mode 204 GTA render parent.
 
-The corrected Mode 57 contract passed its first complete live simulator run:
+This headless proof does not replace a real Quest 3 visual acceptance test. It
+cannot judge human stereo fusion, comfort, perceived scale, Link latency, or
+optical headset smoothness.
+
+## Recorded first-person OpenXR proof
+
+The matching recording control directory and video are:
 
 ```text
-out-openxr/runs/20260728-000001-steam-safe/
+out-openxr/video-20260728-150552-vr/
+out-openxr/video-20260728-150552-vr/gtaiv-openxr-mode58-vr-sbs-12s.mp4
 ```
 
-Its `result.txt` reports `outcome=PROOF_COMPLETE`. The run accepted the first four
-receipt-proven L/R pairs, continued through accepted pair 600, and completed with:
+This is the Elliott runtime's composed side-by-side OpenXR preview, not the flat
+GTA window and not a reconstructed eye pair. The simulator remained
+headless/file-IPC controlled. Its preview HWND was exposed without activation
+only for Windows Graphics Capture.
 
-- GTA IV loaded past its startup menu into the world;
-- matching first/latest producer and host world-transaction endpoints
-  `1893 -> 2580`, with a pre-pause continuous-frame marker over `1893 -> 2040`;
-- a 6.40 cm applied-camera baseline, advancing per-eye pose/camera receipts, and
-  raw L/R differences distributed across the frame;
-- first accepted pair `rawRgbAbsDiff=12073`, 2395 changed pixels, 64 changed
-  tiles; accepted pair 4 `rawRgbAbsDiff=1985`, 34 pixels, 22 tiles;
-- accepted pair 600 `rawRgbAbsDiff=1100`, 70 pixels, 27 tiles;
-- UI reasons remained zero for `6549 ms` while the world gate observed three
-  fresh matching producer/host transactions;
-- stationary 1280x720 local-space UI and a world -> pause UI -> world round trip;
-- one sRGB decode followed by an sRGB OpenXR swapchain write;
-- GTA consumption of Start, A, forward stick, and neutral;
-- an eight-second simulated head-pose sweep;
-- no SteamVR process, no proof/cleanup failure, and exact game-file restoration.
-
-The earlier `out-openxr/runs/20260727-214303-steam-safe/` run is retained only as
-historical transport, UI, color, and input evidence. It predates the corrected
-build-to-replay association and must not be cited as stereo proof.
-
-This does not replace a real Quest 3 visual acceptance test. It cannot judge human
-stereo fusion, comfort, perceived scale, Link latency, or headset smoothness.
-
-## Corrected Mode 57 proof contract
-
-Mode 57 is accepted only when every captured eye carries one end-to-end receipt:
+Verified media facts:
 
 ```text
-BuildRootA pinned pose + camera receipt
-  -> ExecRoot consumes that exact build ticket
-  -> successful D3D BeginScene consumes that exact replay ticket
-  -> EndScene on the same D3D device and thread captures that eye
+capture=PASS
+duration=12.00 seconds
+dimensions=3840x1920 side-by-side
+frames=713
+average frame rate=59.42 fps
+sampled frame hashes=120/120 unique
+freezeEvents=0
+bytes=27359559
+SHA-256=CE09CAF99F8CF51272E89C70A412C6A4B9CEF30FEE19A131AF08DD16F55F998D
 ```
 
-The pair gate additionally requires an ordered left/right pair from consecutive
-build epochs, progressive pose and camera generations, and raw pixel distinction
-between the two held render targets before any canvas conversion. The launcher
-must observe at least four accepted receipt-proven pairs. The proof run uses only
-the x64 OpenXR host and Elliott runtime: the ASI backend is `openxr`,
-`openvr_api.dll` is disabled for the run, and no OpenVR or SteamVR process may
-participate.
+The video begins only after the world, stereo, first-person, pause/resume, and
+locomotion gates pass. Its 12 seconds are inside the acknowledged 20-second
+forward-stick interval with the Mode 58 head-pose sweep active. Extracted frames
+show the first-person view advancing through the apartment with visibly offset
+left and right eyes. `frame-sample.framemd5` contains 120 distinct sample hashes;
+`freezedetect.log` contains no freeze event.
 
-This corrected contract now has both static coverage and the successful live
-full-game result above.
+## Mode 58 proof contract
+
+Mode 58 minimally marries the current OpenXR transport to the known upstream
+Mode 204 render seam:
+
+```text
+one native GTA source frame
+  -> exact Mode 204 parent @ 0x4DE020
+  -> pin one OpenXR HMD/eye/FOV sample
+  -> left camera receipt + native parent walk + left canvas copy
+  -> right camera receipt + native parent walk + right canvas copy
+  -> one same-tick parent-dual pair
+  -> pixel-distinct CPU mailbox transaction
+  -> x64 OpenXR host presents both eyes with the exact capture pose
+```
+
+Publication is fail-closed. A Mode 58 world pair must carry all of these facts:
+
+- same GTA source frame and same OpenXR pose for both eyes;
+- verified Mode 204 parent-dual route, never the Mode 120 replay path;
+- fresh, ordered per-eye camera generations on the render thread;
+- correct L/R eye selection and an applied stereo baseline;
+- first-person camera anchor on both walks;
+- successful native player-head hide;
+- both eye copies complete and downstream pixels distinct;
+- exact pose/FOV lookup accepted by the x64 host.
+
+Menu, loading, phone, and pause states deliberately use one fresh GTA image on a
+stationary local-space quad. UI transactions cannot carry the Mode 58
+parent-dual/first-person proof flags.
+
+The OpenXR route never initializes OpenVR. A Mode 58 structural hook failure
+falls back to Mode **57** temporal OpenXR stereo; Mode **55** remains the
+center-eye OpenXR mono fallback. The imported OpenVR/Reverb G2 modes are retained
+separately as fallback/history.
 
 ## Build the pinned simulator
 
@@ -134,8 +144,8 @@ From PowerShell in `D:\code\gta-iv`:
 
 The setup script checks out
 `48a70f440ac7d9bda385994937e3da8e15a4d9bb`, verifies the packaged patch and
-file-IPC asset hashes, builds x64 Release, verifies the PE machine, and prints the
-manifest path. It does not activate or launch the runtime.
+file-IPC asset hashes, builds x64 Release, verifies the PE machine, and prints
+the manifest path. It does not activate or launch the runtime.
 
 ## Build GTA artifacts
 
@@ -146,14 +156,14 @@ manifest path. It does not activate or launch the runtime.
 .\tests\elliott_cli_proof_contract_test.ps1
 ```
 
-## Run the locked proof
+## Run the locked Mode 58 proof
 
 Use the manifest printed by the setup script:
 
 ```powershell
 .\scripts\run-openxr-gta-steam-safe.ps1 `
   -GameDir "D:\SteamLibrary\steamapps\common\Grand Theft Auto IV\GTAIV" `
-  -StereoMode 57 `
+  -StereoMode 58 `
   -RuntimeManifest "D:\code\gta-iv\out-openxr\external\OpenXR-Simulator\bin\openxr_simulator.json" `
   -ElliottCliProof `
   -StopWhenProofComplete `
@@ -163,125 +173,98 @@ Use the manifest printed by the setup script:
 
 The launcher:
 
-1. refuses dirty Steam launch options that request OpenVR or SteamVR;
-2. stops only path-verified stale Rockstar launcher processes when no GTA title
-   process exists;
-3. deploys the candidate ASI with `backend=openxr` and `stereo=57`;
-4. backs up/removes `openvr_api.dll` and creates the OpenVR disable sentinel;
-5. starts the x64 host with a child-only Elliott runtime override;
-6. checks SteamVR absence at the three launch boundaries, with no continuous
+1. rejects non-empty GTA IV Steam launch options;
+2. deploys the candidate ASI with `backend=openxr` and `stereo=58`;
+3. backs up/removes `openvr_api.dll` and creates the OpenVR disable sentinel;
+4. starts the x64 host with a child-only Elliott runtime override;
+5. checks SteamVR absence at audited launch boundaries, without continuous
    process polling;
-7. uses ordinary Steam app 12210 authentication with no title arguments and one
+6. uses ordinary Steam app 12210 authentication with no title arguments and one
    bounded Rockstar handoff retry;
-8. drives Start/A/stick/neutral/pose through acknowledged JSON command files;
-9. waits for UI reasons zero plus three fresh shared world transactions sustained
-   for at least two seconds, uses a bounded pre-pause pose sweep to make static-scene
-   continuity deterministic, and requires observed unchanged-swapchain reuse before
-   testing pause and locomotion;
-10. records `PROOF_COMPLETE`, stops the title and host, removes command files, and
-    restores every saved game file.
+7. drives Start, A, stick, neutral, and pose through acknowledged JSON command
+   files, never simulator-window control;
+8. requires sustained fresh world transactions, Mode 58 parent-dual and
+   first-person proofs, then three additional advancing gameplay seconds before
+   testing pause;
+9. proves stationary pause UI, resume to world, forward locomotion, and final
+   neutral;
+10. records `PROOF_COMPLETE`, stops the title and host, removes command files,
+    and restores every saved game file.
 
 ## Record the composed in-game VR view
-
-The recording wrapper runs the same locked proof and captures only after the
-world, stereo, continuity, pause/resume, and locomotion gates have passed:
 
 ```powershell
 .\scripts\run-and-record-elliott-vr.ps1 `
   -GameDir "D:\SteamLibrary\steamapps\common\Grand Theft Auto IV\GTAIV" `
   -RuntimeManifest "D:\code\gta-iv\out-openxr\external\OpenXR-Simulator\bin\openxr_simulator.json" `
+  -StereoMode 58 `
   -WalkSeconds 20 `
-  -DurationSeconds 10 `
+  -DurationSeconds 12 `
   -FrameRate 60 `
   -Authorized
 ```
 
-It waits on the run's atomic `elliott-walk-ready.marker`; it does not read the
-live status log or poll SteamVR. The recorder exposes the hidden Elliott preview
-with `SW_SHOWNOACTIVATE`, captures its exact host-owned HWND, and immediately
-hides it afterward. Simulator input remains headless/file-IPC only. Windows
-Graphics Capture scales the runtime's 4926x2464 composed preview to 3840x1920
-side-by-side before H.264 NVENC, keeping the encoder within its 4096-pixel width
-limit.
-
-The wrapper accepts only a launcher `PROOF_COMPLETE` result plus a recorder
-receipt and non-empty video. It writes the latest control-directory path to
-`out-openxr/latest-vr-video-control.txt`. The first accepted artifact is:
-
-```text
-out-openxr/video-20260728-124617-vr-final/gtaiv-openxr-mode57-vr-sbs-10s.mp4
-```
-
-This is an OpenXR simulator-compositor preview, not a flat GTA capture and not a
-Quest optical/compositor recording.
+The wrapper waits on the atomic `elliott-walk-ready.marker` and captures only the
+host-owned preview HWND. It does not read the live status log, continuously poll
+SteamVR, focus a window, or control simulator input. Windows Graphics Capture
+scales the runtime preview to 3840x1920 SBS and records H.264 through NVENC.
 
 ## Acceptance markers
 
-Do not accept a run from a menu image, one stereo pair, or the superseded
-EndScene-arm marker. Require all of these in `status.log` and `result.txt`:
+Require all of these in `status.log`:
 
 ```text
-WORLD LOAD READY
-continuous world frames proven
-Mode57 build-to-replay receipt PASS
-Mode57 mailbox contains temporal, pixel-distinct L/R eyes
-Mode57 deferred-left CPU readback stage PASS
-Mode57 two-boundary atomic CPU readback PASS
-Mode57 temporal L/R transaction accepted by host
-Mode57 per-eye capture poses active in OpenXR host
-unchanged OpenXR world swapchain reuse READY
+Mode58 hard first-person camera hooks READY
+Mode58 gameplay first-person lock ACTIVE
+Mode58 native player head hide operational
+Mode58 fused Mode204 parent L/R capture READY
+Mode58 parent-dual exact capture pose active in OpenXR host
+Mode58 uninterrupted pre-pause fused world continuity PASS
+gameplay settle PASS with advancing producer/host transactions
+distinct in-game pause UI observed
 in-game world->pause UI->world round trip PASS
-stick/neutral proof PASS
-command-file A/Start/stick/neutral/pose automation COMPLETE
+Mode58 pose sweep active for recorded walk
+GTA consumed Elliott left-stick locomotion
+GTA consumed neutral after Elliott stick hold
+Mode58 recorded walk pose sweep and stick/neutral automation COMPLETE
 PROOF COMPLETE
 RESTORED: original ASI/backend/stereo/OpenVR state
 ```
 
-Also require:
+Also require these `result.txt` facts:
 
 ```text
 outcome=PROOF_COMPLETE
+stereoMode=58
 controllerProofComplete=True
-stereoProofComplete=True
-worldLoadFullyReady=True
+stationaryUiQuad=True
 pauseRoundTrip=True
-temporalBuildReplayReceiptReady=True
-temporalSplitStageReady=True
-temporalSplitReadbackReady=True
-temporalSplitPhasePoses=.../...
-temporalSplitPhaseCalls=.../...
-temporalSplitPhaseEpoch=...
-temporalSplitPhaseGapMs=...
-hostSwapchainReuseReady=True
-hostSwapchainReuseFramesLowerBound=...
-hostSwapchainUpdatesLowerBound=...
+stereoPixelDistinct=True
+stereoCameraDistanceReady=True
+stereoCameraDistanceCm=9.1
+stereoAcceptedPairOrdinal=6240
+mode58PrePauseAcceptedPairSpan=120
+mode58PrePauseContinuityReady=True
+parentDualProofComplete=True
+firstPersonProofComplete=True
+parentDualHostExactPoseReady=True
+hostPresentationContinuityReady=True
+hostSwapchainFreshUpdatesReady=True
+deviceResetHealthy=True
+elliottProofAutomationComplete=True
+cleanupFailures=
 restoreFailures=
 ```
 
-`temporalBuildReplayProofPairOrdinal` must be present in `result.txt` and must be
-at least `4`. The corresponding ASI log must contain accepted lines in this form:
+For the video, require the recorder receipt, 713 decoded frames over 12 seconds,
+120 unique hashes from 120 samples, zero `freezedetect` events, and the exact
+video SHA-256 recorded above.
 
-```text
-StereoOpenXRTemporal: pair #... build=.../... pose=.../... display=.../... rawRgbAbsDiff=... changedPixels=... changedTiles=... camDist=...cm camGen=.../... buildTid=... execTid=... d3dTid=... proof=buildroot-execroot-fifo-beginscene-endscene-entry
-```
+## Historical Mode 57 result
 
-For each accepted line, right build epoch must equal left build epoch plus one.
-On the pre-canvas held textures, the 64x64 RGB audit must report
-`rawRgbAbsDiff >= 1024`, at least 16 changed pixels, and at least 4 changed
-8x8 spatial tiles. This is a distributed non-identity check; it corroborates
-the separate ordered FIFO, D3D-boundary, and exact applied eye-camera receipts
-rather than claiming that raw pixel difference alone proves stereo causality.
-Build, execution, and D3D are independent asynchronous lanes: each thread ID must
-be nonzero, stable across the accepted L/R pair, and equal to the owner recorded
-for its own lane. No cross-lane thread equality or inequality is assumed.
-`endscene-entry` is precise: capture and validation happen at the matching
-`EndScene` hook entry, before GTA calls the real D3D9 `EndScene`.
-
-For the split gate, the current phase pose must be greater than the staged pose,
-the current producer call must be greater than the staged call, the producer
-epoch must be nonzero, and `0 < temporalSplitPhaseGapMs <= 250`. The corresponding
-mailbox line must contain `split=1`, `atomic=1`, and `pixelDistinct=1`. A phase-L
-marker alone or one accepted transaction cannot satisfy the later continuous
-world-frame gate.
-
-Mode 57 is temporal separate-eye stereo. Never relabel it as same-tick stereo.
+Mode 57's two-boundary temporal proof remains useful as the fail-safe OpenXR
+stereo route. Its successful runs established the CPU mailbox, exact per-eye
+capture-pose transport, UI quad, color, and controller infrastructure. It is not
+the current primary because its eyes come from consecutive GTA frames. Mode 58
+reuses that transport while replacing temporal eye capture with the proved
+same-tick Mode 204 parent dual.

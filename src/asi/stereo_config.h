@@ -275,6 +275,11 @@ enum class StereoMode : int {
   // eye poses, then publishes only completed distinct-eye pairs to the x64
   // host. This is AER rather than same-tick stereo and never calls OpenVR.
   OpenXrTemporalStereo = 57,
+  // Direct-OpenXR production candidate. Reuses upstream Mode 204's headset-
+  // proven parent @0x4DE020, same-tick L/R draw walk, pose latch, first-person
+  // ped-eye camera, and native head hide. Only the compositor boundary changes:
+  // the completed D3D9 eye textures go to the x64 OpenXR host, never OpenVR.
+  OpenXrFusedFirstPerson = 58,
   // Mode 120 CLEAN rewrite (LKG / last-good smooth): Mode50 head-owned + RT lock +
   // true-FOV canvas + synced DrawScene×2 every N with HOLD/hitchcut (Praydog sequential).
   // look-move ON (HMD yaw→ped; atan2(-fx,fy)); pedCoupled OFF; motion-guard OFF;
@@ -364,11 +369,248 @@ enum class StereoMode : int {
   // (not capture-time AER). SteamVR can reproject between content frames → smoother look.
   // Kill: 120. Paths 120–135 untouched. OpenVR 2.12.14. No FPS HUD.
   CleanDualLateLatch = 136,
+  // Mode 140 EXTERNAL-FP HOST: C06alt FirstPerson owns FP cam + hide + FOV.
+  // Our ASI: DrawScene×2 IPD-only dual Submit + HMD→mouse (no full HMD CopyMat).
+  // Mode 120 code path untouched. Kill: stereo 0 or 120 (+ restore FP off).
+  // Known look issues (kept for A/B): yaw sides inverted; pitch sluggish (frame-skip/cap).
+  ExternalFpHost = 140,
+  // Mode 141: Mode140 dual+FP + HMD→mouse look fix for FirstPerson (GET_MOUSE_INPUT path):
+  // yaw sign un-inverted; every-frame (no skip); higher pitch sens; higher max mouse step;
+  // larger delta accept (fast head turns). Kill: 140 / 0 / 120.
+  ExternalFpHostLookFix = 141,
+  // Mode 142: Mode141 pitch/rate, but opposite yaw sign vs 141 (if 141 still mirrored).
+  // Kill: 141 / 140 / 0. Yaw confirmed good; pitch dead when FirstPerson HMD=1 (Oculus).
+  ExternalFpHostLookAlt = 142,
+  // Mode 143: Mode142 yaw (−) + pitch unlock for FirstPerson mouse path (HMD=0):
+  // per-axis clamp (don't drop pitch when yaw spikes); pitch sign flip vs 142; higher pitch.
+  // Requires FirstPerson.ini HMD=0. Kill: 142 / 140 / 0.
+  ExternalFpHostLookPitch = 143,
+  // Mode 144: Mode143 rate/clamp, but Mode142 pitch sign (if 143 looks inverted UD).
+  // Kill: 143 / 142 / 0. Confirmed: signs OK; pitch too fast vs yaw; no ped look-move;
+  // walk direction hard; camera bob up/down while walking.
+  ExternalFpHostLookPitchAlt = 144,
+  // Mode 145: Mode144 signs + look_move ON (ped faces HMD → walk in look dir like Mode120)
+  // + mouse pitch only (no mouse yaw — ped turn owns LR) + slower pitch + small pitch deadzone.
+  // FirstPerson HMD=0. Kill: 144 / 0 / 120.
+  ExternalFpHostLookMove = 145,
+  // Mode 146: Mode145 look_move + reduced mouse yaw (half) if ped-only yaw undershoots FP cam.
+  // Kill: 145 / 144 / 0.
+  ExternalFpHostLookMoveYaw = 146,
+  // Mode 147: LAST movement A/B before head-hide port.
+  // Uncouple cam from body: mouse look = Mode144 signs (slow pitch); ped heading floats
+  // ONLY (no matrix rewrite — FP attach cam not yanked). Walk toward look. Stick LR invert fix.
+  // Kill: 144 / 0.
+  ExternalFpHostSoftMove = 147,
+  // Mode 148: Mode147 without stick invert (if 147 stick still wrong).
+  // Kill: 147 / 144 / 0.
+  ExternalFpHostSoftMoveStick = 148,
+  // Mode 150: FP-host dual (like 147 soft move) + native SET_DRAW_PLAYER_COMPONENT hide
+  // (ScriptHook-timing goal via NativeInvoke). Keep FirstPerson for cam; test hide port.
+  // Kill: 147 / 0. pedhide forced conceptually.
+  HeadHideNativeWithFp = 150,
+  // Mode 151: OUR cam (Mode120-class DrawScene dual + HMD CopyMat) + native head hide.
+  // Rename FirstPerson.asi → .off for this test. Kill: 120 / 0.
+  HeadHideNativeOurs = 151,
+  // Mode 152: Mode151 + FirstPerson.ini FOV profile for OUR cam:
+  // ForwardFOV/RearFOV/FootFOV via gtaiv_dxvk_vr.fpfov (default 90 90 90 — not 111),
+  // FPX/Y/Z→camoff, joysens/mousesens files. Absolute CCam FOV write (SET_CAM_FOV style).
+  // FirstPerson.asi OFF. Kill: 151 / 120 / 0.
+  OursFpFovProfile = 152,
+  // Mode 153: Mode152 stack + FP-wide under-publish FOV.
+  // Write CCam+0x60 = fpfov (widen engine BB) but lock canvas gameTan to HMD cover
+  // (do NOT PublishGameFovFromCCamDegrees). Matches FP-host dezoom feel. Kill: 152/120/0.
+  OursFpWideUnderPublish = 153,
+  // Mode 154: Mode153 + aspect-correct under-publish fit (tanH/tanV keep BB aspect,
+  // scale to touch cover on one axis). Fixes 153 vertical stretch / narrow rooms.
+  // Kill: 153 / 152 / 120. Luke Ross square commandline NOT used (already failed alone).
+  OursFpWideAspectFit = 154,
+  // Mode 155: Mode154 FOV + ped-fixed eye-center pivot (no 6DoF lean; ped-fwd offset
+  // between eyes; ignore look-axis eyefwd). Kill: 154 / 153 / 120.
+  OursFpEyeCenterCam = 155,
+  // Mode 156: Mode155 with lower eye height (65cm vs 78) + F5 VR eye-canvas maxDim
+  // increments (1024…2048 / SteamVR recommended). Kill: 154 / 155 / 120.
+  OursFpEyeCenterLowRes = 156,
+  // Mode 157: Mode156 + mild under-publish overscan (~6%) to shrink black bars
+  // without Mode153 aspect lie. Slight edge crop. Kill: 156 / 154 / 120.
+  OursFpMildOverscan = 157,
+  // Mode 158: Mode157 + Luke-style square(ish) render path.
+  // Use commandline.txt.vr-square (1440×1440) → rename to commandline.txt + restart.
+  // Closer BB aspect → fewer bars; keep aspect-fit+overscan FOV. Kill: 157 / 156 / 120.
+  OursFpSquareRes = 158,
+  // Mode 159: Mode158 stack + stronger overscan (~10%) to eat more black bars.
+  // 158 frozen as LKG. Kill: 158 / 157 / 120.
+  OursFpStrongOverscan = 159,
+  // Mode 160: Luke Ross square path + LOW overscan (~2%). Bars mostly gone from
+  // square aspect; strong overscan no longer needed. Kill: 158 / 159 / 120.
+  OursFpSquareLowOverscan = 160,
+  // Mode 161: same as 160 but overscan = 1.0 (0%) for A/B vs 160. Kill: 160 / 158 / 120.
+  OursFpSquareZeroOverscan = 161,
+  // Mode 162: Mode161 + wider engine FOV (fpfov 100 vs 90). Same square + 0% overscan;
+  // packs more world into the filled HMD (true zoom-out). Kill: 161 / 160 / 158.
+  OursFpSquareWideFov = 162,
+  // Mode 163: Mode162 + flash gate — skip capture only for SMALL RT0 (<70% BB;
+  // water/envmap). Full-size offscreen still captures. Kill: 162.
+  OursFpFlashGate = 163,
+  // Mode 164: Mode163 + in-car eye further back (vehcamoff default 0 -12 0). Kill: 162 / 163.
+  OursFpInCarHead = 164,
+  // Mode 165: Mode164 + keep first-person during enter-car anim/cutscene. Kill: 164 / 162.
+  OursFpEnterCarFp = 165,
+  // Mode 166: Mode162 FOV stack + HUD/radar inward offsets (hudoff file). Kill: 162.
+  OursFpHudLayout = 166,
+  // Mode 167: Mode165 (enter-car FP + in-car head + flash gate) + Mode166 HUD inset
+  // (mission directions / radar / status). Kill: 165 / 166 / 162.
+  OursFpCarHud = 167,
+  // Mode 168: Mode167 car+HUD + flicker-stable dual:
+  //   - everyN=1 (no off-tick stale L/R HOLD)
+  //   - always capture BB (no tiny-RT skip gate — that gate caused HOLDs/flashes)
+  //   - atomic L+R pair update (never mix old L with new R)
+  //   - hitch → live BB both eyes (not stale HOLD)
+  // FAILED headset 2026-07-28: everyN=1 + FlushRenderingCommands → DEVICE_LOST.
+  // Kill: 167 / 162.
+  OursFpStableCarHud = 168,
+  // Mode 169: SAFE flicker (learned from 168 DEVICE_LOST logs):
+  //   - Mode167 car+HUD
+  //   - dualn=2 HOLD (NOT everyN=1 — that overloaded the GPU)
+  //   - NO FlushRenderingCommands
+  //   - always capture BB (no tiny-RT skip gate)
+  //   - atomic L+R pair update
+  //   - hitch → HOLD last stereo (NOT LIVELOOK mono flash)
+  // Headset test 2026-07-28: no freeze, but HMD stutter/flicker (desktop smooth)
+  //   — dualn=2 HOLD re-submits stale L/R every other frame. Kill: 167 / 162.
+  OursFpSafeFlicker = 169,
+  // Mode 170: Mode169 + everyN=1 (fresh dual every DrawScene) — STILL no Flush,
+  // hitch→HOLD. Isolates whether 168 DEVICE_LOST was Flush (not everyN=1 alone).
+  // Headset: superb FPS, but driving still flickers. Kill: 169 / 167.
+  OursFpFreshDual = 170,
+  // Mode 171: Mode170 + FREEZE ped/vehicle eye ORIGIN across the L→R dual pair.
+  // Driving flicker: ped matrix moves between Left DrawScene and Right DrawScene,
+  // so each eye sees a different world position (binocular rivalry). Snapshot the
+  // eye-center once before L; both eyes only differ by ±IPD from that freeze.
+  // Headset: still flickers on foot — dual DrawScene content differs even frozen.
+  // Kill: 170 / 167.
+  OursFpPairFreeze = 171,
+  // Mode 172: MONO-PAIR flicker A/B + UI lift for phone.
+  //   - ONE DrawScene (no IPD) → same BB copied to L and R with SAME eye crop
+  //   - Headset: STILL flickers — Left-crop submitted as Right eye → rivalry
+  //   - Canvas dest±clamp lift ~10% was too weak / squashy for phone
+  // Kill: 171 / 170 / 167. Stereo depth temporarily flat.
+  OursFpMonoPair = 172,
+  // Mode 173: true mono Submit (same Vulkan tex both eyes) + phone lift = minimap.
+  //   - Headset: STILL flickers with sameL=1 → not L/R content; canvas/Submit path suspect
+  //   - Phone still cut off at 16% crop
+  // Kill: 172 / 170 / 167.
+  OursFpSameLPhone = 173,
+  // Mode 174: BB-MONO + PHONE — flicker A/B vs canvas path.
+  //   - Headset: FLICKER GONE. Confirms eye-canvas/dual Submit was the cause.
+  //   - Phone still too low/right in HMD (desktop screenshot: cut off bottom-right)
+  // Kill: 173 / 170 / 167.
+  OursFpBbPhone = 174,
+  // Mode 175: Mode174 (no-flicker BB mono) + phone framing nudge.
+  //   TextureBounds: vMin 0.30→0.42 (up), uMin 0→0.14 (right content → left/center).
+  // Headset: phone GOOD. Kill: 174 / 170 / 167.
+  OursFpBbPhoneNudge = 175,
+  // Mode 176: STEREO back — dual DrawScene + simple BB copy. FAILED: flicker back, no 3D feel.
+  // Kill: 175 / 170 / 167.
+  OursFpStereoSimple = 176,
+  // Mode 177: AER — one DrawScene/frame alt L/R. FAILED: flicker, no fusion, head warp.
+  // Kill: 175 / 170 / 167.
+  OursFpAer = 177,
+  // Mode 178: SAME-FRAME FREEZE — Mode170 dual + eye-canvas + freeze FULL pre-IPD
+  // cam (basis+pos) across L→R; only ±IPD differs (stronger than Mode171 origin-only).
+  // Kill: 170 / 167.
+  OursFpSameFrameFreeze = 178,
+  // Mode 179: Mode178 + no ColorFill on eye-canvas (keep cover crop for fusion).
+  // Kill: 178 / 170.
+  OursFpNoColorFill = 179,
+  // Mode 180: FAILED — Mode175 Submit UV on eye-canvas = warp.
+  OursFpPhoneStereo = 180,
+  // Mode 183: FAILED — soft BB crop in CopySurfToEyeCanvas warped look-around
+  // and did NOT move the phone. Phone move that worked = Mode175 BB+UV only.
+  // Kill: 170.
+  OursFpPhoneCanvasInset = 183,
+  // Mode 184: FAILED headset — CTimer ms_fTimeStep=0 between L/R armed, flicker
+  // unchanged; video-settings crash risk if step left at 0. Poke disabled.
+  // Kill: 170.
+  OursFpTimeFreeze = 184,
+  // Mode 185: CHECKPOINT — Mode170 dual+canvas + Right via PhaseA→PhaseC→DrawScene.
+  // Headset: on par with 170; still flickers (driving/menu/LOD). Kill: 170.
+  OursFpPhaseRightDual = 185,
+  // Mode 186: Mode185 + zoom-out — fpfov 110 (wider engine FOV; cupboard/near
+  // objects feel smaller). Not canvas zoom. Kill: 185 / 170.
+  OursFpZoomOut = 186,
+  // Mode 187: Mode186 + true UEVR-style WorldScale — gtaiv_dxvk_vr.scale multiplies
+  // stereo IPD baseline in game units (higher % = smaller world). F11 cycles.
+  // Kill: 186 / 185.
+  OursFpTrueWorldScale = 187,
+  // Mode 188: FAILED — HEAD bone via out-pointer → (0,0,0) under map. Kill: 187.
+  OursFpHeadBoneWorldScale = 188,
+  // Mode 189: SAME-TICK dual — timer+cam freeze flicker experiment. Kill: 187 / 185.
+  OursFpSameTickDual = 189,
+  // Mode 190: FAILED — bone natives from CopyMat crash after load. Kill: 187.
+  OursFpHeadBoneReturn = 190,
+  // Mode 191: MILESTONE LKG — BuildRootA×2 L/R CopyMat (no CodePause; audio OK).
+  // Headset 2026-07-28: looks/perf good; whole-screen+UI flicker when looking up/out,
+  // gone looking down (post/exposure rivalry hypothesis). Kill: 187 / 185.
+  OursFpSameTickBuildDual = 191,
+  // Mode 192: Left BuildRootA + Right PhaseTriplet — flicker GONE/smooth but NO FUSION.
+  // Kill: 191.
+  OursFpSameTickPhaseRight = 192,
+  // Mode 193: Mode187 + HEAD via CE Vec3 GetBonePosition thiscall (not matrix;
+  // not ScriptHook natives). First build smashed stack with matrix AOB. Kill: 187.
+  OursFpHeadBoneThiscall = 193,
+  // Mode 194: Left BuildRootA + Right DrawScene+PushLiveCam. Headset: two distinct
+  // eye angles (close-one-eye proves parallax), but NO fusion. Not "same mono BB".
+  // Kill: 191.
+  OursFpSameTickDrawRight = 194,
+  // Mode 196: DONE probe — proved OWNER target 0x220D0 via [eax+0x178] at 0x30D0D.
+  // Headset: 1 FPS (VirtualQuery on every VsRet) + joystick look crashes. Observe path
+  // is now disabled (WantsTrace off). Keep enum for log archaeology. Kill: 191.
+  OursFpSameTickOwnerObserve = 196,
+  // Mode 197: FAILED playtest — COUNT naked hook on 0x220D0 (Mode196 target).
+  // Headset: worse FPS than 191 + heavy flicker. 0x220D0 is per-draw hot (10k+/frame),
+  // not a ~1×/frame walker — COUNT trampoline alone is too expensive. Hook install
+  // refused; falls through as Mode191. Kill: 191.
+  OursFpSameTickOwnerCount = 197,
+  // Mode 198: Mode191 dual + LIGHT parent probe — at most ONE VsRet stack sample per
+  // EndScene (no VirtualQuery). Hunt ~1×/frame callers ABOVE hot leaf 0x220D0.
+  // Kill: 191.
+  OursFpSameTickParentProbe = 198,
+  // Mode 199: Mode191 dual + COUNT-ONLY naked hook on fn-start 0x4D8BF0
+  // (Mode198 RARE ret 0x4D8C36 → thiscall-56). Soft: avg entries/ES > 8 after 90 ES
+  // → disable + write stereo=191. Kill: 191.
+  // Headset 2026-07-28: PASS — avg~0.99/ES, smooth, no crashes.
+  OursFpSameTickParentCount = 199,
+  // Mode 200: TRUE parent dual — SINGLE BuildRootA + HookDrawWalk×2 @0x4D8BF0
+  // with Mode191 RefreshLiveCam L/R CopyMat (one world build; per-eye view at
+  // Mode198/199 RARE parent). Soft avg>8/ES or SEH → 191. Kill: 191.
+  // Headset 2026-07-28: PASS smooth/no flicker; fusion incomplete + look ghosting
+  // (F8 IPD helps but not fully). Next: 201 cam freeze.
+  OursFpSameTickParentDual = 200,
+  // Mode 201: Mode200 + full pre-IPD cam freeze for the L/R parent dual pair
+  // (same basis; only ±IPD differs — kills look-around pose drift ghosting).
+  // No CodePause/timer. Kill: 200 / 191.
+  // Headset 2026-07-28: REJECT — no fusion gain; headlook drag. Keep enum only.
+  OursFpSameTickParentDualFreeze = 201,
+  // Mode 202: FAILED look-blur — VS-translate fuses when still but is NOT true
+  // per-eye view (translation-only on baked matrices). Kill: 200 / 191.
+  OursFpSameTickParentDualVs = 202,
+  // Mode 203: MILESTONE — TRUE 3D VR checkpoint (2026-07-28 headset).
+  // Same-pose parent dual @0x4D8BF0 + HMD pose latch + full CCam±IPD.
+  // Smooth ~90 FPS; size feel OK; near may still double. Snapshot: prebuilt/mode203.
+  // Kill: 200 / 191. Later parent-try modes kill back to 203.
+  OursFpSameTickParentDualPose = 203,
+  // Mode 204: Mode203 path on NEXT Mode198 RARE thiscall parent fn-start 0x4DE020
+  // (ret 0x4DE0DC). Same pose latch + CCam±IPD. Kill: 203 MILESTONE.
+  OursFpSameTickParentDualTry2 = 204,
 };
 
 // Modes whose compositor, pose, FOV and frame transport are the separate x64
 // OpenXR host. These modes must never consult OpenVR at runtime.
 bool IsOpenXrDirectMode(StereoMode mode);
+bool IsOpenXrFusedFirstPerson(StereoMode mode);
+// Exact Mode 204 parent-dual renderer seam, shared by legacy OpenVR Mode 204
+// and direct-OpenXR Mode 58. This is not the generic Mode 120 DrawScene path.
+bool UsesMode204ParentDualPath(StereoMode mode);
 
 // Mode 40–49: rapid HMD delta → temporary mono pair. Mode 50+ never flattens.
 bool UsesMotionGuardStereo(StereoMode mode);
@@ -399,6 +641,99 @@ bool IsCleanDualMonoLookHmdCheap(StereoMode mode); // 133 only (FAILED same-tex 
 bool IsCleanDualMonoLookBack132(StereoMode mode);  // 134 only (=132-safe; FAILED HOLD freeze)
 bool IsCleanDualAlwaysFresh(StereoMode mode);      // 135 only (everyN=1; never bare HOLD)
 bool IsCleanDualLateLatch(StereoMode mode);        // 136 only (Mode120 content + TextureWithPose late)
+bool IsExternalFpHost(StereoMode mode);            // 140–148, 150 (not 151)
+bool UsesDrawSceneDualPath(StereoMode mode);       // clean dual OR FP-host OR 151
+bool IsExternalFpHostLookFix(StereoMode mode);     // 141
+bool IsExternalFpHostLookAlt(StereoMode mode);     // 142
+bool IsExternalFpHostLookPitch(StereoMode mode);   // 143
+bool IsExternalFpHostLookPitchAlt(StereoMode mode); // 144
+bool IsExternalFpHostLookMove(StereoMode mode);    // 145
+bool IsExternalFpHostLookMoveYaw(StereoMode mode); // 146
+bool IsExternalFpHostSoftMove(StereoMode mode);    // 147
+bool IsExternalFpHostSoftMoveStick(StereoMode mode); // 148
+bool IsHeadHideNativeWithFp(StereoMode mode);      // 150
+bool IsHeadHideNativeOurs(StereoMode mode);        // 151–189
+bool IsOursFpFovProfile(StereoMode mode);          // 152 only
+bool IsOursFpWideUnderPublish(StereoMode mode);    // 153 only (cover-lock)
+bool IsOursFpWideAspectFit(StereoMode mode);       // 154–189 (aspect-fit under-publish)
+bool IsOursFpEyeCenterCam(StereoMode mode);        // 155–189
+bool IsOursFpEyeCenterLow(StereoMode mode);        // 156–189 (lower pivot + F5 VR res)
+bool IsOursFpMildOverscan(StereoMode mode);        // 157–189 (family; 161+ uses 1.0)
+bool IsOursFpSquareRes(StereoMode mode);           // 158–189
+bool IsOursFpStrongOverscan(StereoMode mode);      // 159 only
+bool IsOursFpSquareLowOverscan(StereoMode mode);   // 160 only
+bool IsOursFpSquareZeroOverscan(StereoMode mode);  // 161–189 (0% overscan family)
+bool IsOursFpSquareWideFov(StereoMode mode);       // 162–189 (fpfov 100 family)
+bool IsOursFpFlashGate(StereoMode mode);           // 163–167 (tiny-RT skip; not 168+)
+bool IsOursFpFlashStable(StereoMode mode);         // 168 only (FAILED DEVICE_LOST)
+bool IsOursFpSafeFlicker(StereoMode mode);         // 169 only (dualn=2; HMD stutter)
+bool IsOursFpFreshDual(StereoMode mode);           // 170–173, 176, 178–180, 183–192 (everyN=1)
+bool IsOursFpPairFreeze(StereoMode mode);          // 171 only (origin freeze)
+bool IsOursFpMonoPair(StereoMode mode);            // 172–173 (1 DrawScene → both eyes)
+bool IsOursFpSameLPhone(StereoMode mode);          // 173 only (sameL Submit + radar phone lift)
+bool IsOursFpBbPhone(StereoMode mode);             // 174–175 (Mode0 BB submit; no canvas)
+bool IsOursFpBbPhoneNudge(StereoMode mode);        // 175 only (phone up+left bounds)
+bool IsOursFpStereoSimple(StereoMode mode);        // 176 only (FAILED dual flicker)
+bool IsOursFpAer(StereoMode mode);                 // 177 only (FAILED AER)
+bool IsOursFpSameFrameFreeze(StereoMode mode);     // 178–180 (full pre-IPD cam freeze)
+bool IsOursFpNoColorFill(StereoMode mode);         // 179–180 (skip canvas ColorFill)
+bool IsOursFpPhoneBounds(StereoMode mode);         // 175–177, 180 Submit UV (NOT 183)
+bool IsOursFpPhoneCanvasInset(StereoMode mode);    // 183 FAILED crop
+bool IsOursFpTimeFreeze(StereoMode mode);          // 184 FAILED CTimer poke (disabled)
+bool IsOursFpPhaseRightDual(StereoMode mode);      // 185–192 PhaseTriplet Right
+bool IsOursFpZoomOut(StereoMode mode);             // 186–192 fpfov 110
+bool IsOursFpTrueWorldScale(StereoMode mode);      // 187–193 scale×IPD (UEVR-style size)
+bool IsOursFpHeadBoneCam(StereoMode mode);         // 193 CE thiscall HEAD bone eye
+bool IsOursFpSameTickDual(StereoMode mode);        // 189 timer+cam freeze (audio hitch)
+bool IsOursFpSameTickBuildDual(StereoMode mode);   // 191–199 same-tick family
+bool IsOursFpSameTickPhaseRight(StereoMode mode);  // 192 smooth, no fusion
+bool IsOursFpSameTickDrawRight(StereoMode mode);   // 194 distinct L/R, no fusion
+bool IsOursFpSameTickOwnerObserve(StereoMode mode); // 196 DONE — observe disabled
+bool IsOursFpSameTickOwnerCount(StereoMode mode);  // 197 FAILED — hook refused
+bool IsOursFpSameTickParentProbe(StereoMode mode); // 198 light once/ES parent hunt
+bool IsOursFpSameTickParentCount(StereoMode mode); // 199 COUNT @ 0x4D8BF0
+bool IsOursFpSameTickParentDual(StereoMode mode);  // 200–204 parent dual family
+bool IsOursFpSameTickParentDualFreeze(StereoMode mode); // 201 REJECT freeze
+bool IsOursFpSameTickParentDualVs(StereoMode mode);     // 202 REJECT VS-translate
+bool IsOursFpSameTickParentDualPose(StereoMode mode);   // 203–204 HMD pose latch + full L/R
+bool IsOursFpSameTickParentDualTry2(StereoMode mode);   // 204 next Mode198 parent @0x4DE020
+bool IsOursFpUiLift(StereoMode mode);              // 172–173 canvas phone lift (not 174+)
+bool IsOursFpAtomicEyePair(StereoMode mode);       // 168–173, 176, 178–180, 183–192
+bool IsOursFpAlwaysBbCapture(StereoMode mode);     // 168–173, 176, 178–180, 183–192
+bool IsOursFpInCarHead(StereoMode mode);           // 164–165, 167–180, 183–192
+bool IsOursFpEnterCarFp(StereoMode mode);          // 165, 167–180, 183–192
+bool IsOursFpHudLayout(StereoMode mode);           // 166–180, 183–192
+bool IsOursFpCarHud(StereoMode mode);              // 167–180, 183–192
+bool IsOursFpStableCarHud(StereoMode mode);        // 168 only
+bool IsOursFpDualCamFreeze(StereoMode mode);       // 171, 178–180, 189, 193, or 201
+// Force HMD→ped heading (walk look-dir): 145–148, 150–172, clean dual.
+bool WantsExternalFpLookMove(StereoMode mode);
+bool WantsSoftPedHeading(StereoMode mode);
+bool WantsFpStickInvert(StereoMode mode);
+bool WantsNativePedHide(StereoMode mode);
+// Absolute engine FOV like FirstPerson SET_CAM_FOV (ForwardFOV from fpfov file).
+// Modes 153–166: write CCam; canvas under-publish (cover or aspect-fit).
+bool WantsFpAbsoluteFov(StereoMode mode);
+// Under-publish overscan: 1.0 = 0% (Mode 161–166), ~1.02 low, ~1.06 mild, ~1.10 strong.
+float GetUnderPublishOverscan();
+// Mode 164/165: Inspiration-style vehicle camoff (cm R/F/U). Default 0 -12 0.
+void GetVehicleCamOffsetMeters(float* outRight, float* outForward, float* outUp);
+void EnsureVehicleCamOffDefaults();
+
+// Eye-canvas maxDim (F5 cycles). Comfort default 1536. Gen bumps to unlock RT size.
+uint32_t GetCanvasMaxDim();
+uint32_t GetCanvasMaxDimGeneration();
+void SetCanvasMaxDim(uint32_t dim, bool fromHotkey);
+void ReloadCanvasMaxDim();
+void PollVrResHotkey();
+
+// FirstPerson.ini-style knobs (files next to ASI; defaults match user 90/90/90 test).
+float GetFpForwardFovDegrees();  // gtaiv_dxvk_vr.fpfov first value / forwardfov
+float GetFpRearFovDegrees();
+float GetFpFootFovDegrees();
+float GetFpMouseSensScale();     // MouseSens/50 → 1.0 default
+float GetFpJoySensScale();       // JoySensLev1/20 → 1.0 default
+void EnsureFpProfileDefaults();  // write missing fpfov/camoff/sens files
 
 // Mode 123: once cover FOV known, set fovadd so fillH≈100% (no SoftInset).
 void TryApplyCoverMatchedFovAdd();
@@ -412,12 +747,14 @@ float GetStereoSepMeters();
 void PollIpdScaleHotkey();
 float GetStereoIpdScale();
 
-// 6DoF lean only (file gtaiv_dxvk_vr.scale). Does NOT multiply stereo IPD.
+// 6DoF lean (all modes). Mode187+: also multiplies stereo IPD baseline (UEVR size).
 float GetWorldScale();
 // F7: cycle visual WorldScale presets (fovadd + stereoscale). Persist index to
 // gtaiv_dxvk_vr.worldscale. Default "Open12" — DEZOOM via LOWER fovadd (less
 // StretchRect crop) + higher stereoscale. Higher fovadd = more crop zoom-IN.
 void PollWorldScaleHotkey();
+// F11: cycle gtaiv_dxvk_vr.scale 100→125→150→175→200 (true WorldScale % on Mode187).
+void PollTrueWorldScaleHotkey();
 
 // Soft stereo disparity multiplier (percent). Independent of 6DoF lean.
 // File: gtaiv_dxvk_vr.stereoscale — default 115. F6 cycles. Cap keeps fusion safe.
@@ -435,7 +772,9 @@ bool UsesAngleCorrectCanvas(StereoMode mode);
 
 // gtaiv_dxvk_vr.eyefwd: eye-forward offset in cm (default 42). Places cam through
 // skull/hair. With PedHide on, try lower values (12–20) for less turn-swing.
+// Mode 152 FP presence uses 0 (see jacket when looking down, like FirstPerson).
 float GetEyeForwardMeters();
+void SetEyeForwardCm(int cm);
 
 // gtaiv_dxvk_vr.camoff: "x y z" cm — Inspiration FirstPerson.ini FPX/FPY/FPZ style.
 // X = right, Y = forward (away from face), Z = up. Default 0 0 0.

@@ -210,6 +210,10 @@ struct TransactionQuality
     bool accepted = false;
     bool sameTick = false;
     bool temporalStereo = false;
+    bool parentDualStereo = false;
+    bool firstPersonCamera = false;
+    bool nativeHeadHidden = false;
+    bool pixelDistinct = false;
     bool uiQuad = false;
     bool immersiveMono = false;
     const char* rejection = nullptr;
@@ -224,6 +228,8 @@ TransactionQuality assessTransactionQuality(
         (value.flags & gtaiv_xr_bridge::SameSimulationTick) != 0u;
     const bool temporalStereoFlag =
         (value.flags & gtaiv_xr_bridge::TemporalStereo) != 0u;
+    const bool poseStampedFlag =
+        (value.flags & gtaiv_xr_bridge::PoseStamped) != 0u;
     result.sameTick =
         sameTickFlag
         && value.sourceFrameId[0] != 0u
@@ -244,12 +250,30 @@ TransactionQuality assessTransactionQuality(
         (value.flags & gtaiv_xr_bridge::VerifiedWvpStereo) != 0u;
     const bool verifiedDrawSceneStereo =
         (value.flags & gtaiv_xr_bridge::VerifiedDrawSceneStereo) != 0u;
+    const bool verifiedParentDualStereo =
+        (value.flags
+            & gtaiv_xr_bridge::VerifiedParentDualStereo) != 0u;
+    const bool firstPersonCamera =
+        (value.flags & gtaiv_xr_bridge::FirstPersonCamera) != 0u;
+    const bool nativeHeadHidden =
+        (value.flags & gtaiv_xr_bridge::NativeHeadHidden) != 0u;
     const bool distinctEyes =
         (value.flags
             & (gtaiv_xr_bridge::Stereo
                 | gtaiv_xr_bridge::EyesDistinct))
         == (gtaiv_xr_bridge::Stereo
             | gtaiv_xr_bridge::EyesDistinct);
+    result.parentDualStereo =
+        worldStereo
+        && verifiedParentDualStereo
+        && firstPersonCamera
+        && nativeHeadHidden
+        && distinctEyes
+        && result.sameTick
+        && !temporalStereoFlag;
+    result.firstPersonCamera = firstPersonCamera;
+    result.nativeHeadHidden = nativeHeadHidden;
+    result.pixelDistinct = worldStereo && distinctEyes;
     const bool immersiveMonoFlag =
         (value.flags & gtaiv_xr_bridge::ImmersiveMono) != 0u;
     // A temporal pair is an ordered L-then-R capture, not merely a world
@@ -276,6 +300,7 @@ TransactionQuality assessTransactionQuality(
     const bool reasonsValid =
         (value.uiReasonFlags & ~KnownUiReasons) == 0u;
     if ((!worldStereo && !result.immersiveMono && !result.uiQuad)
+        || !poseStampedFlag
         || value.uiEye >= gtaiv_xr_bridge::EyeCount
         || value.contentWidth == 0u
         || value.contentHeight == 0u
@@ -289,15 +314,27 @@ TransactionQuality assessTransactionQuality(
         || (worldStereo && immersiveMonoFlag)
         || (worldStereo && !distinctEyes)
         || (sameTickFlag && temporalStereoFlag)
+        || verifiedParentDualStereo != firstPersonCamera
+        || verifiedParentDualStereo != nativeHeadHidden
+        || ((verifiedParentDualStereo
+                || firstPersonCamera
+                || nativeHeadHidden)
+            && !worldStereo)
         || (result.immersiveMono
             && (!immersiveMonoFlag
                 || verifiedWvpStereo
                 || verifiedDrawSceneStereo
+                || verifiedParentDualStereo
+                || firstPersonCamera
+                || nativeHeadHidden
                 || temporalStereoFlag))
         || (result.uiQuad
             && (immersiveMonoFlag
                 || verifiedWvpStereo
-                || verifiedDrawSceneStereo)))
+                || verifiedDrawSceneStereo
+                || verifiedParentDualStereo
+                || firstPersonCamera
+                || nativeHeadHidden)))
     {
         result.rejection = "invalid presentation mode";
         return result;
@@ -314,7 +351,9 @@ TransactionQuality assessTransactionQuality(
             result.rejection = "temporal stereo stamps are not ordered";
             return result;
         }
-        if (verifiedWvpStereo || verifiedDrawSceneStereo)
+        if (verifiedWvpStereo
+            || verifiedDrawSceneStereo
+            || verifiedParentDualStereo)
         {
             result.rejection =
                 "temporal stereo claimed a same-frame proof";
@@ -323,9 +362,17 @@ TransactionQuality assessTransactionQuality(
     }
     else if (worldStereo
              && (!result.sameTick
-                 || (!verifiedWvpStereo && !verifiedDrawSceneStereo)))
+                 || (!verifiedWvpStereo
+                     && !verifiedDrawSceneStereo
+                     && !verifiedParentDualStereo)))
     {
         result.rejection = "missing verified same-frame stereo proof";
+        return result;
+    }
+    if (verifiedParentDualStereo && !result.parentDualStereo)
+    {
+        result.rejection =
+            "parent-dual stereo lacks first-person/head-hide proof";
         return result;
     }
     if (result.immersiveMono && !result.sameTick)
@@ -1184,6 +1231,10 @@ struct GameBridge::Implementation
         frame.transactionId = value.transactionId;
         frame.sameSimulationTick = quality.sameTick;
         frame.temporalStereo = quality.temporalStereo;
+        frame.parentDualStereo = quality.parentDualStereo;
+        frame.firstPersonCamera = quality.firstPersonCamera;
+        frame.nativeHeadHidden = quality.nativeHeadHidden;
+        frame.pixelDistinct = quality.pixelDistinct;
         frame.presentationMode = value.presentationMode;
         frame.uiReasonFlags = value.uiReasonFlags;
         frame.uiEye = value.uiEye;
@@ -1213,6 +1264,10 @@ struct GameBridge::Implementation
         frame.transactionId = value.transactionId;
         frame.sameSimulationTick = quality.sameTick;
         frame.temporalStereo = quality.temporalStereo;
+        frame.parentDualStereo = quality.parentDualStereo;
+        frame.firstPersonCamera = quality.firstPersonCamera;
+        frame.nativeHeadHidden = quality.nativeHeadHidden;
+        frame.pixelDistinct = quality.pixelDistinct;
         frame.presentationMode = value.presentationMode;
         frame.uiReasonFlags = value.uiReasonFlags;
         frame.uiEye = value.uiEye;
@@ -1336,7 +1391,9 @@ struct GameBridge::Implementation
                             ? "stationary-ui-quad"
                             : current.presentationMode
                                     == gtaiv_xr_bridge::PresentationMode::WorldStereo
-                                ? current.temporalStereo
+                                ? current.parentDualStereo
+                                    ? "world-parent-dual-stereo"
+                                    : current.temporalStereo
                                     ? "world-temporal-stereo"
                                     : "world-drawscene-stereo"
                                 : "world-immersive-mono")
@@ -1345,6 +1402,14 @@ struct GameBridge::Implementation
                     << (current.sameSimulationTick ? 1 : 0)
                     << " temporal="
                     << (current.temporalStereo ? 1 : 0)
+                    << " parentDual="
+                    << (current.parentDualStereo ? 1 : 0)
+                    << " fp="
+                    << (current.firstPersonCamera ? 1 : 0)
+                    << " headHide="
+                    << (current.nativeHeadHidden ? 1 : 0)
+                    << " pixelDistinct="
+                    << (current.pixelDistinct ? 1 : 0)
                     << " copyMs=" << (GetTickCount64() - started);
             log(message.str());
             lastLoggedCpuPresentationMode = current.presentationMode;
@@ -1417,6 +1482,14 @@ struct GameBridge::Implementation
                     << (current.sameSimulationTick ? 1 : 0)
                     << " temporal="
                     << (current.temporalStereo ? 1 : 0)
+                    << " parentDual="
+                    << (current.parentDualStereo ? 1 : 0)
+                    << " fp="
+                    << (current.firstPersonCamera ? 1 : 0)
+                    << " headHide="
+                    << (current.nativeHeadHidden ? 1 : 0)
+                    << " pixelDistinct="
+                    << (current.pixelDistinct ? 1 : 0)
                     << " presentation="
                     << (current.presentationMode
                                 == gtaiv_xr_bridge::PresentationMode::UiQuad
@@ -1424,7 +1497,11 @@ struct GameBridge::Implementation
                             : current.presentationMode
                                     == gtaiv_xr_bridge::PresentationMode::WorldMono
                                 ? "world-immersive-mono"
-                                : "world-stereo")
+                                : current.parentDualStereo
+                                    ? "world-parent-dual-stereo"
+                                    : current.temporalStereo
+                                        ? "world-temporal-stereo"
+                                        : "world-stereo")
                     << " pose=" << current.poseSequence[0]
                     << '/' << current.poseSequence[1]
                     << " ingestLatencyMs=" << latency;
@@ -1743,6 +1820,64 @@ bool GameBridgeProtocolSelfTest(std::string& failure)
         return false;
     }
     value.flags &= ~gtaiv_xr_bridge::VerifiedDrawSceneStereo;
+
+    value.flags |=
+        gtaiv_xr_bridge::VerifiedParentDualStereo
+        | gtaiv_xr_bridge::FirstPersonCamera
+        | gtaiv_xr_bridge::NativeHeadHidden;
+    const TransactionQuality parentDualQuality =
+        assessTransactionQuality(value, false);
+    if (!parentDualQuality.accepted
+        || !parentDualQuality.sameTick
+        || parentDualQuality.temporalStereo
+        || !parentDualQuality.parentDualStereo
+        || !parentDualQuality.firstPersonCamera
+        || !parentDualQuality.nativeHeadHidden
+        || !parentDualQuality.pixelDistinct)
+    {
+        failure =
+            "strict Mode58 parent-dual first-person world pair was rejected";
+        return false;
+    }
+    GameFrameView parentDualFrame {};
+    parentDualFrame.parentDualStereo =
+        parentDualQuality.parentDualStereo;
+    parentDualFrame.temporalStereo =
+        parentDualQuality.temporalStereo;
+    if (!parentDualFrame.requiresExactCapturePose())
+    {
+        failure =
+            "parent-dual world route did not require exact capture pose";
+        return false;
+    }
+    value.flags &= ~gtaiv_xr_bridge::NativeHeadHidden;
+    if (assessTransactionQuality(value, false).accepted)
+    {
+        failure =
+            "parent-dual world pair without native head hide was accepted";
+        return false;
+    }
+    value.flags |= gtaiv_xr_bridge::NativeHeadHidden;
+    value.flags &= ~gtaiv_xr_bridge::FirstPersonCamera;
+    if (assessTransactionQuality(value, false).accepted)
+    {
+        failure =
+            "parent-dual world pair without first-person proof was accepted";
+        return false;
+    }
+    value.flags |= gtaiv_xr_bridge::FirstPersonCamera;
+    value.flags &= ~gtaiv_xr_bridge::SameSimulationTick;
+    if (assessTransactionQuality(value, false).accepted)
+    {
+        failure = "non-same-tick parent-dual world pair was accepted";
+        return false;
+    }
+    value.flags |= gtaiv_xr_bridge::SameSimulationTick;
+    value.flags &=
+        ~(gtaiv_xr_bridge::VerifiedParentDualStereo
+            | gtaiv_xr_bridge::FirstPersonCamera
+            | gtaiv_xr_bridge::NativeHeadHidden);
+
     if (assessTransactionQuality(value, false).accepted)
     {
         failure = "unverified same-tick world pair was accepted";
@@ -1794,6 +1929,20 @@ bool GameBridgeProtocolSelfTest(std::string& failure)
     }
     value.flags &= ~gtaiv_xr_bridge::SameSimulationTick;
 
+    value.flags |=
+        gtaiv_xr_bridge::VerifiedParentDualStereo
+        | gtaiv_xr_bridge::FirstPersonCamera
+        | gtaiv_xr_bridge::NativeHeadHidden;
+    if (assessTransactionQuality(value, true).accepted)
+    {
+        failure = "temporal parent-dual world pair was accepted";
+        return false;
+    }
+    value.flags &=
+        ~(gtaiv_xr_bridge::VerifiedParentDualStereo
+            | gtaiv_xr_bridge::FirstPersonCamera
+            | gtaiv_xr_bridge::NativeHeadHidden);
+
     value.presentationMode =
         gtaiv_xr_bridge::PresentationMode::WorldMono;
     value.flags =
@@ -1836,6 +1985,16 @@ bool GameBridgeProtocolSelfTest(std::string& failure)
     if (assessTransactionQuality(value, false).accepted)
     {
         failure = "immersive mono transaction claimed DrawScene stereo proof";
+        return false;
+    }
+    value.flags &= ~gtaiv_xr_bridge::VerifiedDrawSceneStereo;
+    value.flags |=
+        gtaiv_xr_bridge::VerifiedParentDualStereo
+        | gtaiv_xr_bridge::FirstPersonCamera
+        | gtaiv_xr_bridge::NativeHeadHidden;
+    if (assessTransactionQuality(value, false).accepted)
+    {
+        failure = "immersive mono transaction claimed parent-dual proof";
         return false;
     }
 
@@ -1899,6 +2058,19 @@ bool GameBridgeProtocolSelfTest(std::string& failure)
         failure = "valid temporal UI quad transaction was rejected";
         return false;
     }
+    value.flags |=
+        gtaiv_xr_bridge::VerifiedParentDualStereo
+        | gtaiv_xr_bridge::FirstPersonCamera
+        | gtaiv_xr_bridge::NativeHeadHidden;
+    if (assessTransactionQuality(value, false).accepted)
+    {
+        failure = "UI quad transaction claimed parent-dual proof";
+        return false;
+    }
+    value.flags &=
+        ~(gtaiv_xr_bridge::VerifiedParentDualStereo
+            | gtaiv_xr_bridge::FirstPersonCamera
+            | gtaiv_xr_bridge::NativeHeadHidden);
 
     value.contentWidth = 0u;
     if (assessTransactionQuality(value, false).accepted)
@@ -2236,7 +2408,10 @@ bool GameBridgeCpuMailboxSelfTest(std::string& failure)
         | gtaiv_xr_bridge::EyesDistinct
         | gtaiv_xr_bridge::PoseStamped
         | gtaiv_xr_bridge::SameSimulationTick
-        | gtaiv_xr_bridge::VerifiedDrawSceneStereo;
+        | gtaiv_xr_bridge::VerifiedDrawSceneStereo
+        | gtaiv_xr_bridge::VerifiedParentDualStereo
+        | gtaiv_xr_bridge::FirstPersonCamera
+        | gtaiv_xr_bridge::NativeHeadHidden;
     stereoValue.presentationMode =
         gtaiv_xr_bridge::PresentationMode::WorldStereo;
     stereoValue.uiReasonFlags = gtaiv_xr_bridge::UiReasonNone;
@@ -2249,6 +2424,13 @@ bool GameBridgeCpuMailboxSelfTest(std::string& failure)
         || stereoFrame.transactionId != 2u
         || stereoFrame.presentationMode
             != gtaiv_xr_bridge::PresentationMode::WorldStereo
+        || !stereoFrame.sameSimulationTick
+        || stereoFrame.temporalStereo
+        || !stereoFrame.parentDualStereo
+        || !stereoFrame.firstPersonCamera
+        || !stereoFrame.nativeHeadHidden
+        || !stereoFrame.pixelDistinct
+        || !stereoFrame.requiresExactCapturePose()
         || !viewsUseDifferentTextures(
             stereoFrame.eyeViews[0], stereoFrame.eyeViews[1])
         || !pixelsMatch(stereoFrame.eyeViews[0], leftExpected)

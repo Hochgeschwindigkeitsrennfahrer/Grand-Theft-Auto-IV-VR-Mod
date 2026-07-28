@@ -1,57 +1,76 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-28 12:48 PT
+**As of:** 2026-07-28 15:10 PT
 
-## Latest artifact: 10-second Elliott OpenXR SBS walk video (PASS)
+## Current primary: Mode 58 direct OpenXR first-person stereo (full proof PASS)
 
-The first recorded full-game simulator artifact is:
-
-```text
-out-openxr/video-20260728-124617-vr-final/gtaiv-openxr-mode57-vr-sbs-10s.mp4
-```
-
-This is the Elliott runtime's actual composed side-by-side OpenXR preview, not the
-flat GTA desktop window and not a reconstructed pair. The simulator remained in
-headless/file-IPC mode. Its hidden preview HWND was shown without activation only
-for Windows Graphics Capture, then hidden again; no simulator input or focus was
-used. The video is `3840x1920`, H.264 Main/yuv420p, 10.000 seconds, 597 frames at
-approximately 60 fps, 9,037,091 bytes, with SHA-256
-`56C49178FA1868B7991F1200E1494C9BED848E82FA3F717EB0190F58750D772B`.
-Frames extracted at 1, 5, and 9 seconds have different hashes and visually show
-Niko moving across the apartment. Both composed eyes are present and visibly
-offset. This remains a simulator-compositor recording, not a Quest optical or
-Meta compositor mirror.
-
-The corresponding supervised proof is:
+The authoritative supervised run is:
 
 ```text
-out-openxr/runs/20260728-124618-steam-safe/
+out-openxr/runs/20260728-150553-steam-safe/
 ```
 
-It reports `outcome=PROOF_COMPLETE`, Mode 57 temporal pixel-distinct L/R,
-`6.4 cm` camera separation, continuous world transactions, sRGB color, stationary
-UI, world -> pause UI -> world, exact Start/A/stick/neutral consumption, a
-20-second forward-stick hold, and the final pose sweep. SteamVR process count
-remained zero. Cleanup stopped GTA, the OpenXR host, and path-verified Rockstar
-launcher helpers; restoration returned the installation to `backend=off`,
-`stereo=0`, OpenVR DLL present, and no disable sentinel.
+It reports `outcome=PROOF_COMPLETE` for `backend=openxr`, `stereo=58`.
+Mode 58 minimally adds the direct OpenXR layer to upstream Mode 204's proved
+same-tick parent dual at exact RVA `0x4DE020`. One pinned OpenXR HMD/eye/FOV
+sample spans both native parent walks; the x86 producer then sends one
+pixel-distinct L/R transaction to the x64 OpenXR host. Neither the ASI nor the
+host initializes OpenVR on this route.
 
-`scripts/record-elliott-vr-preview.ps1` now waits on a one-shot atomic
-`elliott-walk-ready.marker` with `FileSystemWatcher`, captures only the host-owned
-preview HWND, GPU-resizes the simulator's 4926x2464 preview to an H.264-safe
-3840x1920 SBS frame, and records through NVENC. It does not read the live status
-log, poll SteamVR, activate a window, or control the simulator. The launcher has a
-bounded `-ElliottWalkSeconds` parameter and now removes path-verified orphaned
-Rockstar launcher helpers during final cleanup as well as preflight/retry.
+The successful run proved:
 
-Two preceding launch attempts did start `GTAIV.exe` four times, but each process
-died before opening a window or creating either the ASI or DXVK log. Windows dumps
-show identical `0xc0000005` DEP execute-access violations in Rockstar's signed
-`MTLX.dll` startup path. The supervisor correctly reported no fresh ASI session
-and restored the installation. Clearing only the orphaned Rockstar
-launcher/helper processes and allowing the Rockstar service to complete its
-normal shutdown produced the clean passing run above with the same ASI and host
-hashes. Do not mislabel those attempts as SteamVR, OpenXR-host, or build failures.
+- hard first-person camera hooks, first-person gameplay lock, and successful
+  native five-component player-head hide;
+- 6,240 accepted Mode 204 parent-dual pairs with fresh per-eye camera receipts,
+  exact capture pose, and a final `9.1 cm` camera baseline;
+- stationary menu/loading/pause presentation and a complete
+  world -> pause UI -> world round trip;
+- Touch-to-XInput Start, A, forward stick, release, and neutral behavior;
+- a 20-second forward-stick interval that moved the first-person camera about
+  `7.1 m`, from approximately world Y `-499.7` to `-492.6`;
+- sRGB decode and OpenXR swapchain format `29`;
+- continuous producer/host world traffic, device-Reset recovery, cleanup, and
+  exact restoration to `backend=off`, `stereo=0`, OpenVR DLL present, and no
+  disable sentinel.
+
+The current source incorporates fetched `origin/master`
+`715d40f0c57a648041a5b4f585602b07c664a7d0`, the upstream Mode 204 fused-stereo
+milestone. Tested artifact SHA-256 values are:
+
+```text
+x86 ASI  39F9D931D95998BEB6A7111DF33ABC9661B2466B9AEA4BB3CA44B9192C3C9F4A
+x64 host 22272C3B7EA21396C39438CD351344C0C26253DAF18888060D5B04661F6ECEBC
+```
+
+Mode 58 is now the OpenXR primary. Mode 57 remains the temporal OpenXR fallback,
+Mode 55 remains the center-eye OpenXR mono fallback, and the integrated
+OpenVR/Reverb G2 releases are retained as fallback/history.
+
+## Latest artifact: 12-second Mode 58 first-person OpenXR SBS video (PASS)
+
+The matching video control and artifact are:
+
+```text
+out-openxr/video-20260728-150552-vr/
+out-openxr/video-20260728-150552-vr/gtaiv-openxr-mode58-vr-sbs-12s.mp4
+```
+
+This is the Elliott runtime's composed side-by-side OpenXR preview, not the flat
+GTA desktop window and not a reconstructed pair. It is `3840x1920`, H.264 Main,
+12.00 seconds, 713 frames at 59.42 fps, and 27,359,559 bytes. SHA-256:
+
+```text
+CE09CAF99F8CF51272E89C70A412C6A4B9CEF30FEE19A131AF08DD16F55F998D
+```
+
+All 120 sampled frame hashes are unique and `freezedetect` found
+`freezeEvents=0`. The recorded interval is first-person, contains both visibly
+offset eyes, and advances through the apartment during the proved 7.1 m
+locomotion. The simulator remained headless/file-IPC controlled; its preview
+HWND was exposed without activation only for Windows Graphics Capture.
+
+This is a simulator-compositor proof, not a Quest optical/compositor recording.
+The next acceptance gate is real Quest 3 visual comfort, scale, and smoothness.
 
 ## Latest launcher cleanup: audited Steam route, no continuous process polling
 
@@ -82,7 +101,7 @@ launcher-safety, Elliott proof-contract, and OpenXR runtime-classifier tests pas
 This was a script/test-only change; no GTA, Steam, OpenXR, or SteamVR process was
 started.
 
-## Latest producer pacing pass: two-boundary Mode 57 readback (full-game proof PASS)
+## Historical Mode 57 pacing pass: two-boundary readback (proof PASS)
 
 The x86 Mode 57 CPU-mailbox producer now spreads one atomic stereo transaction
 over two fresh OpenXR-pose boundaries. Boundary A queues the left-eye
@@ -129,31 +148,30 @@ Rockstar process count was zero and the installed state was verified as
 On 12 rate-limited world samples, readback mean/p95 using the same sparse-sample
 convention fell from `6.55/9.55 ms` in `040944` to `5.73/8.81 ms`; mean wait was
 about 12.6% lower. Left enqueue rounded to `0.00 ms`, the inter-boundary gap
-averaged `9.41 ms`, and mailbox pixel copy remained about `0.72 ms`. This is a
-measured pacing improvement, not a shipping-smoothness claim: Mode 57 is still
-temporal stereo at roughly 31 pairs per second and still uses synchronous CPU
-readback. The next larger diagnostic option is queue-both/defer-lock; the product
-target remains same-frame stereo plus GPU-only transport.
+averaged `9.41 ms`, and mailbox pixel copy remained about `0.72 ms`. This was a
+measured pacing improvement, not a shipping-smoothness claim: Mode 57 is temporal
+stereo at roughly 31 pairs per second and uses synchronous CPU readback. Mode 58
+has since supplied the same-tick product stereo route; GPU-only transport remains
+future performance work.
 
 The tested x86 ASI SHA-256 is
 `497DC6CF812E8D43256EB45E24EE806602761DA27B89E37FC8FEE3846E7152AA`;
 the x64 host SHA-256 is
 `AE3D27A6F964940C6DAD41DA7C5A8A7C39C99FAA87322BF38620B32673C05874`.
-Origin was fetched immediately before this pass; `origin/master` remains
-`01f355b992d87b0b0dba47c3b78a302315b222cf` and is fully contained by this
-branch.
+For that historical Mode 57 pass, `origin/master` was
+`01f355b992d87b0b0dba47c3b78a302315b222cf` and was fully contained by the
+branch at that time. The current fetched origin is recorded at the top.
 
-The same fetch advertised a new non-release backup ref,
-`origin/backup/pre-gplasync-20260728` at `7a546f9`. It was audited and is
-intentionally **not merged**. Its own state file records Mode 168 causing repeated
-`VK_ERROR_DEVICE_LOST` and a hard freeze; Modes 163-167 retain the flicker-prone
-tiny-render-target gate; its HUD experiment scans/writes broad live-memory
-matches; and `pack-mode167-zip.ps1` would package Rockstar `hud.dat`, which this
-project must not distribute. It also replaces the main state history and would
-reject current OpenXR modes 54-57 unless hand-resolved. This is an experiment
-snapshot for selective future review, not newer working upstream.
+At the time of that historical pass, the non-release
+`origin/backup/pre-gplasync-20260728` ref pointed at `7a546f9` and was deliberately
+not merged directly. The ref has since advanced to `c74a6ab`; that commit is now
+an ancestor of current `origin/master` `715d40f`, so its reviewed Mode 169 and
+GPL-async A/B material arrives through the normal upstream merge. Its unsafe
+historical packaging behavior is not retained here: the release packagers now
+reject unverified DXVK binaries and cannot copy Rockstar `hud.dat`, FusionFix
+trees, or game-derived caches.
 
-## Latest producer pacing probe: batched DXVK readback (full-game proof PASS; GPU wait still dominant)
+## Historical Mode 57 pacing probe: batched DXVK readback (proof PASS)
 
 The x86 CPU-mailbox producer now queues `GetRenderTargetData` for both Mode 57
 eyes before it locks either system-memory surface. Under stock DXVK 3.0.2,
@@ -190,7 +208,7 @@ smoothness claim. The next isolated mitigation is to distribute the L/R readback
 over successive fresh Mode 57 frame boundaries while retaining one atomic
 transaction; the product target remains same-frame stereo plus GPU-only transport.
 
-## Latest smoothness pass: held-frame OpenXR swapchain reuse (headless full-game proof PASS)
+## Historical Mode 57 smoothness pass: held-frame swapchain reuse (proof PASS)
 
 The x64 OpenXR host now redraws a game swapchain only when GTA publishes a new
 transaction or its presentation route/layout changes. On an unchanged transaction it
@@ -253,9 +271,9 @@ world readback plus mailbox copy cost averaged about 6.2 ms and reached about 10
 The next performance work must remove the two-frame temporal limitation and the
 synchronous CPU readback; do not label swapchain reuse alone as “butter smooth.”
 
-## Current candidate: Mode 57 direct OpenXR temporal stereo (headless in-game proof PASS)
+## Superseded primary: Mode 57 temporal OpenXR stereo (historical proof PASS)
 
-The corrected full headless Elliott OpenXR proof completed in
+Before Mode 58, the corrected full headless Elliott OpenXR proof completed in
 `out-openxr/runs/20260728-000001-steam-safe/`. GTA passed the startup menu,
 loaded the world, continued rendering, entered and left the pause menu, consumed
 locomotion input, and completed an eight-second head-pose sweep. SteamVR remained
@@ -341,32 +359,30 @@ SteamVR. All completed supervised runs report exact restoration. The externally
 interrupted `230635` archive has no final restore record; its state was recovered
 manually before the later completed runs.
 
-The next Mode 57 diagnostic gate is a real Quest 3 visual acceptance run. The
-headless proof establishes real, distinct eye content and complete game/input
-flow, but it cannot judge binocular comfort, perceived scale, Link latency, or
-headset smoothness. The same-tick product stereo and shipping transport/performance
-gates in `docs/FULL_VR_PLAN.md` also remain open. Do not describe Mode 57 as a
-finished comfort-grade VR release until those product gates pass. See
-`docs/ELLIOTT_OPENXR_SIMULATOR_PROOF.md` for the repeatable headless command.
+Mode 57 remains the temporal OpenXR fallback. Mode 58 has since passed the
+same-tick first-person simulator proof and is the current Quest 3 visual
+acceptance target. Neither simulator result can judge binocular comfort,
+perceived scale, Link latency, or optical headset smoothness. See
+`docs/ELLIOTT_OPENXR_SIMULATOR_PROOF.md` for the current Mode 58 command.
 
 ## Superseded Mode 56 candidate record (historical)
 
 The section below preserves the state before the Mode 57 proof. It is not the
 current launch instruction or acceptance result.
 
-Upstream was fetched again on 2026-07-28: `origin/master` is still `01f355b` and is
-already contained by this branch. The full clean OpenVR release at
+At the time of this historical Mode 56 record, `origin/master` was `01f355b` and
+was already contained by this branch. The full clean OpenVR release at
 `origin/backup/clean-session-20260727` (`416427e`), followed by the development-setup
 commit at `origin/cursor/setup-dev-requirements-d131` (`5308417`), is now integrated.
 Its Modes 120–136 and supporting camera, late-latch, performance, and setup code remain
 available as the explicit OpenVR/Reverb G2 fallback.
 
-Every fetched origin ref was checked. Two origin refs are not ancestral to this
-branch. `origin/backup/main-session-20260727` (`f31c10e`) is the alternate Mode 88
-main-worktree A/B backup captured one second before the clean Mode 136 snapshot.
-`origin/backup/pre-gplasync-20260728` (`7a546f9`) is the later experimental
-Modes 163-168 snapshot described above. Both remain remote comparison refs; neither
-is a clean release or a merge target for this OpenXR branch.
+Every fetched origin ref was checked. The current
+`origin/backup/pre-gplasync-20260728` (`c74a6ab`) is already an ancestor of
+`origin/master` `715d40f` and therefore needs no separate merge.
+`origin/backup/main-session-20260727` (`f31c10e`) remains the one divergent
+comparison ref: it is the alternate Mode 88 main-worktree A/B backup captured
+before the clean release and is not a merge target for this OpenXR branch.
 
 The prior GPU bridge is not a usable gameplay route: its host release fence blocked
 the GTA/DXVK queue after a few world transactions, leaving the headset on stale
@@ -490,7 +506,7 @@ left/right draw sequences `0/0` and `verified=0`, while later logs showed the re
 vertex-shader/draw traffic executing on GTA's dedicated replay thread after the
 supposed dual-pass window had closed. This is decisive: the ASI `Execute`-twice
 window does not own the D3D9 geometry execution and cannot create true stereo there.
-The user also reported a washed-out image, which led to the sRGB fix in the current
+The user also reported a washed-out image, which led to the sRGB fix in the then-current
 Mode 55 candidate. Evidence:
 `out-openxr/runs/20260726-232255-steam-safe/`. The game, host, and all settings were
 stopped/restored after the test.
@@ -513,7 +529,7 @@ the existing OpenVR disable sentinel and temporarily removes/backups
 `openvr_api.dll`, restoring both after the run. The 23:11 test proved these guards:
 SteamVR never started and the original game state was restored.
 
-Upstream `origin/master` at `01f355b` (Modes 50–53), the full clean OpenVR release
+At that stage, upstream `origin/master` was `01f355b` (Modes 50–53); the full clean OpenVR release
 at `416427e` (through Mode 136), and its setup child `5308417` are integrated into
 `codex/openxr-sidecar-integration`. The direct path keeps all GTA-loaded code x86 and
 uses a separate x64 `gtaiv_xr_host.exe`. OpenVR/Reverb G2 remains an explicit
@@ -524,7 +540,7 @@ native D3D11 NT-handle textures and shared fences on DXVK's exact adapter, impor
 them into DXVK's Vulkan device, and GPU-copies a distinct L/R transaction. The x64
 host duplicates and opens those D3D11 handles. At the 23:11 test the contract was
 pointer-free ABI v4, triple-buffered, ready/release timeline synchronized, and
-contained no CPU pixels. The current Mode 55 candidate advances that contract to v5
+contained no CPU pixels. The then-current Mode 55 candidate advanced that contract to v5
 for explicit immersive-mono and UI-content-aspect metadata. The 23:11 test
 live-verified the underlying transport through host GPU acquisition. It did not
 verify world stereo because the producer failed before a proved WVP pair.
@@ -586,14 +602,15 @@ x64 host SHA-256
 dual-pass window. It produced `draws=0/0`, no WVP proof, and no stereo. Do not repeat
 Mode 54 tuning or call it full stereo.
 
-**Safety:** the installed game is restored to the original ASI, `backend=off`, and
-`stereo=0`. GTA, Meta host, and SteamVR processes are absent.
+**Current safety:** the installed game is restored to the original ASI,
+`backend=off`, and `stereo=0`. GTA, the OpenXR host, and SteamVR processes are
+absent.
 `scripts/run-openxr-gta.ps1` is preflight-only and cannot start GTA, the OpenXR host,
 Steam, or SteamVR. The next GTA test must use
 `scripts/run-openxr-gta-steam-safe.ps1`, including its OpenVR DLL removal and disable
 sentinel, and requires a new explicit authorization.
-**Do not put on the headset yet.** The complete Mode 55 gameplay/menu/color candidate
-has no live result.
+The next real-device gate is Mode 58 visual/comfort acceptance on Quest 3. The
+former Mode 55 no-live-result warning is superseded history.
 **Last OpenVR baseline (not running; backend is now `off`):** stereo **`51`**
 (Mode-50 always-distinct L/R + **`Submit_TextureWithPose`** AER). The full clean
 OpenVR release history follows.
@@ -1138,7 +1155,7 @@ look_move leftovers suspected of poisoning perf tests). Folder deleted + worktre
 
 | Item | Value |
 |------|--------|
-| Path | `C:\Users\Henning\Documents\cursor\gtaiv-dxvk-vr-clean` |
+| Path | `[redacted historical local clone path]` |
 | SHA | **`01f355b`** (`origin/master`) |
 | Branch | **`clean-rebuild`** @ exact tip — **zero local patches** |
 | Build | Win32 ASI OK · buildid **`20260727-github-fresh-01f355b`** |
@@ -1624,7 +1641,7 @@ CamMatrix with ipd=0 → `ipd=(±0.000…)` → flat image, comfort intact.<br>
 
 ---
 
-## Architecture (proven)
+## Historical OpenVR architecture (proven at that checkpoint)
 
 ```
 GTAIV.exe
@@ -1651,7 +1668,7 @@ GTAIV.exe
 | Deploy + start | `.\scripts\build-deploy-run.ps1` (Build→Kill→Deploy→Steam start→close dashboard) |
 | Deploy only | `.\scripts\deploy-asi.ps1 -GameDir "<GTAIV>"` (`-Launch` starts the game) |
 
-**Currently deployed:** stereo=**`30`**, ipd=**`1`**, eyefwd=**`20`**, pedhide=**`1`**, zoom=**OFF**.<br>
+**Deployed at that historical checkpoint:** stereo=**`30`**, ipd=**`1`**, eyefwd=**`20`**, pedhide=**`1`**, zoom=**OFF**.<br>
 **Mode 30 (2026-07-24):** PAIR-HOLD = Mode 14/26 CCam temporal, but submit textures<br>
 update **only when a complete L→R pair is ready** (both eyes promote together).<br>
 User: jumps **definitely less**, barely noticeable — keep as playable. With ipd≥1: try fusion.<br>
@@ -1938,7 +1955,7 @@ VS patch during walk 2. Stable, but `vsCallsR≈1` — same wrong-thread problem
 - Result: dual stable but `deviceVsPatches=0` — no parallax lever at exec.
 - Shipped: CCam temporal + **pair-hold** (promote L+R submit textures together).
 - User feedback: jump barely noticeable — **keep as playable**. Needs **`ipd≥1`** (was 0 → no 3D).
-**Currently deployed:** stereo = **`30`**, ipd = **`1`**, pedhide = **`1`**. Kill → **`26`**.
+**Deployed at that historical checkpoint:** stereo = **`30`**, ipd = **`1`**, pedhide = **`1`**. Kill → **`26`**.
 
 **Mode 31 — SameFrameReplayDual (2026-07-24):** discover failed (stack too deep).<br>
 Superseded by Mode 32/33. Kill → **`30`** or **`26`**.
@@ -2025,8 +2042,8 @@ Rage cam matrix: `right`=X, `up`=Y=**Forward**, `at`=Z=**Up**.
 - Inspiration (VC VR / C06alt): `docs/INSPIRATION_NOTES.md`<br>
 
 
-- ntfy phone push on agent stop: topic `cursor-henning-atldv3m1iqosbzh2` @ `https://ntfy.sh`<br>
-  Hook: `~/.cursor/hooks.json` → `hooks/ntfy-on-stop/run.cmd`
+- A private local stop-notification hook was used during this historical work;
+  its endpoint, topic, and local configuration path are intentionally omitted.
 
 ---
 
@@ -2097,3 +2114,43 @@ Stereo success criteria: parallax **and** fusion, acceptable FPS.
 4. Expect FPS ~90<br>
 
 Kill switch on freeze: kill game → set stereo file to `0` → restart.
+## Imported upstream Mode 204 snapshot
+
+The following short snapshot arrived with the 2026-07-28 `origin/master`
+integration. The direct-OpenXR status above remains authoritative for this
+branch; this section records the upstream GTA/OpenVR renderer milestone being
+adapted to the x64 OpenXR host.
+
+## 2026-07-28 — Mode **204** = FUSION MILESTONE
+
+### Headset verdict
+- **Fully fused**, camera perfect, no flicker
+- Z-fighting in vehicles — ignore for now
+- Size feels **big** vs Mode 203 (203 had better size, weaker fusion)
+
+### Snapshots (keep both)
+| Folder | Why |
+|--------|-----|
+| `prebuilt/mode204/` | **Fusion LKG** — stay here |
+| `prebuilt/mode203/` | Scale felt better; weaker near fusion |
+
+### Do NOT try more Mode198 hooks for fusion
+Fusion is solved on `@0x4DE020`. More hooks risk breaking this.
+Near-double was a bake-scope issue; 204 fixed it. **IPD is not the size fix either.**
+
+### Size next (separate lever)
+On **204**, use:
+- **F11** — TrueWorldScale `100 → 125 → 150 → 175 → 200` (higher = **smaller** world)
+- **F6** — stereoscale `100…130` (higher = stronger 3D / smaller feel)
+- **F7** — fovadd visual presets (CropMax…Window0)
+
+Live knobs were often: scale=100, stereoscale~115, ipd=2.
+
+### Live
+- Stereo: **`204`**
+- Kill: keep **204**; restore from `prebuilt/mode204` if needed
+
+### Friend pack / master
+- Pack: `scripts\pack-mode204-zip.ps1` → `dist\gtaiv-dxvk-vr-mode204-friend.zip`
+- Includes FusionFix update + `GTAIV.dxvk-cache` + stock DXVK 3.0.2 + Mode 204 ASI
+- Master branch = Mode 204 fusion milestone

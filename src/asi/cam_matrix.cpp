@@ -5,6 +5,7 @@
 #include "ped_hide.h"
 #include "stereo_config.h"
 #include "stereo_eye.h"
+#include "stereo_render.h"
 #include "vr_display.h"
 #include "vr_move.h"
 
@@ -15,6 +16,7 @@
 #include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 
 #include <openvr.h>
 
@@ -34,13 +36,26 @@ struct Matrix44 {
 
 using CopyMat_t = void(__fastcall*)(Matrix44* mat, void* edx, void* arg2);
 using FindPlayerPed_t = void*(__cdecl*)(int32_t id);
+using FindPlayerVehicle_t = void*(__cdecl*)(int32_t id);
 
 CopyMat_t g_origCopyMat = nullptr;
 FindPlayerPed_t g_FindPlayerPed = nullptr;
+FindPlayerVehicle_t g_FindPlayerVehicle = nullptr;
 
 std::atomic<bool> g_hooksOk{false};
 std::atomic<bool> g_gameplayActive{false};  // false until past title (avoids blackscreen)
 std::atomic<uint32_t> g_applyCount{0};
+
+// Mode 171: freeze ped eye ORIGIN for one DrawScene L→R pair (driving flicker).
+std::atomic<bool> g_dualCamFreeze{false};
+Vec4 g_frozenPedEye{};
+bool g_haveFrozenPedEye = false;
+bool g_freezeFullBasis = false;  // Mode 178+: also freeze pre-IPD basis+center
+bool g_haveFrozenCenter = false;
+Vec4 g_frozenCenterEye{};
+float g_frozenFx = 0.f, g_frozenFy = 0.f, g_frozenFz = 0.f;
+float g_frozenRx = 0.f, g_frozenRy = 0.f, g_frozenRz = 0.f;
+float g_frozenUx = 0.f, g_frozenUy = 0.f, g_frozenUz = 0.f;
 
 // Eye placement. Inspiration FP uses ScriptHook SET_DRAW + FPX/FPY/FPZ (often 0).
 // We: PedHide via CE SetDraw helper (no natives) + eyefwd/camoff knobs.
@@ -70,12 +85,21 @@ struct CamBuildReceiptScope {
   bool eyeMismatch = false;
   bool eyeOffsetApplied = false;
   bool eyeOffsetMismatch = false;
+  bool firstPersonAnchor = false;
   Vec4 lastPosition{};
+  Vec4 lastPreEyePosition{};
   Vec4 appliedEyeOffset{};
   Vec4 selectedLocalEyeOffset{};
+  float lastBasis[9]{};
   bool active = false;
 };
 thread_local CamBuildReceiptScope g_camBuildReceiptScope{};
+
+// Mode 140: snapshot FirstPerson cam from CopyMat; IPD offset applied from this base
+// so L/R dual passes do not stack offsets.
+Matrix44 g_fpHostBase{};
+bool g_haveFpHostBase = false;
+std::atomic<uint32_t> g_fpHostIpdLog{0};
 
 constexpr int kMaxTrackedMats = 8;
 Matrix44* g_trackedMats[kMaxTrackedMats]{};
@@ -111,6 +135,47 @@ void Normalize(float* x, float* y, float* z) {
   *x /= len;
   *y /= len;
   *z /= len;
+}
+
+// Mode 140: keep FirstPerson orientation/pos; add ±half IPD along cam right (+ EyeZ).
+void ApplyFpHostStereoIpd(Matrix44* mat) {
+  if (!mat || !g_haveFpHostBase)
+    return;
+  *mat = g_fpHostBase;
+
+  float rx = mat->right.x, ry = mat->right.y, rz = mat->right.z;
+  Normalize(&rx, &ry, &rz);
+  float fx = mat->up.x, fy = mat->up.y, fz = mat->up.z;  // RAGE forward
+  Normalize(&fx, &fy, &fz);
+
+  const bool rightEye = (GetStereoEye() == StereoEye::Right);
+  float eyeZ = 0.f;
+  if (vr::VRSystem()) {
+    const vr::HmdMatrix34_t e2h =
+        vr::VRSystem()->GetEyeToHeadTransform(rightEye ? vr::Eye_Right : vr::Eye_Left);
+    eyeZ = e2h.m[2][3];
+  }
+  const float half = 0.5f * GetStereoSepMeters() * GetStereoScale();
+  const float s = rightEye ? half : -half;
+  const float ipdX = rx * s + fx * (-eyeZ);
+  const float ipdY = ry * s + fy * (-eyeZ);
+  const float ipdZ = rz * s + fz * (-eyeZ);
+  if (std::isfinite(ipdX) && std::isfinite(ipdY) && std::isfinite(ipdZ) &&
+      std::fabs(ipdX) < 20.f && std::fabs(ipdY) < 20.f && std::fabs(ipdZ) < 20.f) {
+    mat->pos.x += ipdX;
+    mat->pos.y += ipdY;
+    mat->pos.z += ipdZ;
+  }
+  AcquireSRWLockExclusive(&g_lastAppliedLock);
+  g_lastAppliedPos = mat->pos;
+  g_haveLastApplied = true;
+  ReleaseSRWLockExclusive(&g_lastAppliedLock);
+
+  const uint32_t n = ++g_fpHostIpdLog;
+  if (n <= 5 || (n % 300) == 0)
+    Log("Mode140: IPD-only #%u %s pos=(%.3f,%.3f,%.3f) sep=%.0fcm (FP base kept)", n,
+        rightEye ? "R" : "L", mat->pos.x, mat->pos.y, mat->pos.z,
+        GetStereoSepMeters() * 100.f);
 }
 
 bool TryGetPedEyePos(Vec4* outEye) {
@@ -175,6 +240,98 @@ float WrapPi(float a) {
   return a;
 }
 
+// True while occupying a vehicle for VR cam offsets.
+// Prefer FindPlayerVehicle (null on foot) — CPed::m_pVehicle often LINGERS after
+// exit, which left vehcamoff stuck on. Fall back to m_pVehicle only if the pattern
+// miss (rare). No proximity heuristic (near-car without occupying).
+bool IsPlayerSeatedForVrCam() {
+  static int s_okFrames = 0;
+  static bool s_loggedExit = false;
+  static bool s_loggedEnter = false;
+  static bool s_loggedFallback = false;
+
+  bool inside = false;
+  const char* how = "none";
+  if (g_FindPlayerVehicle) {
+    inside = g_FindPlayerVehicle(0) != nullptr;
+    how = "FindPlayerVehicle";
+  } else if (g_FindPlayerPed) {
+    if (!s_loggedFallback) {
+      s_loggedFallback = true;
+      Log("VehCam: FindPlayerVehicle MISS — fallback m_pVehicle (exit may stick)");
+    }
+    void* ped = g_FindPlayerPed(0);
+    if (ped) {
+      inside =
+          *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(ped) + kPedVehicleOff) !=
+          nullptr;
+      how = "m_pVehicle";
+    }
+  }
+
+  if (!inside) {
+    if (s_okFrames > 0 && !s_loggedExit) {
+      s_loggedExit = true;
+      s_loggedEnter = false;
+      Log("VehCam: on foot — vehcamoff OFF (%s)", how);
+    }
+    s_okFrames = 0;
+    return false;
+  }
+  if (s_okFrames < 100)
+    ++s_okFrames;
+  if (s_okFrames >= 2) {
+    if (!s_loggedEnter) {
+      s_loggedEnter = true;
+      s_loggedExit = false;
+      Log("VehCam: INSIDE vehicle — vehcamoff/kPedFwd car ON (%s)", how);
+    }
+    return true;
+  }
+  return false;
+}
+
+// Legacy name used by ApplyHmdToCam.
+bool IsPlayerInVehicleSticky() {
+  return IsPlayerSeatedForVrCam();
+}
+
+// Raw m_pVehicle (no debounce) — enter/jack edge detection.
+bool IsPlayerVehiclePtrSet() {
+  if (!g_FindPlayerPed)
+    return false;
+  void* ped = g_FindPlayerPed(0);
+  if (!ped)
+    return false;
+  return *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(ped) + kPedVehicleOff) !=
+         nullptr;
+}
+
+// Mode 165: enter/jack window (force FP onto live CCam — script cams skip CopyMat).
+DWORD g_enterFpUntil = 0;
+
+bool IsEnterCarFpWindowActive() {
+  return g_enterFpUntil != 0 && GetTickCount() < g_enterFpUntil;
+}
+
+void UpdateEnterCarFpWindow() {
+  if (!IsOursFpEnterCarFp(GetStereoMode()) || !g_FindPlayerPed)
+    return;
+  static bool s_hadVeh = false;
+  const bool vehPtr = IsPlayerVehiclePtrSet();
+  const DWORD now = GetTickCount();
+  if (vehPtr && !s_hadVeh) {
+    g_enterFpUntil = now + 5000;  // jack + pull-out + sit
+    Log("EnterFp: vehicle ptr set — force CCam FP for 5000ms (enter/jack)");
+  }
+  if (!vehPtr) {
+    if (s_hadVeh)
+      Log("EnterFp: on foot — foot cam offsets restored (vehcamoff off)");
+    g_enterFpUntil = 0;
+  }
+  s_hadVeh = vehPtr;
+}
+
 float ComputeVehicleYawOffset() {
   const int mode = GetVehicleFollowMode();
   if (mode == 0 || !g_FindPlayerPed)
@@ -219,6 +376,211 @@ bool SaneWorldPos(const Vec4& p) {
   return true;
 }
 
+// Rage bone tag HEAD.
+constexpr int kBoneHead = 0x4B5;
+
+// CE ~rva 0x5E7320: void __thiscall (Vec3* out, unsigned boneId) — writes ~16 bytes.
+// Mode193 FAILED first try: AOB matched 0x5E70B0 (bone *matrix* copy past float[3] →
+// stack smash / crash after load). Validation looked like "fallback" but stack was toast.
+using PedGetBonePos_t = void(__thiscall*)(void* ped, float* outXyz, uint32_t boneId);
+
+PedGetBonePos_t g_pedGetBonePos = nullptr;
+bool g_boneThiscallResolved = false;
+bool g_boneThiscallDead = false;
+bool g_boneThiscallLoggedOk = false;
+bool g_boneThiscallLoggedFail = false;
+uint32_t g_boneThiscallOk = 0;
+
+bool ResolvePedGetBonePos() {
+  if (g_boneThiscallDead)
+    return false;
+  if (g_boneThiscallResolved)
+    return g_pedGetBonePos != nullptr;
+  g_boneThiscallResolved = true;
+
+  // CE ~rva 0x5E7320: writes Vec3 into caller buffer (ret 8).
+  // First jz is 74 16 on this CE; 74 4A is later in-body (unique vs sibling 0x5E72C0).
+  uintptr_t p = FindPattern(
+      nullptr,
+      "56 8B F1 8B 06 FF 90 A0 00 00 00 85 C0 74 16 8B 06 8B CE FF 90 A0 00 00 00 "
+      "8B 10 8B C8 FF 92 E0 00 00 00 EB 06 8B 86 00 01 00 00 85 C0 74 4A FF 74 24 0C");
+  const char* how = "AOB";
+  if (!p) {
+    auto* base = reinterpret_cast<uint8_t*>(GetModuleHandleA(nullptr));
+    if (base) {
+      auto* cand = base + 0x5E7320;
+      if (cand[0] == 0x56 && cand[1] == 0x8B && cand[2] == 0xF1 && cand[0x0E] == 0x74) {
+        p = reinterpret_cast<uintptr_t>(cand);
+        how = "RVA+0x5E7320";
+      }
+    }
+  }
+  if (!p) {
+    g_boneThiscallDead = true;
+    Log("CamMatrix: PedGetBonePos(Vec3) AOB+RVA MISS — Mode193 falls back to root+height");
+    return false;
+  }
+  g_pedGetBonePos = reinterpret_cast<PedGetBonePos_t>(p);
+  Log("CamMatrix: PedGetBonePos Vec3 thiscall @ %p via %s (not matrix; Mode193)",
+      reinterpret_cast<void*>(p), how);
+  return true;
+}
+
+// Eye pivot from ped HEAD bone via CE Vec3 thiscall.
+// Dual L/R must share one sample — Mode193 enables dual cam freeze (pairFreeze).
+Vec4 g_stickyBoneEye{};
+Vec4 g_stickyBoneRoot{};
+bool g_haveStickyBoneEye = false;
+
+bool TryGetPedHeadBoneEye(Vec4* outEye) {
+  if (!outEye || !g_FindPlayerPed || g_boneThiscallDead)
+    return false;
+  if (!ResolvePedGetBonePos() || !g_pedGetBonePos)
+    return false;
+
+  void* ped = g_FindPlayerPed(0);
+  if (!ped)
+    return false;
+
+  Vec4 root{};
+  auto* pMat = *reinterpret_cast<Matrix44**>(reinterpret_cast<uint8_t*>(ped) + 0x20);
+  if (pMat) {
+    root = pMat->pos;
+  } else {
+    const float* t = reinterpret_cast<const float*>(reinterpret_cast<uint8_t*>(ped) + 0x10);
+    root.x = t[0];
+    root.y = t[1];
+    root.z = t[2];
+  }
+  if (!SaneWorldPos(root))
+    return false;
+
+  // After a door AV we skip DrawScene — also avoid GetBonePos (can finish the crash).
+  if (StereoMode193SkipDrawActive()) {
+    if (g_haveStickyBoneEye) {
+      const float dx = root.x - g_stickyBoneRoot.x;
+      const float dy = root.y - g_stickyBoneRoot.y;
+      const float dz = root.z - g_stickyBoneRoot.z;
+      if (dx * dx + dy * dy + dz * dz < 4.f) {
+        *outEye = g_stickyBoneEye;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  alignas(16) float xyz[8] = {};
+  __try {
+    g_pedGetBonePos(ped, xyz, static_cast<uint32_t>(kBoneHead));
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    if (g_haveStickyBoneEye) {
+      *outEye = g_stickyBoneEye;
+      return true;
+    }
+    return false;
+  }
+
+  if (!std::isfinite(xyz[0]) || !std::isfinite(xyz[1]) || !std::isfinite(xyz[2])) {
+    if (g_haveStickyBoneEye) {
+      *outEye = g_stickyBoneEye;
+      return true;
+    }
+    return false;
+  }
+  if (std::fabs(xyz[0]) < 1.f && std::fabs(xyz[1]) < 1.f && std::fabs(xyz[2]) < 1.f) {
+    if (g_haveStickyBoneEye) {
+      *outEye = g_stickyBoneEye;
+      return true;
+    }
+    return false;
+  }
+
+  const float dx = xyz[0] - root.x;
+  const float dy = xyz[1] - root.y;
+  const float dz = xyz[2] - root.z;
+  const float d2 = dx * dx + dy * dy + dz * dz;
+  if (d2 < 0.01f || d2 > (2.2f * 2.2f)) {
+    if (g_haveStickyBoneEye) {
+      *outEye = g_stickyBoneEye;
+      return true;
+    }
+    return false;
+  }
+  if (xyz[2] < root.z - 0.5f) {
+    if (g_haveStickyBoneEye) {
+      *outEye = g_stickyBoneEye;
+      return true;
+    }
+    return false;
+  }
+
+  outEye->x = xyz[0];
+  outEye->y = xyz[1];
+  outEye->z = xyz[2];
+  outEye->w = 1.f;
+  if (!SaneWorldPos(*outEye)) {
+    if (g_haveStickyBoneEye) {
+      *outEye = g_stickyBoneEye;
+      return true;
+    }
+    return false;
+  }
+
+  g_stickyBoneEye = *outEye;
+  g_stickyBoneRoot = root;
+  g_haveStickyBoneEye = true;
+
+  const uint32_t n = ++g_boneThiscallOk;
+  if (!g_boneThiscallLoggedOk) {
+    g_boneThiscallLoggedOk = true;
+    Log("CamMatrix: HEAD Vec3 eye OK pos=(%.3f,%.3f,%.3f) d=%.2f", outEye->x, outEye->y,
+        outEye->z, std::sqrt(d2));
+  } else if (n <= 5 || (n % 300) == 0) {
+    Log("CamMatrix: HEAD Vec3 eye #%u pos=(%.3f,%.3f,%.3f) d=%.2f", n, outEye->x, outEye->y,
+        outEye->z, std::sqrt(d2));
+  }
+  return true;
+}
+
+// Ped-fixed eye-center (Mode 155+) BEFORE 6DoF / camoff / IPD.
+bool TryGetPedEyeCenterBase(Vec4* outEye) {
+  if (!g_FindPlayerPed || !outEye)
+    return false;
+  void* ped = g_FindPlayerPed(0);
+  if (!ped)
+    return false;
+  const StereoMode sm = GetStereoMode();
+  const bool inVeh = IsPlayerInVehicleSticky();
+
+  // Mode 193: stick to HEAD bone via CE thiscall (crouch/sprint).
+  if (IsOursFpHeadBoneCam(sm) && !inVeh) {
+    if (TryGetPedHeadBoneEye(outEye))
+      return true;
+    if (!g_boneThiscallLoggedFail) {
+      g_boneThiscallLoggedFail = true;
+      Log("CamMatrix: HEAD thiscall eye FAILED — fallback root+height");
+    }
+  }
+
+  const float kEyeH = IsOursFpEyeCenterLow(sm) ? 0.65f : 0.78f;
+  const bool carHead = IsOursFpInCarHead(sm) && inVeh;
+  const float kPedFwd = carHead ? 0.02f : 0.08f;
+  auto* pMat = *reinterpret_cast<Matrix44**>(reinterpret_cast<uint8_t*>(ped) + 0x20);
+  if (!pMat) {
+    const float* t = reinterpret_cast<const float*>(reinterpret_cast<uint8_t*>(ped) + 0x10);
+    outEye->x = t[0];
+    outEye->y = t[1];
+    outEye->z = t[2] + kEyeH;
+    outEye->w = 1.f;
+  } else {
+    outEye->x = pMat->pos.x + pMat->at.x * kEyeH + pMat->up.x * kPedFwd;
+    outEye->y = pMat->pos.y + pMat->at.y * kEyeH + pMat->up.y * kPedFwd;
+    outEye->z = pMat->pos.z + pMat->at.z * kEyeH + pMat->up.z * kPedFwd;
+    outEye->w = 1.f;
+  }
+  return SaneWorldPos(*outEye);
+}
+
 void ApplyHmdToCam(Matrix44* mat) {
   if (!g_gameplayActive.load())
     return;
@@ -230,19 +592,40 @@ void ApplyHmdToCam(Matrix44* mat) {
     return;
   }
 
+  // Exit vehicle → drop car offsets and re-baseline 6DoF so foot height returns.
+  {
+    static bool s_wasSeated = false;
+    const bool seated = IsPlayerSeatedForVrCam();
+    if (s_wasSeated && !seated) {
+      g_havePosBaseline = false;
+      Log("VehCam: exit edge — 6DoF baseline cleared (foot height/offsets)");
+    }
+    s_wasSeated = seated;
+  }
+
   vr::HmdMatrix34_t h{};
   if (!GetHmdPoseMatrix(&h))
     return;
 
+  const bool eyeCenter = IsOursFpEyeCenterCam(sm);
+
   Vec4 eye{};
-  if (!TryGetPedEyePos(&eye) || !SaneWorldPos(eye)) {
+  // Mode 171: while freezing a dual pair, reuse the ped origin snapped at Begin.
+  if (g_dualCamFreeze.load() && g_haveFrozenPedEye) {
+    eye = g_frozenPedEye;
+  } else if (eyeCenter) {
+    // Mode 155/156: ped-fixed eye-center pivot (between eyes), not skull+6DoF.
+    if (!TryGetPedEyeCenterBase(&eye))
+      return;
+  } else if (!TryGetPedEyePos(&eye) || !SaneWorldPos(eye)) {
     // No real ped yet — never reuse stale eye (menu → freeze risk)
     return;
   }
   g_lastEye = eye;
   g_haveLastEye = true;
 
-  // Seated 6DoF on top of ped eye (F10 resets translation baseline)
+  // Seated 6DoF on top of ped eye (F10 resets translation baseline).
+  // Mode 155: skip — keep cam fixed on ped (no lean/shoulder orbit from HMD pos).
   float px, py, pz;
   OvrToGta(h.m[0][3], h.m[1][3], h.m[2][3], &px, &py, &pz);
   if (!g_havePosBaseline) {
@@ -251,10 +634,12 @@ void ApplyHmdToCam(Matrix44* mat) {
     g_basePz = pz;
     g_havePosBaseline = true;
   }
-  const float worldScale = GetWorldScale();
-  eye.x += (px - g_basePx) * kPosScale * worldScale;
-  eye.y += (py - g_basePy) * kPosScale * worldScale;
-  eye.z += (pz - g_basePz) * kPosScale * worldScale;
+  if (!eyeCenter) {
+    const float worldScale = GetWorldScale();
+    eye.x += (px - g_basePx) * kPosScale * worldScale;
+    eye.y += (py - g_basePy) * kPosScale * worldScale;
+    eye.z += (pz - g_basePz) * kPosScale * worldScale;
+  }
 
   float fx, fy, fz;
   OvrToGta(-h.m[0][2], -h.m[1][2], -h.m[2][2], &fx, &fy, &fz);
@@ -392,7 +777,7 @@ void ApplyHmdToCam(Matrix44* mat) {
     }
   }
 
-  const float eyeFwd = GetEyeForwardMeters();
+  const float eyeFwd = eyeCenter ? 0.f : GetEyeForwardMeters();
   eye.x += fx * eyeFwd;
   eye.y += fy * eyeFwd;
   eye.z += fz * eyeFwd;
@@ -400,6 +785,14 @@ void ApplyHmdToCam(Matrix44* mat) {
   // Inspiration FirstPerson.ini FPX/FPY/FPZ (our units: cm via gtaiv_dxvk_vr.camoff).
   float offR = 0.f, offF = 0.f, offU = 0.f;
   GetCamOffsetMeters(&offR, &offF, &offU);
+  // Mode 164/165 in vehicle only: extra rearward offset (vehcamoff). Cleared on foot.
+  if (IsOursFpInCarHead(sm) && IsPlayerInVehicleSticky()) {
+    float vr = 0.f, vf = 0.f, vu = 0.f;
+    GetVehicleCamOffsetMeters(&vr, &vf, &vu);
+    offR += vr;
+    offF += vf;
+    offU += vu;
+  }
   if (offR != 0.f || offF != 0.f || offU != 0.f) {
     eye.x += rx * offR + fx * offF + ux * offU;
     eye.y += ry * offR + fy * offF + uy * offU;
@@ -409,6 +802,53 @@ void ApplyHmdToCam(Matrix44* mat) {
   // Inspiration-style head/hair hide (CE SetDraw helper — not EndScene natives).
   UpdatePedHeadHide();
 
+  // Mode 178+: freeze FULL pre-IPD cam (basis+center) across L→R; only ±IPD differs.
+  if (g_dualCamFreeze.load() && g_freezeFullBasis) {
+    if (!g_haveFrozenCenter) {
+      g_frozenCenterEye = eye;
+      g_frozenFx = fx;
+      g_frozenFy = fy;
+      g_frozenFz = fz;
+      g_frozenRx = rx;
+      g_frozenRy = ry;
+      g_frozenRz = rz;
+      g_frozenUx = ux;
+      g_frozenUy = uy;
+      g_frozenUz = uz;
+      g_haveFrozenCenter = true;
+      static uint32_t s_capN = 0;
+      const uint32_t cn = ++s_capN;
+      if (cn <= 6 || (cn % 600) == 0)
+        Log("Mode178: full cam freeze capture #%u center=(%.3f,%.3f,%.3f)", cn, eye.x, eye.y,
+            eye.z);
+    } else {
+      const float dpx = eye.x - g_frozenCenterEye.x;
+      const float dpy = eye.y - g_frozenCenterEye.y;
+      const float dpz = eye.z - g_frozenCenterEye.z;
+      const float dpos =
+          std::sqrt(dpx * dpx + dpy * dpy + dpz * dpz);
+      const float dbasis = std::fabs(fx - g_frozenFx) + std::fabs(fy - g_frozenFy) +
+                           std::fabs(fz - g_frozenFz) + std::fabs(rx - g_frozenRx) +
+                           std::fabs(ry - g_frozenRy) + std::fabs(rz - g_frozenRz);
+      static uint32_t s_deltaN = 0;
+      const uint32_t dn = ++s_deltaN;
+      if (dn <= 8 || (dn % 600) == 0)
+        Log("Mode178: inter-eye cam delta #%u beforeFreeze dpos=%.4fm dbasis=%.5f "
+            "(expect ~0 after)",
+            dn, dpos, dbasis);
+      eye = g_frozenCenterEye;
+      fx = g_frozenFx;
+      fy = g_frozenFy;
+      fz = g_frozenFz;
+      rx = g_frozenRx;
+      ry = g_frozenRy;
+      rz = g_frozenRz;
+      ux = g_frozenUx;
+      uy = g_frozenUy;
+      uz = g_frozenUz;
+    }
+  }
+
   // Stereo eye origin — L4D2VR GetViewOriginLeft/Right:
   //   origin + forward*(-eyeZ*scale) + right*(±IPD*ipdScale*scale/2)
   // Cover FOV + TextureBounds (Submit) handle fusion; IPD alone is not enough.
@@ -416,8 +856,10 @@ void ApplyHmdToCam(Matrix44* mat) {
   bool directOpenXrEyeOffsetApplied = false;
   EyeOffset directOpenXrLocalEyeOffset{};
   const bool rightEye = (GetStereoEye() == StereoEye::Right);
+  // Mode 172 mono-pair and direct OpenXR immersive mono use a center camera.
   if (sm >= StereoMode::DualIpd &&
-      sm != StereoMode::OpenXrImmersiveMono) {
+      sm != StereoMode::OpenXrImmersiveMono &&
+      !IsOursFpMonoPair(sm)) {
     float hrx, hry, hrz;
     OvrToGta(h.m[0][0], h.m[1][0], h.m[2][0], &hrx, &hry, &hrz);
     float hrlen = std::sqrt(hrx * hrx + hry * hry + hrz * hrz);
@@ -430,6 +872,12 @@ void ApplyHmdToCam(Matrix44* mat) {
       hry = ry;
       hrz = rz;
     }
+    // Same-frame full freeze: IPD uses frozen right axis (not a later HMD sample).
+    if (g_dualCamFreeze.load() && g_freezeFullBasis && g_haveFrozenCenter) {
+      hrx = rx;
+      hry = ry;
+      hrz = rz;
+    }
 
     // Optional EyeToHead forward (OpenVR col2 translation) like L4D2 m_EyeZ.
     float eyeZ = 0.f;
@@ -438,9 +886,6 @@ void ApplyHmdToCam(Matrix44* mat) {
     if (haveEyeOffset)
       eyeZ = eyeOffset.z;
 
-    // WorldScale (F7) = 6DoF only. StereoScale (F6, default 1.15, cap 1.30) =
-    // soft disparity for size-without-fusion-break. Raw WorldScale×IPD at 1.5
-    // made ~9 cm sep → fusion gone + violent jump (headset 2026-07-24).
     if ((sm == StereoMode::OpenXrDrawSceneStereo ||
          sm == StereoMode::OpenXrTemporalStereo) &&
         haveEyeOffset) {
@@ -458,9 +903,17 @@ void ApplyHmdToCam(Matrix44* mat) {
       ipdY = hry * eyeOffset.x + huy * eyeOffset.y + hbackY * eyeOffset.z;
       ipdZ = hrz * eyeOffset.x + huz * eyeOffset.y + hbackZ * eyeOffset.z;
     } else {
-      const float half = 0.5f * GetStereoSepMeters() * GetStereoScale();
+      // Upstream Mode187+ deliberately scales the legacy stereo baseline with
+      // WorldScale. Modes 56/57 above keep the host's exact local eye poses.
+      // Mode 58 intentionally stays on Mode 204's proven configured-IPD law;
+      // the pinned OpenXR eye transform still supplies eye-Z and proves that
+      // both walks used one coherent runtime view sample.
+      const float ws =
+          IsOursFpTrueWorldScale(sm) ? GetWorldScale() : 1.f;
+      const float half =
+          0.5f * GetStereoSepMeters() * GetStereoScale() * ws;
       const float s = rightEye ? half : -half;
-      const float fzOff = -eyeZ;
+      const float fzOff = -eyeZ * ws;
       ipdX = hrx * s + fx * fzOff;
       ipdY = hry * s + fy * fzOff;
       ipdZ = hrz * s + fz * fzOff;
@@ -472,7 +925,8 @@ void ApplyHmdToCam(Matrix44* mat) {
       eye.z += ipdZ;
       directOpenXrEyeOffsetApplied =
           (sm == StereoMode::OpenXrDrawSceneStereo ||
-           sm == StereoMode::OpenXrTemporalStereo) &&
+           sm == StereoMode::OpenXrTemporalStereo ||
+           sm == StereoMode::OpenXrFusedFirstPerson) &&
           haveEyeOffset;
       if (directOpenXrEyeOffsetApplied)
         directOpenXrLocalEyeOffset = eyeOffset;
@@ -511,6 +965,18 @@ void ApplyHmdToCam(Matrix44* mat) {
     ++g_camBuildReceiptScope.applyCount;
     g_camBuildReceiptScope.lastRightEye = rightEye;
     g_camBuildReceiptScope.lastPosition = eye;
+    g_camBuildReceiptScope.lastPreEyePosition = {
+        eye.x - ipdX, eye.y - ipdY, eye.z - ipdZ, 0.f};
+    g_camBuildReceiptScope.firstPersonAnchor =
+        eyeCenter && IsOpenXrFusedFirstPerson(sm);
+    const float basis[9] = {
+        rx, ry, rz,
+        fx, fy, fz,
+        ux, uy, uz};
+    std::memcpy(
+        g_camBuildReceiptScope.lastBasis,
+        basis,
+        sizeof(basis));
     if (!directOpenXrEyeOffsetApplied) {
       g_camBuildReceiptScope.eyeOffsetMismatch = true;
     } else if (!g_camBuildReceiptScope.eyeOffsetApplied) {
@@ -546,9 +1012,10 @@ void ApplyHmdToCam(Matrix44* mat) {
   }
   if (n <= 5 || (n % 300) == 0) {
     Log("CamMatrix: FP lock #%u %s pos=(%.3f,%.3f,%.3f) ipd=(%.4f,%.4f,%.4f) sep=%.0fcm "
-        "eyeFwd=%.0fcm fullHmdBasis=%d leveledPitchFlip=%d pitchStable=%d pedCoupled=%d",
+        "eyeFwd=%.0fcm eyeCenter=%d fullHmdBasis=%d leveledPitchFlip=%d pitchStable=%d "
+        "pedCoupled=%d",
         n, rightEye ? "R" : "L", eye.x, eye.y, eye.z, ipdX, ipdY, ipdZ,
-        GetStereoSepMeters() * 100.f, eyeFwd * 100.f, fullHeadPose ? 1 : 0,
+        GetStereoSepMeters() * 100.f, eyeFwd * 100.f, eyeCenter ? 1 : 0, fullHeadPose ? 1 : 0,
         leveledPitchFlip ? 1 : 0, usedPitchStable ? 1 : 0, pedCoupledYaw ? 1 : 0);
   }
 }
@@ -695,7 +1162,14 @@ void __fastcall HookCopyMat(Matrix44* mat, void* edx, void* arg2) {
       ApplyFovPatch(mat);
     g_liveCamMat = mat;
     TrackCamMat(mat);
-    ApplyHmdToCam(mat);
+    if (IsExternalFpHost(sm)) {
+      // Snapshot FirstPerson cam, then IPD for current stereo eye.
+      g_fpHostBase = *mat;
+      g_haveFpHostBase = true;
+      ApplyFpHostStereoIpd(mat);
+    } else {
+      ApplyHmdToCam(mat);
+    }
   }
 }
 
@@ -719,6 +1193,13 @@ bool HookOneCall(const char* name, const char* pattern) {
 
 }  // namespace
 
+void NotifyHeadBoneSoftSkip(unsigned ms, const char* why) {
+  // Kept for dual-AV path; bone no longer uses timed soft-skip (jumped cam).
+  (void)ms;
+  if (why)
+    Log("CamMatrix: Mode193 dual-AV note (%s) — HOLD stereo, skip DrawScene", why);
+}
+
 bool InstallCamMatrixHooks() {
   if (g_hooksOk.load())
     return true;
@@ -730,6 +1211,17 @@ bool InstallCamMatrixHooks() {
   }
   g_FindPlayerPed = reinterpret_cast<FindPlayerPed_t>(findPed);
   Log("CamMatrix: FindPlayerPed @ %p", reinterpret_cast<void*>(findPed));
+
+  // FusionFix / SpeedoIV CE pattern — returns null on foot (unlike lingering m_pVehicle).
+  const uintptr_t findVeh =
+      FindPattern(nullptr, "8B 44 24 04 85 C0 75 15 A1 ? ? ? ? 83 F8 FF 75 04 33 C0 EB 07");
+  if (findVeh) {
+    g_FindPlayerVehicle = reinterpret_cast<FindPlayerVehicle_t>(findVeh);
+    Log("CamMatrix: FindPlayerVehicle @ %p (sit detect)", reinterpret_cast<void*>(findVeh));
+  } else {
+    g_FindPlayerVehicle = nullptr;
+    Log("CamMatrix: FindPlayerVehicle pattern MISS — sit detect falls back to m_pVehicle");
+  }
 
   int ok = 0;
   ok += HookOneCall("onfoot_front", "E8 ? ? ? ? 8A 86 ? ? ? ? 80 A6 ? ? ? ? ? 80 A6") ? 1 : 0;
@@ -764,6 +1256,13 @@ bool AreCamMatrixHooksInstalled() {
 }
 
 bool IsCamMatrixOverrideEnabled() {
+  // Mode 140: leave cam to FirstPerson; HMD→mouse (hmd_look) stays active.
+  if (IsExternalFpHost(GetStereoMode()))
+    return false;
+  return g_hooksOk.load() && g_gameplayActive.load();
+}
+
+bool IsStereoRenderArmed() {
   return g_hooksOk.load() && g_gameplayActive.load();
 }
 
@@ -790,15 +1289,72 @@ void PollCamHotkeys() {
 void RefreshLiveCamForStereoEye() {
   if (!g_gameplayActive.load())
     return;
+
+  UpdateEnterCarFpWindow();
+
+  const bool fpHost = IsExternalFpHost(GetStereoMode());
   if (g_trackedCount > 0) {
     for (int i = 0; i < g_trackedCount; ++i) {
-      if (g_trackedMats[i])
+      if (!g_trackedMats[i])
+        continue;
+      if (fpHost)
+        ApplyFpHostStereoIpd(g_trackedMats[i]);
+      else
         ApplyHmdToCam(g_trackedMats[i]);
     }
     return;
   }
-  if (g_liveCamMat)
-    ApplyHmdToCam(g_liveCamMat);
+  if (g_liveCamMat) {
+    if (fpHost)
+      ApplyFpHostStereoIpd(g_liveCamMat);
+    else
+      ApplyHmdToCam(g_liveCamMat);
+  }
+}
+
+void BeginStereoDualCamFreeze() {
+  const StereoMode sm = GetStereoMode();
+  if (!IsOursFpDualCamFreeze(sm))
+    return;
+  Vec4 eye{};
+  const bool eyeCenter = IsOursFpEyeCenterCam(sm);
+  const bool ok = eyeCenter ? TryGetPedEyeCenterBase(&eye)
+                            : (TryGetPedEyePos(&eye) && SaneWorldPos(eye));
+  if (!ok) {
+    g_dualCamFreeze.store(false);
+    g_haveFrozenPedEye = false;
+    g_freezeFullBasis = false;
+    g_haveFrozenCenter = false;
+    return;
+  }
+  g_frozenPedEye = eye;
+  g_haveFrozenPedEye = true;
+  g_freezeFullBasis = IsOursFpSameFrameFreeze(sm) || IsOursFpSameTickDual(sm) ||
+                      IsOursFpSameTickParentDualFreeze(sm);
+  g_haveFrozenCenter = false;  // first ApplyHmdToCam captures full pre-IPD cam
+  g_dualCamFreeze.store(true);
+  static uint32_t s_n = 0;
+  const uint32_t n = ++s_n;
+  if (n <= 6 || (n % 600) == 0) {
+    if (IsOursFpSameTickParentDualFreeze(sm))
+      Log("Mode201: dual cam freeze begin #%u pedEye=(%.3f,%.3f,%.3f) fullBasis=1", n, eye.x,
+          eye.y, eye.z);
+    else if (IsOursFpSameTickDual(sm))
+      Log("Mode189: dual cam freeze begin #%u pedEye=(%.3f,%.3f,%.3f) fullBasis=1", n, eye.x,
+          eye.y, eye.z);
+    else if (g_freezeFullBasis)
+      Log("Mode178: dual cam freeze begin #%u pedEye=(%.3f,%.3f,%.3f) fullBasis=1", n, eye.x,
+          eye.y, eye.z);
+    else
+      Log("Mode171: dual cam freeze #%u pedEye=(%.3f,%.3f,%.3f)", n, eye.x, eye.y, eye.z);
+  }
+}
+
+void EndStereoDualCamFreeze() {
+  g_dualCamFreeze.store(false);
+  g_haveFrozenPedEye = false;
+  g_freezeFullBasis = false;
+  g_haveFrozenCenter = false;
 }
 
 uint32_t GetStereoCamApplyGeneration() {
@@ -872,9 +1428,13 @@ bool EndStereoCamBuildReceipt(
   receipt->writerThreadId = scope.writerThreadId;
   receipt->rightEye = scope.lastRightEye;
   receipt->eyeOffsetApplied = scope.eyeOffsetApplied;
+  receipt->firstPersonAnchor = scope.firstPersonAnchor;
   receipt->position[0] = scope.lastPosition.x;
   receipt->position[1] = scope.lastPosition.y;
   receipt->position[2] = scope.lastPosition.z;
+  receipt->preEyePosition[0] = scope.lastPreEyePosition.x;
+  receipt->preEyePosition[1] = scope.lastPreEyePosition.y;
+  receipt->preEyePosition[2] = scope.lastPreEyePosition.z;
   receipt->eyeOffset[0] = scope.appliedEyeOffset.x;
   receipt->eyeOffset[1] = scope.appliedEyeOffset.y;
   receipt->eyeOffset[2] = scope.appliedEyeOffset.z;
@@ -884,6 +1444,10 @@ bool EndStereoCamBuildReceipt(
       scope.selectedLocalEyeOffset.y;
   receipt->localEyeOffset[2] =
       scope.selectedLocalEyeOffset.z;
+  std::memcpy(
+      receipt->basis,
+      scope.lastBasis,
+      sizeof(receipt->basis));
   return true;
 }
 
@@ -968,15 +1532,31 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
       }
     }
     float after = before;
-    // Idempotent ADD: the cam CALL usually resets CCam+0x60 to the base FOV, then
-    // we ADD. Sometimes the CALL leaves our previous write in place — adding again
-    // compounds (67→89) and blows canvas fill past 100% (headset 2026-07-24).
-    // Skip when before ≈ lastWritten (already has our ADD).
-    // Also: only ADD in the normal gameplay FOV band. Cutscene/menu bases (~70+)
-    // must not get +fovadd (load spike 76→98 → 193% fill / heavy crop).
     static float s_lastWritten = -1.f;
     constexpr float kGameplayFovHi = 55.f;
-    if (add > 0.05f && before <= kGameplayFovHi) {
+
+    // Modes 153–155: write ForwardFOV (fpfov) into CCam+0x60 to widen the engine BB.
+    // 153: lock gameTan to cover (aspect lie — can stretch V).
+    // 154/155: aspect-fit under-publish (preserve BB aspect, scale into cover).
+    // Absolute 90 + true CCam publish (Mode 152) caused StretchRect SRC crop zoom-IN.
+    if (WantsFpAbsoluteFov(sm)) {
+      const float target = GetFpForwardFovDegrees();
+      if (target >= 40.f && target <= 120.f && std::isfinite(target)) {
+        *fov = target;
+        after = target;
+        s_lastWritten = target;
+      } else {
+        s_lastWritten = -1.f;
+        after = before;
+      }
+      if (IsOursFpWideAspectFit(sm))
+        PublishGameFovUnderPublishFit(after, GetBackbufferAspect(), GetUnderPublishOverscan());
+      else
+        PublishGameFovFromCover();
+    } else if (add > 0.05f && before <= kGameplayFovHi) {
+      // Idempotent ADD: the cam CALL usually resets CCam+0x60 to the base FOV, then
+      // we ADD. Sometimes the CALL leaves our previous write in place — adding again
+      // compounds (67→89) and blows canvas fill past 100% (headset 2026-07-24).
       if (s_lastWritten > 0.f && std::fabs(before - s_lastWritten) < 0.4f) {
         after = before;
       } else {
@@ -987,14 +1567,15 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         s_lastWritten = after;
       }
     } else if (before > kGameplayFovHi) {
-      // Special cam — leave engine FOV alone; clear sticky lastWritten.
       s_lastWritten = -1.f;
       after = before;
     } else {
       s_lastWritten = -1.f;
     }
+
     // Mode 36/37: canvas must track TRUE engine FOV (not stale GetTransform).
     // Mode 35 baseline left unchanged (protect headset-good warp).
+    // Modes 153–155: skip — under-publish already applied above.
     if (sm == StereoMode::FovRecomputeTrueCanvas || sm == StereoMode::FovCanvasComfort ||
         sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion ||
         sm == StereoMode::FovCanvasMotionGuard || sm == StereoMode::ReplayCallChainProbe ||
@@ -1011,7 +1592,8 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         sm == StereoMode::OpenXrImmersiveMono ||
         sm == StereoMode::OpenXrDrawSceneStereo ||
         sm == StereoMode::OpenXrTemporalStereo ||
-        IsCleanDualLookMove(sm))
+        IsCleanDualLookMove(sm) ||
+        (IsHeadHideNativeOurs(sm) && !WantsFpAbsoluteFov(sm)))
       PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
 
     // Modes 45/46/47/48/49: Rage can revise a camera after CopyMat but before this already-safe
@@ -1028,8 +1610,44 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         sm == StereoMode::HeadOwnedCamStereoSoftGuard ||
         sm == StereoMode::OpenXrImmersiveMono ||
         sm == StereoMode::OpenXrDrawSceneStereo ||
-        IsCleanDualLookMove(sm)) {
-      RefreshLiveCamForStereoEye();
+        IsCleanDualLookMove(sm) ||
+        IsHeadHideNativeOurs(sm)) {
+      // Mode 165: enter/jack often uses a script cam that never hits our 4 CopyMat
+      // hooks. mat = CCam+0x10 (FOV at CCam+0x60 = mat+0x50). Always force HMD FP
+      // onto the live CCam so jacking stays first-person.
+      if (IsOursFpEnterCarFp(sm)) {
+        UpdateEnterCarFpWindow();
+        auto* ccamMat =
+            reinterpret_cast<Matrix44*>(reinterpret_cast<uint8_t*>(self) + 0x10);
+        // Start enter window if game cam is already far from ped (jack anim before
+        // m_pVehicle is set).
+        if (!IsPlayerVehiclePtrSet()) {
+          Vec4 pedEye{};
+          if (TryGetPedEyePos(&pedEye)) {
+            const float dx = ccamMat->pos.x - pedEye.x;
+            const float dy = ccamMat->pos.y - pedEye.y;
+            const float dz = ccamMat->pos.z - pedEye.z;
+            const float dist2 = dx * dx + dy * dy + dz * dz;
+            if (dist2 > 2.5f * 2.5f) {
+              g_enterFpUntil = GetTickCount() + 5000;
+              static uint32_t s_far = 0;
+              if (++s_far <= 4 || (s_far % 200) == 0)
+                Log("EnterFp: CCam far from ped (%.1fm) — jack/enter force FP",
+                    std::sqrt(dist2));
+            }
+          }
+        }
+        ApplyHmdToCam(ccamMat);
+        g_liveCamMat = ccamMat;
+        TrackCamMat(ccamMat);
+        static uint32_t s_enterForce = 0;
+        const uint32_t ef = ++s_enterForce;
+        if (ef <= 6 || (ef % 300) == 0)
+          Log("EnterFp: forced HMD onto CCam+0x10 #%u (window=%d vehPtr=%d)", ef,
+              IsEnterCarFpWindowActive() ? 1 : 0, IsPlayerVehiclePtrSet() ? 1 : 0);
+      } else {
+        RefreshLiveCamForStereoEye();
+      }
       static uint32_t s_headOwnedRefreshes = 0;
       const uint32_t refreshes = ++s_headOwnedRefreshes;
       if (refreshes <= 4 || (refreshes % 600) == 0)
@@ -1047,8 +1665,8 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
     }
     const uint32_t n = ++g_fovSiteCalls;
     if (n <= 4 || (n % 600) == 0)
-      Log("FovSite: #%u CCam+0x60 %.3f -> %.3f (add=%.0f) self=%p trueCanvas=%d", n, before,
-          after, add, self,
+      Log("FovSite: #%u CCam+0x60 %.3f -> %.3f (add=%.0f) self=%p trueCanvas=%d underPub=%d", n,
+          before, after, add, self,
           (sm == StereoMode::FovRecomputeTrueCanvas || sm == StereoMode::FovCanvasComfort ||
            sm == StereoMode::AerPoseSubmit || sm == StereoMode::FovCanvasLowMotion ||
            sm == StereoMode::FovCanvasMotionGuard || sm == StereoMode::ReplayCallChainProbe ||
@@ -1058,9 +1676,11 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
            sm == StereoMode::HeadOwnedCamLeveledPitchFlip ||
            sm == StereoMode::HeadOwnedCamPitchStable ||
            sm == StereoMode::HeadOwnedCamPedCoupled ||
-           IsCleanDualLookMove(sm))
+           IsCleanDualLookMove(sm) ||
+           (IsHeadHideNativeOurs(sm) && !WantsFpAbsoluteFov(sm)))
               ? 1
-              : 0);
+              : 0,
+          WantsFpAbsoluteFov(sm) ? 1 : 0);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     static bool once = false;
     if (!once) {

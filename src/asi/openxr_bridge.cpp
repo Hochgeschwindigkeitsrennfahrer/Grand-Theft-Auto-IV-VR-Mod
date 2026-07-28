@@ -5,6 +5,7 @@
 #include "cpu_temporal_readback.h"
 #include "hmd_pose.h"
 #include "log.h"
+#include "look_move.h"
 #include "openxr_controller.h"
 #include "openxr_pose_client.h"
 #include "ped_hide.h"
@@ -376,6 +377,10 @@ public:
         const bool temporalStereoMode =
             !uiState
             && stereoMode == StereoMode::OpenXrTemporalStereo;
+        const bool fusedFirstPersonMode =
+            !uiState
+            && stereoMode
+                == StereoMode::OpenXrFusedFirstPerson;
         ++producerCallOrdinal_;
         if (producerCallOrdinal_ == 0u)
             producerCallOrdinal_ = 1u;
@@ -449,6 +454,7 @@ public:
             && !immersiveMono
             && !lease.pair.verifiedWvpStereo
             && !lease.pair.verifiedDrawSceneStereo
+            && !lease.pair.verifiedParentDualStereo
             && !(temporalStereoMode
                 && lease.pair.verifiedTemporalStereo))
         {
@@ -458,6 +464,42 @@ public:
             logRateLimited(
                 "OpenXRBridge: world pair lacks validated same-frame or "
                 "explicit Mode57 temporal proof; transaction withheld",
+                lastPairWaitLogTick_);
+            publishHeartbeat();
+            return;
+        }
+        if (!uiState
+            && (fusedFirstPersonMode
+                != lease.pair.verifiedParentDualStereo
+                || lease.pair.verifiedParentDualStereo
+                    != lease.pair.firstPersonCamera
+                || lease.pair.verifiedParentDualStereo
+                    != lease.pair.nativeHeadHidden
+                || (fusedFirstPersonMode
+                    && (!lease.pair.sameSimulationTick
+                        || lease.pair.verifiedTemporalStereo))))
+        {
+            cancelPendingCpuTemporalReadback(
+                "Mode58 parent-dual/first-person proof changed",
+                true);
+            logRateLimited(
+                "OpenXRBridge: Mode58 world pair lacks matched "
+                "parentDual/fp/headHide same-tick proof; transaction withheld",
+                lastPairWaitLogTick_);
+            publishHeartbeat();
+            return;
+        }
+        if (uiState
+            && (lease.pair.verifiedParentDualStereo
+                || lease.pair.firstPersonCamera
+                || lease.pair.nativeHeadHidden))
+        {
+            cancelPendingCpuTemporalReadback(
+                "Mode58 proof appeared on UI quad",
+                true);
+            logRateLimited(
+                "OpenXRBridge: parent-dual first-person proof rejected "
+                "on stationary UI",
                 lastPairWaitLogTick_);
             publishHeartbeat();
             return;
@@ -476,7 +518,8 @@ public:
         const bool cpuMailboxRoute =
             stereoMode == StereoMode::OpenXrImmersiveMono
             || stereoMode == StereoMode::OpenXrDrawSceneStereo
-            || stereoMode == StereoMode::OpenXrTemporalStereo;
+            || stereoMode == StereoMode::OpenXrTemporalStereo
+            || stereoMode == StereoMode::OpenXrFusedFirstPerson;
         if (cpuMailboxRoute)
         {
             if (!ready_)
@@ -740,6 +783,7 @@ private:
         if (!gameDevice
             || !pair.eyes[0]
             || ((pair.verifiedDrawSceneStereo
+                 || pair.verifiedParentDualStereo
                  || pair.verifiedTemporalStereo)
                 && !pair.eyes[1])
             || pair.width == 0u
@@ -853,7 +897,10 @@ private:
             | (pair.verifiedDrawSceneStereo ? 1u << 3u : 0u)
             | (pair.verifiedTemporalStereo ? 1u << 4u : 0u)
             | (pair.uiQuad ? 1u << 5u : 0u)
-            | (pair.immersiveMono ? 1u << 6u : 0u);
+            | (pair.immersiveMono ? 1u << 6u : 0u)
+            | (pair.verifiedParentDualStereo ? 1u << 7u : 0u)
+            | (pair.firstPersonCamera ? 1u << 8u : 0u)
+            | (pair.nativeHeadHidden ? 1u << 9u : 0u);
         key.d3dThreadId = GetCurrentThreadId();
         key.referenceSpaceGeneration = referenceSpaceGeneration;
         return key;
@@ -961,6 +1008,7 @@ private:
             !uiState
             && !immersiveMono
             && (pair.verifiedDrawSceneStereo
+                || pair.verifiedParentDualStereo
                 || pair.verifiedTemporalStereo);
         const uint32_t sourceEyeCount = distinctStereo
             ? gtaiv_xr_bridge::EyeCount
@@ -1333,6 +1381,7 @@ private:
                 "OpenXRBridge: CPU mailbox transaction=%llu slot=%u "
                 "pair=%llu presentation=%s eyes=%u "
                 "sameTick=%d temporal=%d "
+                "parentDual=%d fp=%d headHide=%d "
                 "pose=%llu/%llu source=%llu/%llu capture=%ux%u "
                 "readbackMs=%.2f enqueueMs=%.2f waitMs=%.2f copyMs=%.2f "
                 "split=%d leftQueueMs=%.2f phaseGapMs=%.2f "
@@ -1347,13 +1396,18 @@ private:
                     ? "stationary-ui-quad"
                     : lastPresentationMode_
                         == gtaiv_xr_bridge::PresentationMode::WorldStereo
-                        ? pair.verifiedTemporalStereo
+                        ? pair.verifiedParentDualStereo
+                            ? "world-parent-dual-stereo"
+                            : pair.verifiedTemporalStereo
                             ? "world-temporal-stereo"
                             : "world-drawscene-stereo"
                         : "world-immersive-mono",
                 sourceEyeCount,
                 pair.sameSimulationTick ? 1 : 0,
                 pair.verifiedTemporalStereo ? 1 : 0,
+                pair.verifiedParentDualStereo ? 1 : 0,
+                pair.firstPersonCamera ? 1 : 0,
+                pair.nativeHeadHidden ? 1 : 0,
                 static_cast<unsigned long long>(pair.poseSequence[0]),
                 static_cast<unsigned long long>(pair.poseSequence[1]),
                 static_cast<unsigned long long>(pair.sourceFrameId[0]),
@@ -2354,6 +2408,12 @@ private:
             value.flags |= gtaiv_xr_bridge::VerifiedWvpStereo;
         if (lastPair_.verifiedDrawSceneStereo)
             value.flags |= gtaiv_xr_bridge::VerifiedDrawSceneStereo;
+        if (lastPair_.verifiedParentDualStereo)
+            value.flags |= gtaiv_xr_bridge::VerifiedParentDualStereo;
+        if (lastPair_.firstPersonCamera)
+            value.flags |= gtaiv_xr_bridge::FirstPersonCamera;
+        if (lastPair_.nativeHeadHidden)
+            value.flags |= gtaiv_xr_bridge::NativeHeadHidden;
         if (lastPresentationMode_
             == gtaiv_xr_bridge::PresentationMode::WorldMono)
             value.flags |= gtaiv_xr_bridge::ImmersiveMono;
@@ -2692,7 +2752,8 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
             Log(
                 "OpenXRBridge: direct world presentation requires stereo mode "
                 "55 (immersive mono), 56 (guarded DrawScene diagnostic), "
-                "57 (ordered temporal stereo), or 54 (experimental WVP); "
+                "57 (ordered temporal stereo), 58 (Mode204 fused first-person), "
+                "or 54 (experimental WVP); "
                 "current mode=%d, so no GTA "
                 "camera, controller, or frame hooks were armed",
                 static_cast<int>(directMode));
@@ -2772,7 +2833,10 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
     // Keep the established GTA-side locomotion/right-stick behavior identical
     // across compositors. OpenXR only supplies the cached HMD pose and XInput
     // state; vr_move.cpp remains the single owner of gameplay movement policy.
-    UpdateVrMoveAndStick();
+    if (IsOpenXrFusedFirstPerson(GetStereoMode()))
+        UpdateLookMove();
+    else
+        UpdateVrMoveAndStick();
 }
 
 void ShutdownOpenXrBridge()

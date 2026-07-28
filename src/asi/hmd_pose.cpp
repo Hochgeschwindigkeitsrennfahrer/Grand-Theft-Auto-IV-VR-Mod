@@ -14,6 +14,9 @@ std::mutex g_mu;
 vr::HmdMatrix34_t g_mat{};
 std::atomic<bool> g_valid{false};
 
+vr::HmdMatrix34_t g_latchMat{};
+std::atomic<bool> g_latchActive{false};
+
 EyeOffset g_eyeL{};
 EyeOffset g_eyeR{};
 std::atomic<bool> g_eyeOk{false};
@@ -212,6 +215,28 @@ void EndPinnedOpenXrBuildPose() {
   g_buildPosePinned = false;
 }
 
+void BeginDualHmdPoseLatch() {
+  vr::HmdMatrix34_t m{};
+  // Prefer live pose; latch fails soft (dual continues without freeze).
+  if (!g_valid.load()) {
+    g_latchActive.store(false);
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    g_latchMat = g_mat;
+  }
+  g_latchActive.store(true);
+}
+
+void EndDualHmdPoseLatch() {
+  g_latchActive.store(false);
+}
+
+bool IsDualHmdPoseLatchActive() {
+  return g_latchActive.load();
+}
+
 void CacheEyeToHeadFromHmd() {
   vr::IVRSystem* sys = vr::VRSystem();
   if (!sys) {
@@ -252,7 +277,7 @@ bool GetHmdPoseMatrix(vr::HmdMatrix34_t* out) {
   if (!g_valid.load())
     return false;
   std::lock_guard<std::mutex> lock(g_mu);
-  *out = g_mat;
+  *out = g_latchActive.load() ? g_latchMat : g_mat;
   return true;
 }
 

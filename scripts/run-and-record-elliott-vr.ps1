@@ -3,6 +3,8 @@ param(
   [string]$GameDir =
     "D:\SteamLibrary\steamapps\common\Grand Theft Auto IV\GTAIV",
   [string]$RuntimeManifest = "",
+  [ValidateSet(55, 56, 57, 58)]
+  [uint32]$StereoMode = 58,
   [ValidateRange(120, 1800)]
   [uint32]$MaxSeconds = 600,
   [ValidateRange(15, 30)]
@@ -98,7 +100,9 @@ $launcherError = Join-Path $controlPath "launcher.stderr.log"
 $captureOutput = Join-Path $controlPath "capture.stdout.log"
 $captureError = Join-Path $controlPath "capture.stderr.log"
 $videoPath = Join-Path $controlPath (
-  "gtaiv-openxr-mode57-vr-sbs-{0}s.mp4" -f $DurationSeconds
+  "gtaiv-openxr-mode{0}-vr-sbs-{1}s.mp4" -f
+    $StereoMode,
+    $DurationSeconds
 )
 
 $runWatcher = New-Object IO.FileSystemWatcher($runRoot, "*-steam-safe")
@@ -112,7 +116,7 @@ try {
     "-NoLogo -NoProfile -ExecutionPolicy Bypass " +
     "-File `"$launcherPath`" " +
     "-GameDir `"$gameDirectory`" " +
-    "-MaxSeconds $MaxSeconds -StereoMode 57 " +
+    "-MaxSeconds $MaxSeconds -StereoMode $StereoMode " +
     "-RuntimeManifest `"$runtimePath`" " +
     "-ElliottCliProof -StopWhenProofComplete " +
     "-ElliottWalkSeconds $WalkSeconds -Authorized"
@@ -191,24 +195,34 @@ $captureWaitMilliseconds =
 $launcherWaitMilliseconds = [int](($MaxSeconds + 120) * 1000)
 $captureExited = $captureProcess.WaitForExit($captureWaitMilliseconds)
 $launcherExited = $launcherProcess.WaitForExit($launcherWaitMilliseconds)
+$captureExitCode = $captureProcess.ExitCode
+$launcherExitCode = $launcherProcess.ExitCode
 
 $failures = @()
 if (-not $captureExited) {
   $failures += "Recorder did not exit within its bounded wait."
 }
-elseif ($captureProcess.ExitCode -ne 0) {
+elseif ($null -ne $captureExitCode -and $captureExitCode -ne 0) {
   $failures += (
-    "Recorder exited with code $($captureProcess.ExitCode); see $captureError."
+    "Recorder exited with code $captureExitCode; see $captureError."
   )
 }
 if (-not $launcherExited) {
   $failures += "Launcher did not exit within its bounded wait."
 }
-elseif ($launcherProcess.ExitCode -ne 0) {
+elseif ($null -ne $launcherExitCode -and $launcherExitCode -ne 0) {
   $failures += (
-    "Launcher exited with code $($launcherProcess.ExitCode); see " +
+    "Launcher exited with code $launcherExitCode; see " +
     "$launcherError."
   )
+}
+if ((Test-Path -LiteralPath $captureError -PathType Leaf) -and
+    (Get-Item -LiteralPath $captureError).Length -ne 0) {
+  $failures += "Recorder stderr is not empty: $captureError."
+}
+if ((Test-Path -LiteralPath $launcherError -PathType Leaf) -and
+    (Get-Item -LiteralPath $launcherError).Length -ne 0) {
+  $failures += "Launcher stderr is not empty: $launcherError."
 }
 
 $resultPath = Join-Path $runPath "result.txt"
@@ -217,14 +231,94 @@ if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
 }
 else {
   $resultLines = @(Get-Content -LiteralPath $resultPath)
-  if ($resultLines -notcontains "outcome=PROOF_COMPLETE") {
-    $failures += "Launcher did not report outcome=PROOF_COMPLETE."
+  $requiredResultValues = [ordered]@{
+    outcome = "PROOF_COMPLETE"
+    failure = ""
+    runtimeKind = "ElliottSimulator"
+    gameStarted = "True"
+    hostFocused = "True"
+    backendOpenXr = "True"
+    stereoMode = "$StereoMode"
+    stereoModeReady = "True"
+    controllerProofComplete = "True"
+    bridgeReady = "True"
+    worldCaptureReady = "True"
+    colorPathReady = "True"
+    srgbDecodeReady = "True"
+    swapchainFormatReady = "True"
+    stationaryUiQuad = "True"
+    stationaryUiProducer = "True"
+    stationaryUiHost = "True"
+    producerTransaction = "True"
+    hostConnected = "True"
+    hostAcquired = "True"
+    gamePoseMatched = "True"
+    hostPresentationContinuityReady = "True"
+    deviceResetHealthy = "True"
+    postResetProducerFresh = "True"
+    postResetHostFresh = "True"
+    orderedUiToWorld = "True"
+    continuousWorldFrames = "True"
+    stereoProofComplete = "True"
+    pauseRoundTrip = "True"
+    elliottPoseSweepCompleted = "True"
+    elliottProofAutomationComplete = "True"
+  }
+  if ($StereoMode -eq 58) {
+    $requiredResultValues["hostSwapchainFreshUpdatesReady"] = "True"
+    $requiredResultValues["mode58PrePauseContinuityReady"] = "True"
+    $requiredResultValues["parentDualFusedPairReady"] = "True"
+    $requiredResultValues["parentDualProducerReady"] = "True"
+    $requiredResultValues["parentDualHostExactPoseReady"] = "True"
+    $requiredResultValues["parentDualProofComplete"] = "True"
+    $requiredResultValues["firstPersonHardHookReady"] = "True"
+    $requiredResultValues["firstPersonGameplayReady"] = "True"
+    $requiredResultValues["firstPersonPedHideReady"] = "True"
+    $requiredResultValues["firstPersonProofComplete"] = "True"
+  }
+  else {
+    $requiredResultValues["hostSwapchainReuseReady"] = "True"
+  }
+  foreach ($requiredResult in $requiredResultValues.GetEnumerator()) {
+    $requiredLine = "{0}={1}" -f
+      $requiredResult.Key,
+      $requiredResult.Value
+    if ($resultLines -notcontains $requiredLine) {
+      $failures += (
+        "Launcher proof result is missing required field '$requiredLine'."
+      )
+    }
+  }
+  $swapchainFormatLine = @($resultLines | Where-Object {
+    $_ -match '^swapchainFormat=(29|91)$'
+  })
+  if ($swapchainFormatLine.Count -ne 1) {
+    $failures += (
+      "Launcher proof did not report one sRGB swapchain format (29 or 91)."
+    )
   }
 }
 
 $receiptPath = "$videoPath.capture.txt"
 if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
   $failures += "Recorder capture receipt is missing."
+}
+else {
+  $receiptLines = @(Get-Content -LiteralPath $receiptPath)
+  foreach ($requiredReceiptLine in @(
+      "capture=PASS",
+      "simulatorInput=CLI/headless",
+      "windowActivation=False",
+      "durationSeconds=$DurationSeconds",
+      "frameRate=$FrameRate",
+      "output=$videoPath"
+    )) {
+    if ($receiptLines -notcontains $requiredReceiptLine) {
+      $failures += (
+        "Recorder receipt is missing '$requiredReceiptLine'."
+      )
+    }
+  }
 }
 if (-not (Test-Path -LiteralPath $videoPath -PathType Leaf)) {
   $failures += "Recorded video is missing."
@@ -237,7 +331,7 @@ if ($failures.Count -ne 0) {
   throw ($failures -join " ")
 }
 
-Write-Output "ELLIOTT FULL-GAME VR RECORDING PASS"
+Write-Output "ELLIOTT FULL-GAME MODE $StereoMode VR RECORDING PASS"
 Write-Output "Video: $videoPath"
 Write-Output "Run: $runPath"
 Write-Output "Receipt: $receiptPath"

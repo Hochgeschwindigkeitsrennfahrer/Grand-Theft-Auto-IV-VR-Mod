@@ -20,7 +20,8 @@ if ($parseErrors.Count -ne 0) {
 
 $requiredPatterns = [ordered]@{
   OptInSwitch = '\[switch\]\$ElliottCliProof'
-  StereoMode57 = '\[ValidateSet\(55, 56, 57\)\]'
+  StereoModes = '\[ValidateSet\(55, 56, 57, 58\)\]'
+  SafeLauncherDefault = '\[uint32\]\$StereoMode = 55'
   TemporalHostOptIn = '"--allow-temporal-stereo"'
   TemporalModeOnly = 'if \(\$Mode -eq 57\)'
   TemporalProducerRoute = '"world-temporal-stereo"'
@@ -97,6 +98,39 @@ $requiredPatterns = [ordered]@{
   FreshApplyGeneration = '\$stereoApplyGenerationFresh'
   AcceptedPairSpan = '\$mode56PrePauseAcceptedPairSpan -ge 120'
   SharedTransaction = '\$mode56PrePauseSharedTransaction'
+  Mode58FusedPair = 'StereoOpenXRFused: accepted pair'
+  Mode58SameTick = 'sameTick=1 temporal=0'
+  Mode58ParentTarget = 'parent=0x4DE020'
+  Mode58ParentProducer = '\$parentDualProducerReady'
+  Mode58ParentRoute = 'world-parent-dual-stereo'
+  Mode58ExactHostPose = '\$parentDualHostExactPoseReady'
+  Mode58ExactHostPoseLog = 'parent-dual exact capture pose active'
+  Mode58FreshWorldUpdates =
+    '\$hostSwapchainFreshWorldUpdateSamples -ge 3'
+  Mode58FreshUpdateGate = '\$hostSwapchainFreshUpdatesReady'
+  Mode58PresentationContinuity =
+    '\$hostPresentationContinuityReady = if \(\$StereoMode -eq 58\)'
+  Mode58FreshUpdateResult =
+    '"hostSwapchainFreshUpdatesReady=\$hostSwapchainFreshUpdatesReady"'
+  Mode58ExactPoseFailClosed =
+    'parent-dual exact capture pose missing; projection layer held'
+  Mode58ParentProof = '\$parentDualProofComplete'
+  Mode58FirstPersonHardHook = '\$firstPersonHardHookReady'
+  Mode58FirstPersonGameplay = '\$firstPersonGameplayReady'
+  Mode58NativePedHide = '\$firstPersonPedHideReady'
+  Mode58NativePedHideProof =
+    'PedHide: native proof pass=\(\\d\+\) mode=58 components=5'
+  Mode58FirstPersonProof = '\$firstPersonProofComplete'
+  Mode58ContinuitySpan = '\$mode58PrePauseAcceptedPairSpan -ge 120'
+  Mode58ContinuityResult =
+    '"mode58PrePauseContinuityReady=\$mode58PrePauseContinuityReady"'
+  Mode58ParentResult =
+    '"parentDualProofComplete=\$parentDualProofComplete"'
+  Mode58FirstPersonResult =
+    '"firstPersonProofComplete=\$firstPersonProofComplete"'
+  Mode58WalkPose = 'Mode58 pose sweep active for recorded walk'
+  Mode58FailClosed =
+    'Mode58: \(\?:FAIL\|KILL\)\[\^\\r\\n\]\*wrote stereo=57'
   PauseRoundTrip = '\$pauseRoundTrip'
   InteractiveMenuGate = '\$interactiveMenuActive'
   LoadingAfterMenuGate = '\$loadingAfterInteractiveMenu'
@@ -110,6 +144,17 @@ $requiredPatterns = [ordered]@{
   ThreeSharedFrames = '\$sharedIds\.Count -ge 3'
   SustainedTwoSeconds = '\$worldLoadSustainedMilliseconds -ge 2000'
   WorldFullyReady = '\$worldLoadFullyReady'
+  GameplaySettleState = '"WAIT_GAMEPLAY_SETTLE"'
+  GameplaySettleDelay = '\[DateTime\]::UtcNow\.AddSeconds\(3\)'
+  GameplaySettleContinuousReset =
+    '\$elliottNextActionAt = \$proofNow\.AddSeconds\(3\)'
+  GameplaySettleProducerAdvance =
+    '\$producerLatestTransaction -gt\s+\$gameplaySettleProducerBaseline'
+  GameplaySettleHostAdvance =
+    '\$hostLatestTransaction -gt\s+\$gameplaySettleHostBaseline'
+  GameplaySettleTimeout = '"GAMEPLAY_SETTLE_TIMEOUT:'
+  GameplaySettlePass =
+    '"ELLIOTT CLI: gameplay settle PASS with advancing producer/"'
   RockstarHandoffRetry = '"AUTH RETRY: Rockstar did not hand off to GTAIV\.exe'
   OneAuthRetry = '\$authRetryAttempted = \$true'
   RetryNoTitleArguments = '"app 12210 once more through regular Steam with no custom arguments"'
@@ -149,6 +194,46 @@ foreach ($entry in $forbiddenPatterns.GetEnumerator()) {
   if ($launcher -match $entry.Value) {
     throw "Forbidden simulator UI/dependency contract found: $($entry.Key)"
   }
+}
+
+$gameplaySettleTransition = $launcher.IndexOf(
+  '$elliottProofState = "WAIT_GAMEPLAY_SETTLE"'
+)
+$gameplaySettleState = $launcher.IndexOf(
+  '"WAIT_GAMEPLAY_SETTLE" {',
+  $gameplaySettleTransition + 1
+)
+$settledPauseStart = $launcher.IndexOf(
+  '[void](Send-ElliottControllerSnapshot -Kind "MenuStart")',
+  $gameplaySettleState + 1
+)
+if ($gameplaySettleTransition -lt 0 -or
+    $gameplaySettleState -le $gameplaySettleTransition -or
+    $settledPauseStart -le $gameplaySettleState) {
+  throw (
+    "Pause automation must transition through the bounded gameplay-settle " +
+    "state before sending the in-game Start pulse."
+  )
+}
+
+$mode58RecordedWalkPose = $launcher.IndexOf(
+  '"ELLIOTT CLI: Mode58 pose sweep active for recorded walk"'
+)
+$mode58RecordedWalkStick = $launcher.IndexOf(
+  '[void](Send-ElliottControllerSnapshot -Kind "StickForward")',
+  $mode58RecordedWalkPose + 1
+)
+$mode58RecordedWalkMarker = $launcher.IndexOf(
+  '$walkReadyTemporary = "$ElliottWalkReadyMarker.tmp"',
+  $mode58RecordedWalkStick + 1
+)
+if ($mode58RecordedWalkPose -lt 0 -or
+    $mode58RecordedWalkStick -le $mode58RecordedWalkPose -or
+    $mode58RecordedWalkMarker -le $mode58RecordedWalkStick) {
+  throw (
+    "Mode58 recorded-walk ordering must enable pose sweep, command " +
+    "StickForward, then publish the capture marker."
+  )
 }
 
 $sequenceFunction = $launcherAst.Find(
@@ -275,9 +360,14 @@ if ($outOfOrder.Monotonic) {
 $mode55Arguments = @(Get-OpenXrHostArguments -Mode 55 -TimeoutMs 990000)
 $mode56Arguments = @(Get-OpenXrHostArguments -Mode 56 -TimeoutMs 990000)
 $mode57Arguments = @(Get-OpenXrHostArguments -Mode 57 -TimeoutMs 990000)
-foreach ($nonTemporalArguments in @($mode55Arguments, $mode56Arguments)) {
+$mode58Arguments = @(Get-OpenXrHostArguments -Mode 58 -TimeoutMs 990000)
+foreach ($nonTemporalArguments in @(
+    $mode55Arguments,
+    $mode56Arguments,
+    $mode58Arguments
+  )) {
   if ($nonTemporalArguments -contains "--allow-temporal-stereo") {
-    throw "Temporal host opt-in leaked into Mode55 or Mode56."
+    throw "Temporal host opt-in leaked into Mode55, Mode56, or Mode58."
   }
 }
 if (@($mode57Arguments | Where-Object {
@@ -354,6 +444,7 @@ if ($menuSettleBlock -notmatch '"WAIT_WORLD_LOAD"') {
 Write-Output (
   (
     "ElliottCliProofContractTest: PASS required={0} forbidden={1} " +
-    "sequence=2 hostModes=3 worldEvidence=3 menuWait=1 textSnapshot=2"
+    "sequence=2 hostModes=4 worldEvidence=3 menuWait=1 " +
+    "gameplaySettle=1 textSnapshot=2"
   ) -f $requiredPatterns.Count, $forbiddenPatterns.Count
 )

@@ -21,6 +21,10 @@ struct GamePresentationKey
     uint32_t uiEye = 0u;
     bool sameSimulationTick = false;
     bool temporalStereo = false;
+    bool parentDualStereo = false;
+    bool firstPersonCamera = false;
+    bool nativeHeadHidden = false;
+    bool pixelDistinct = false;
 
     explicit operator bool() const noexcept
     {
@@ -48,7 +52,11 @@ inline bool operator==(
         && left.uiReasonFlags == right.uiReasonFlags
         && left.uiEye == right.uiEye
         && left.sameSimulationTick == right.sameSimulationTick
-        && left.temporalStereo == right.temporalStereo;
+        && left.temporalStereo == right.temporalStereo
+        && left.parentDualStereo == right.parentDualStereo
+        && left.firstPersonCamera == right.firstPersonCamera
+        && left.nativeHeadHidden == right.nativeHeadHidden
+        && left.pixelDistinct == right.pixelDistinct;
 }
 
 template<typename Payload>
@@ -175,6 +183,45 @@ inline bool GamePresentationCacheSelfTest(std::string& failure)
     if (cache.tryReuse(rerouted, reused))
     {
         failure = "a route change reused the prior presentation";
+        return false;
+    }
+
+    GamePresentationKey parentDual = next;
+    ++parentDual.transactionId;
+    parentDual.temporalStereo = false;
+    parentDual.sameSimulationTick = true;
+    parentDual.parentDualStereo = true;
+    parentDual.firstPersonCamera = true;
+    parentDual.nativeHeadHidden = true;
+    parentDual.pixelDistinct = true;
+    parentDual.sourceFrameId[1] = parentDual.sourceFrameId[0];
+    parentDual.poseSequence[1] = parentDual.poseSequence[0];
+    parentDual.renderedDisplayTime[1] =
+        parentDual.renderedDisplayTime[0];
+    const TestPayload exactParentPose {
+        parentDual.poseSequence[0],
+        parentDual.poseSequence[1],
+        false
+    };
+    cache.commit(parentDual, exactParentPose);
+    for (uint32_t frame = 0u; frame < 600u; ++frame)
+    {
+        reused = {};
+        if (!cache.tryReuse(parentDual, reused)
+            || reused.leftPose != exactParentPose.leftPose
+            || reused.rightPose != exactParentPose.rightPose)
+        {
+            failure =
+                "a held parent-dual transaction lost its exact capture pose";
+            return false;
+        }
+    }
+    GamePresentationKey lostProof = parentDual;
+    lostProof.nativeHeadHidden = false;
+    if (cache.tryReuse(lostProof, reused))
+    {
+        failure =
+            "a parent-dual proof change reused the prior presentation";
         return false;
     }
 

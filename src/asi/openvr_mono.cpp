@@ -9,6 +9,7 @@
 #include "stereo_config.h"
 #include "stereo_dual.h"
 #include "stereo_render.h"
+#include "hud_layout.h"
 #include "vr_display.h"
 #include "vr_move.h"
 
@@ -245,6 +246,7 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   StereoRenderOnDevice(device);
   UpdateGameFovFromDevice(device);
   TryApplyCoverMatchedFovAdd();  // Mode 123 once cover FOV known
+  UpdateHudLayoutForVr();        // Mode 166 radar/status inward
 
   // Always ask — StereoTrySubmitEyes has the full mode + haveL/R gate. A second
   // mode list here went stale (mode 26 captured canvases but never submitted →
@@ -254,10 +256,28 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   vr::EVRCompositorError eL = vr::VRCompositorError_None;
   vr::EVRCompositorError eR = vr::VRCompositorError_None;
   if (!stereoSubmitted) {
-    // Mode 0: keep nullptr (user liked this FOV). Inset is for temporal stereo only.
+    // Mode 0: nullptr bounds (user liked FOV). Mode 174/175: TextureBounds frame the
+    // 16:9 BB so bottom-right phone sits higher / more inward in the HMD.
+    const vr::VRTextureBounds_t* bounds = nullptr;
+    vr::VRTextureBounds_t phoneLift{};
+    if (IsOursFpBbPhone(GetStereoMode())) {
+      // 174: lift only. 175: lift more + crop left so right-side phone moves inward.
+      const bool nudge = IsOursFpBbPhoneNudge(GetStereoMode());
+      phoneLift.uMin = nudge ? 0.14f : 0.f;
+      phoneLift.uMax = 1.f;
+      phoneLift.vMin = nudge ? 0.42f : 0.30f;
+      phoneLift.vMax = 1.f;
+      bounds = &phoneLift;
+      static bool s_once = false;
+      if (!s_once) {
+        s_once = true;
+        Log("Mode%d: BB Submit bounds uMin=%.2f vMin=%.2f (phone framing); stereo=0 path",
+            static_cast<int>(GetStereoMode()), phoneLift.uMin, phoneLift.vMin);
+      }
+    }
     interop->LockSubmissionQueue();
-    eL = vr::VRCompositor()->Submit(vr::Eye_Left, &texture, nullptr, vr::Submit_Default);
-    eR = vr::VRCompositor()->Submit(vr::Eye_Right, &texture, nullptr, vr::Submit_Default);
+    eL = vr::VRCompositor()->Submit(vr::Eye_Left, &texture, bounds, vr::Submit_Default);
+    eR = vr::VRCompositor()->Submit(vr::Eye_Right, &texture, bounds, vr::Submit_Default);
     interop->ReleaseSubmissionQueue();
   }
 
@@ -279,7 +299,9 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   PollCamHotkeys();
   PollIpdScaleHotkey();
   PollWorldScaleHotkey();
+  PollTrueWorldScaleHotkey();
   PollStereoScaleHotkey();
+  PollVrResHotkey();
 
   // Head tracking: mouse-look after warmup. Engine FP cam after more stable frames.
   constexpr uint32_t kLookAfter = 120;

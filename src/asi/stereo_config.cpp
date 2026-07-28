@@ -1,4 +1,6 @@
 #include "stereo_config.h"
+#include "game_timer.h"
+#include "hud_layout.h"
 #include "log.h"
 #include "vr_display.h"
 
@@ -28,6 +30,9 @@ std::atomic<float> g_fovAdd{0.f};
 std::atomic<bool> g_fovAddLoaded{false};
 std::atomic<int> g_worldScalePreset{-1};
 std::atomic<bool> g_loggedWorldScalePreset{false};
+// Eye-canvas maxDim (F5). Comfort path default 1536. Gen bump unlocks RT size lock.
+std::atomic<int> g_canvasMaxDim{1536};
+std::atomic<uint32_t> g_canvasMaxDimGen{0};
 
 // F7 visual world-scale: fovadd + stereoscale (NOT SoftInset / LetterboxPrefer).
 // Mode120 true-FOV canvas: HIGHER fovadd widens gameTan → StretchRect SRC crop when
@@ -245,7 +250,8 @@ void ReloadWorldScale() {
     return;
   SetWorldScalePercent(pct);
   if (!g_loggedScale.exchange(true))
-    Log("WorldScale6DoF: %.2f (file gtaiv_dxvk_vr.scale) — lean only; F7 = visual presets",
+    Log("WorldScale6DoF: %.2f (file gtaiv_dxvk_vr.scale) — lean always; Mode187+ also "
+        "×IPD (UEVR size; F11 cycle); F7 = fovadd/stereoscale presets",
         pct / 100.f);
 }
 
@@ -373,23 +379,35 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  // Three-digit Mode 120–136 (clean dual+lookmove family; 120=LKG, 121+=experiments).
-  // Two-digit modes 10..57 otherwise. Mode 46 remaps to protected 45 below.
-  if (n >= 3 && buf[0] == '1' && buf[1] == '3' && buf[2] >= '0' && buf[2] <= '6')
-    return 130 + (buf[2] - '0');
-  if (n >= 3 && buf[0] == '1' && buf[1] == '2' && buf[2] >= '0' && buf[2] <= '9')
-    return 120 + (buf[2] - '0');
-  if (n >= 2 && buf[0] >= '1' && buf[0] <= '5' && buf[1] >= '0' && buf[1] <= '9') {
-    const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 57)
-      return v;
-  }
-  if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
-    return buf[0] - '0';
+  // Full integer parse — do NOT prefer 2-digit first ("190" must not become 19).
+  // Old digit-prefix tables stopped at 189 and made Mode190 load as Mode19 (mono).
+  (void)n;
+  int v = -1;
+  if (sscanf_s(buf, "%d", &v) == 1 && v >= 0 && v < 1000)
+    return v;
   return -1;
 }
 
 }  // namespace
+
+void EnsureVrSquareCommandlineReady();
+void EnsureFpProfileDefaults();
+void ForceFpFovDegrees(int forward, int rear, int foot);
+void EnsureVehicleCamOffDefaults();
+void ReloadCanvasMaxDim();
+void SetCanvasMaxDim(uint32_t dim, bool fromHotkey);
+void SetEyeForwardCm(int cm);
+
+static void ApplyMode162SquareWideBase() {
+  EnsureFpProfileDefaults();
+  ForceFpFovDegrees(100, 100, 100);
+  SetEyeForwardCm(0);
+  ApplyWorldScalePreset(9, false);
+  ReloadCanvasMaxDim();
+  if (GetCanvasMaxDim() < 2048)
+    SetCanvasMaxDim(2048, false);
+  EnsureVrSquareCommandlineReady();
+}
 
 void ReloadStereoMode() {
   char path[MAX_PATH]{};
@@ -414,15 +432,453 @@ void ReloadStereoMode() {
     Log("StereoMode: requested 46 is DISABLED (post-load freeze); using protected mode 45");
   }
   int prev = g_mode.load();
-  if (v >= 0 &&
-      (v <= 57 || IsCleanDualLookMove(static_cast<StereoMode>(v)))) {
+  if (v >= 0 && (v <= 53 || IsCleanDualLookMove(static_cast<StereoMode>(v)) ||
+                  IsOpenXrDirectMode(static_cast<StereoMode>(v)) ||
+                  IsExternalFpHost(static_cast<StereoMode>(v)) ||
+                  IsHeadHideNativeOurs(static_cast<StereoMode>(v)))) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
   }
 
+  // hud.dat is global — Mode 166/167 write VR inset; other modes restore stock.
+  if (IsOursFpHudLayout(static_cast<StereoMode>(v))) {
+    // Ensure runs below on mode-enter.
+  } else {
+    RestoreHudDatStock();
+  }
+
   // Apply once when entering the mode (not every reload).
-  if (prev != v && v == static_cast<int>(StereoMode::StereoFusion)) {
+  if (prev != v &&
+      IsOpenXrFusedFirstPerson(static_cast<StereoMode>(v))) {
+    // Mode 58 inherits Mode 204's GTA-side first-person/FOV defaults, but it
+    // must never call ApplyGeometryCanvasDefaults(): that helper queries the
+    // legacy OpenVR display. OpenXR supplies the eye geometry to the x86 side.
+    ReloadIpdScale();
+    ReloadStereoScale();
+    ApplyMode162SquareWideBase();
+    ForceFpFovDegrees(110, 110, 110);
+    EnsureVehicleCamOffDefaults();
+    EnsureHudOffDefaults();
+    SetWorldScalePercent(100);
+    SaveScaleFile(100);
+    Log("Mode58: OPENXR FUSED FIRST-PERSON — upstream Mode204 parent dual "
+        "@0x4DE020 + pinned OpenXR view/eye-Z + Mode204 IPD law; "
+        "OpenVR forbidden; fallback=57");
+  } else if (prev != v &&
+             (IsExternalFpHost(static_cast<StereoMode>(v)) ||
+              IsHeadHideNativeOurs(static_cast<StereoMode>(v)))) {
+    ApplyGeometryCanvasDefaults();
+    ReloadIpdScale();
+    ReloadStereoScale();
+    if (v == static_cast<int>(StereoMode::OursFpSameTickParentDualTry2)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      // Preserve user IPD (203 milestone proved IPD alone is not the near-double fix).
+      Log("Mode204: OURS+PARENT-DUAL-TRY2 — Mode203 pose-latch dual on Mode198 parent "
+          "fn=0x4DE020 (ret 0x4DE0DC thiscall-56); kill=203 MILESTONE");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDualPose)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode203: MILESTONE — TRUE 3D VR checkpoint (pose latch @0x4D8BF0); "
+          "snapshot prebuilt/mode203; kill=200/191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDualVs)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      SetSepCm(6);
+      SaveIpdFile(6);
+      Log("Mode202: REJECT — VS-translate fuses when still, blurs on look (not true "
+          "same-tick view); use 203; kill=200/191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDualFreeze)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode201: REJECT — cam freeze; use 202 VS dual or 200; kill=200/191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode200: PASS smooth — parent dual CCam±IPD; fusion weak → try 202; kill=191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentCount)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode199: PASS — Mode191 dual + COUNT @0x4D8BF0 avg~1/ES; next=200 parent dual; "
+          "kill=191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentProbe)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode198: OURS+SAME-TICK-PARENT-PROBE — Mode191 dual + ONE VsRet stack "
+          "sample/EndScene (hunt ~1x/frame above 0x220D0; no VQ storm); kill=191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickOwnerCount)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode197: FAILED — 0x220D0 is per-draw hot (COUNT trampoline worse FPS + "
+          "flicker vs 191); hook NOT installed; behaves as Mode191; kill=191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickOwnerObserve)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode196: DONE/DISABLED observe — use 197 COUNT or 191; prior 1FPS+crash; "
+          "kill=191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickDrawRight)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode194: OURS+SAME-TICK-DRAW-RIGHT — Left BuildRootA + Right "
+          "DrawScene+PushLiveCam; distinct L/R angles but NO fusion; kill=191/192");
+    } else if (v == static_cast<int>(StereoMode::OursFpHeadBoneThiscall)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode193: OURS+HEAD-BONE — pair-freeze + MONO DrawScene×1 (door-safe; weak "
+          "parallax); kill=187");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickPhaseRight)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode192: OURS+SAME-TICK-PHASE-RIGHT — Mode191 Left BuildRootA + Right "
+          "PhaseTriplet only (cut dual post/sky); kill=191 MILESTONE");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickBuildDual)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode191: MILESTONE LKG — BuildRootA x2 L/R CopyMat (no CodePause; audio OK); "
+          "flicker when looking up — kill=187/185");
+    } else if (v == static_cast<int>(StereoMode::OursFpHeadBoneReturn)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode190: FAILED HEAD-BONE — ScriptHook natives from CopyMat crash after "
+          "load; bone OFF (=Mode187). Kill=187/186");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickDual)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      ResolveGameTimer();
+      Log("Mode189: OURS+SAME-TICK — Mode187 + CTimer step=0 + ms pin + CodePause "
+          "+ full cam freeze across L/R dual; kill=187/185");
+    } else if (v == static_cast<int>(StereoMode::OursFpHeadBoneWorldScale)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode188: FAILED HEAD-BONE — out-ptr path; use stereo=190 instead; kill=187");
+    } else if (v == static_cast<int>(StereoMode::OursFpTrueWorldScale)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);  // start matching Mode186; F11 raises size feel
+      SaveScaleFile(100);
+      Log("Mode187: OURS+TRUE-WORLDSCALE — Mode186 + scale×IPD (UEVR size; F11 cycle "
+          "100/125/150/175/200); kill=186/185");
+    } else if (v == static_cast<int>(StereoMode::OursFpZoomOut)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);  // one change vs Mode185 (fpfov 100→110)
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode186: OURS+ZOOM-OUT — Mode185 PhaseRight dual + fpfov=110 (near objects "
+          "smaller; not canvas zoom); kill=185/170");
+    } else if (v == static_cast<int>(StereoMode::OursFpPhaseRightDual)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode185: OURS+PHASE-RIGHT-DUAL — Mode170 dual+canvas + Right via "
+          "PhaseA→PhaseC→DrawScene; kill=170");
+    } else if (v == static_cast<int>(StereoMode::OursFpTimeFreeze)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode184: FAILED TIME-FREEZE — freeze armed, flicker unchanged; poke OFF "
+          "(settings crash risk); kill=170");
+    } else if (v == static_cast<int>(StereoMode::OursFpPhoneCanvasInset)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode183: OURS+PHONE-CANVAS-INSET — Mode170 dual+canvas + soft BB crop "
+          "right12%%/bottom18%% (phone up+left; no Submit UV / no SET_MOBILE); kill=170/175");
+    } else if (v == static_cast<int>(StereoMode::OursFpPhoneStereo)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode180: FAILED Submit-UV-on-canvas — prefer 183 / 175; kill=170");
+    } else if (v == static_cast<int>(StereoMode::OursFpNoColorFill)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode179: OURS+NO-COLORFILL — Mode178 full cam freeze + skip canvas ColorFill "
+          "(keep cover crop); kill=178/170");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameFrameFreeze)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode178: OURS+SAME-FRAME-FREEZE — Mode170 dual+canvas + freeze FULL pre-IPD "
+          "cam (basis+pos) across L/R; kill=170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpAer)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode177: OURS+AER — FAILED (flicker/warp); prefer 178; kill=175/170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpStereoSimple)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode176: OURS+STEREO-SIMPLE — FAILED (flicker back, no 3D); prefer 177 AER / 175; "
+          "kill=175/170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpBbPhoneNudge)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode175: OURS+BB-PHONE-NUDGE — phone GOOD; next=176 stereo-simple; "
+          "kill=174/170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpBbPhone)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode174: OURS+BB-MONO+PHONE — FLICKER GONE; phone still low/right → prefer 175; "
+          "kill=173/170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameLPhone)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode173: OURS+SAME-L+PHONE — still flickered sameL=1 → prefer 174 BB path; "
+          "kill=172/170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpMonoPair)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode172: OURS+MONO-PAIR — still flickered (Left-crop→Right eye); prefer 173; "
+          "kill=171/170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpPairFreeze)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode171: OURS+PAIR-FREEZE — Mode170 everyN=1 + freeze ped eye ORIGIN "
+          "across L/R DrawScene; still flickers on foot → prefer 172; kill=170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpFreshDual)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode170: OURS+FRESH-DUAL — Mode169 + everyN=1 (no off-tick HOLD), "
+          "still NO Flush, hitch→HOLD; driving flicker → prefer 171; kill=169/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpSafeFlicker)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode169: OURS+SAFE-FLICKER — Mode167 cam/HUD + safe dual "
+          "(dualn=2, atomic L/R, no skip-gate, NO Flush, hitch→HOLD last stereo); "
+          "HMD stutter from HOLD — prefer 170; kill=167/162 (168=DEVICE_LOST)");
+    } else if (v == static_cast<int>(StereoMode::OursFpStableCarHud)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode168: OURS+STABLE+CAR+HUD — FAILED DEVICE_LOST (everyN=1+Flush); "
+          "prefer Mode169; kill=167/162");
+    } else if (v == static_cast<int>(StereoMode::OursFpCarHud)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode167: OURS+CAR+HUD — Mode165 cam (FindPlayerVehicle sit) + Mode166 HUD inset "
+          "(+mission directions); kill=165/166/162");
+    } else if (v == static_cast<int>(StereoMode::OursFpHudLayout)) {
+      ApplyMode162SquareWideBase();
+      EnsureHudOffDefaults();
+      Log("Mode166: OURS+HUD-LAYOUT — inset corners→inward (top stronger); live mem "
+          "poke (no menu jump); leave166 restores stock hud.dat");
+    } else if (v == static_cast<int>(StereoMode::OursFpEnterCarFp)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      Log("Mode165: OURS+ENTER-CAR-FP — keep FP during enter + Mode164 in-car head; "
+          "FindPlayerVehicle sit (clears on foot); flash gate ON; kill=164/162");
+    } else if (v == static_cast<int>(StereoMode::OursFpInCarHead)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      Log("Mode164: OURS+IN-CAR-HEAD — eye further back in seat (vehcamoff default 0 -12 0); "
+          "flash gate ON; kill=163/162");
+    } else if (v == static_cast<int>(StereoMode::OursFpFlashGate)) {
+      ApplyMode162SquareWideBase();
+      Log("Mode163: OURS+FLASH-GATE — skip only tiny env RT (maxDim<=512); "
+          "do NOT skip half-BB fog/LOD buffers; kill=162");
+    } else if (v == static_cast<int>(StereoMode::OursFpSquareWideFov)) {
+      ApplyMode162SquareWideBase();
+      Log("Mode162: OURS+SQUARE-WIDE-FOV — Luke square + overscan=0%% + fpfov=100 "
+          "(zoom-out vs 161@90; no bars); kill=161/160/158");
+    } else if (v == static_cast<int>(StereoMode::OursFpSquareZeroOverscan)) {
+      EnsureFpProfileDefaults();
+      ForceFpFovDegrees(90, 90, 90);
+      SetEyeForwardCm(0);
+      ApplyWorldScalePreset(9, false);
+      ReloadCanvasMaxDim();
+      if (GetCanvasMaxDim() < 2048)
+        SetCanvasMaxDim(2048, false);
+      EnsureVrSquareCommandlineReady();
+      Log("Mode161: OURS+SQUARE-ZERO-OS — Luke Ross square + overscan=0%% (exact fit A/B); "
+          "fpfov=90; kill=160/158/120");
+    } else if (v == static_cast<int>(StereoMode::OursFpSquareLowOverscan)) {
+      EnsureFpProfileDefaults();
+      SetEyeForwardCm(0);
+      ApplyWorldScalePreset(9, false);
+      ReloadCanvasMaxDim();
+      if (GetCanvasMaxDim() < 2048)
+        SetCanvasMaxDim(2048, false);
+      EnsureVrSquareCommandlineReady();
+      Log("Mode160: OURS+SQUARE-LOW-OS — Luke Ross square + overscan≈2%% "
+          "(less crop than 159; keep commandline.txt 1440sq); kill=158/159/120");
+    } else if (v == static_cast<int>(StereoMode::OursFpStrongOverscan)) {
+      EnsureFpProfileDefaults();
+      SetEyeForwardCm(0);
+      ApplyWorldScalePreset(9, false);
+      ReloadCanvasMaxDim();
+      if (GetCanvasMaxDim() < 2048)
+        SetCanvasMaxDim(2048, false);
+      EnsureVrSquareCommandlineReady();
+      Log("Mode159: OURS+STRONG-OVERSCAN — Mode158 stack + overscan≈10%% "
+          "(more bar shrink; 158=LKG); kill=158/157/120");
+    } else if (v == static_cast<int>(StereoMode::OursFpSquareRes)) {
+      EnsureFpProfileDefaults();
+      SetEyeForwardCm(0);
+      ApplyWorldScalePreset(9, false);
+      ReloadCanvasMaxDim();
+      if (GetCanvasMaxDim() < 2048)
+        SetCanvasMaxDim(2048, false);
+      EnsureVrSquareCommandlineReady();
+      Log("Mode158: OURS+SQUARE-RES — Mode157 overscan FOV; rename "
+          "commandline.txt.vr-square -> commandline.txt then FULL restart "
+          "(1440x1440; closer aspect = fewer bars); kill=157/156/120");
+    } else if (v == static_cast<int>(StereoMode::OursFpMildOverscan)) {
+      EnsureFpProfileDefaults();
+      SetEyeForwardCm(0);
+      ApplyWorldScalePreset(9, false);
+      ReloadCanvasMaxDim();
+      if (GetCanvasMaxDim() < 2048)
+        SetCanvasMaxDim(2048, false);
+      Log("Mode157: OURS+OVERSCAN — Mode156 cam/FOV + under-publish overscan≈6%% "
+          "(shrink bars; tiny edge crop; keep aspect); kill=156/154/120");
+    } else if (v == static_cast<int>(StereoMode::OursFpEyeCenterLowRes)) {
+      EnsureFpProfileDefaults();
+      SetEyeForwardCm(0);
+      ApplyWorldScalePreset(9, false);
+      // Highest fixed eye-canvas unless gtaiv_dxvk_vr.vres already set.
+      ReloadCanvasMaxDim();
+      if (GetCanvasMaxDim() < 2048)
+        SetCanvasMaxDim(2048, false);
+      Log("Mode156: OURS+EYE-LOW+VRES — Mode154 aspect-fit; ped-fixed eyeH=65cm pedFwd=8cm; "
+          "F5 cycles eye-canvas maxDim; FirstPerson OFF; kill=154/155/120");
+    } else if (v == static_cast<int>(StereoMode::OursFpEyeCenterCam)) {
+      EnsureFpProfileDefaults();
+      SetEyeForwardCm(0);  // look-axis eyefwd ignored in ApplyHmdToCam for 155
+      ApplyWorldScalePreset(9, false);
+      Log("Mode155: OURS+EYE-CENTER — Mode154 aspect-fit FOV; ped-fixed pivot "
+          "(no 6DoF lean; eyeH=78cm pedFwd=8cm); FirstPerson OFF; kill=154/153/120");
+    } else if (v == static_cast<int>(StereoMode::OursFpWideAspectFit)) {
+      EnsureFpProfileDefaults();
+      SetEyeForwardCm(0);
+      ApplyWorldScalePreset(9, false);
+      Log("Mode154: OURS+FP-WIDE aspect-fit — CCam=fpfov; gameTan=FIT(BB aspect→cover); "
+          "fixes 153 squeeze/V-stretch; NOT Luke square cmdline; kill=153/152/120");
+    } else if (v == static_cast<int>(StereoMode::OursFpWideUnderPublish)) {
+      EnsureFpProfileDefaults();
+      SetEyeForwardCm(0);
+      // Under-publish: CCam=fpfov widens BB; canvas locked to cover (not from CCam).
+      // fovadd unused for absolute write — keep Window0 file clean.
+      ApplyWorldScalePreset(9, false);
+      Log("Mode153: OURS+FP-WIDE under-publish — CCam=fpfov (widen BB); gameTan=COVER "
+          "(no CCam publish); eyefwd=0; FirstPerson OFF; kill=152/120/0");
+    } else if (v == static_cast<int>(StereoMode::OursFpFovProfile)) {
+      EnsureFpProfileDefaults();
+      // FirstPerson presence: FOV 90 was script-cam; our CCam=90 caused crop zoom-IN.
+      // Match "see jacket": eyefwd=0 (not 42 head-embed) + Window0 fovadd=0. F7 works again.
+      SetEyeForwardCm(0);
+      ApplyWorldScalePreset(9, false);  // Window0 — fovadd=0 stereoscale=130
+      Log("Mode152: OURS+FP-PRESENCE — eyefwd=0 (look down→jacket like FirstPerson); "
+          "fovadd=0 Window0 (F7 live); native hide; FirstPerson.asi OFF; kill=120/0");
+    } else if (v == static_cast<int>(StereoMode::HeadHideNativeOurs)) {
+      Log("Mode151: HEADHIDE-OURS — Mode120 dual + our HMD cam + native SET_DRAW hide; "
+          "rename FirstPerson.asi→.off; kill=120/0");
+    } else if (v == static_cast<int>(StereoMode::HeadHideNativeWithFp)) {
+      Log("Mode150: HEADHIDE+FP — Mode147 soft-move + native SET_DRAW hide (FP cam kept); "
+          "kill=147/0");
+    } else if (v == static_cast<int>(StereoMode::ExternalFpHostSoftMoveStick)) {
+      Log("Mode148: SOFT-MOVE stick-alt — Mode147 without stick invert; kill=147/144/0");
+    } else if (v == static_cast<int>(StereoMode::ExternalFpHostSoftMove)) {
+      Log("Mode147: SOFT-MOVE — mouse cam (144 signs, slow pitch); ped heading floats ONLY "
+          "(no matrix); walk look-dir; stick LR invert fix; kill=144/0");
+    } else if (v == static_cast<int>(StereoMode::ExternalFpHostLookMoveYaw)) {
+      Log("Mode146: EXTERNAL-FP LOOKMOVE+YAW — Mode145 + half mouse yaw; kill=145/144/0");
+    } else if (v == static_cast<int>(StereoMode::ExternalFpHostLookMove)) {
+      Log("Mode145: EXTERNAL-FP LOOKMOVE — Mode144 signs; ped faces HMD (walk look-dir); "
+          "mouse pitch-only + slower pitch + deadzone; need HMD=0; kill=144/0/120");
+    } else if (v == static_cast<int>(StereoMode::ExternalFpHostLookPitchAlt)) {
+      Log("Mode144: EXTERNAL-FP PITCH-ALT — Mode143 clamp/rate; Mode142 pitch sign; "
+          "yaw=142; need FirstPerson HMD=0; kill=143/142/0");
+    } else if (v == static_cast<int>(StereoMode::ExternalFpHostLookPitch)) {
+      Log("Mode143: EXTERNAL-FP PITCH — yaw=142 (−); pitch unlock (sign flip + per-axis "
+          "clamp + high pitch); need FirstPerson HMD=0 (not Oculus); kill=142/140/0");
+    } else if (v == static_cast<int>(StereoMode::ExternalFpHostLookAlt)) {
+      Log("Mode142: EXTERNAL-FP LOOK-ALT — Mode141 pitch/rate; OPPOSITE yaw vs 141; "
+          "FirstPerson cam/hide/FOV kept; kill=141/140/0");
+    } else if (v == static_cast<int>(StereoMode::ExternalFpHostLookFix)) {
+      Log("Mode141: EXTERNAL-FP LOOK-FIX — yaw un-invert + every-frame + fast pitch "
+          "(FirstPerson GET_MOUSE_INPUT path); dual IPD; kill=140/0/120");
+    } else {
+      Log("Mode140: EXTERNAL-FP HOST + DUAL — FirstPerson owns cam/hide/FOV; "
+          "our ASI DrawScene×2 IPD-only (no HMD CopyMat); HMD→mouse legacy; dualn like 120; "
+          "Mode120 frozen; kill stereo=0 or 120");
+    }
+  } else if (prev != v && v == static_cast<int>(StereoMode::StereoFusion)) {
     ApplyStereoFusionDefaults();
   } else if (prev != v && (v == static_cast<int>(StereoMode::RecordDualReplayShift) ||
                            v == static_cast<int>(StereoMode::GeometryCanvas) ||
@@ -561,7 +1017,10 @@ void ReloadStereoMode() {
 
 void WriteStereoModeFile(int mode) {
   if (mode < 0 ||
-      (mode > 57 && !IsCleanDualLookMove(static_cast<StereoMode>(mode))))
+      (mode > 53 && !IsCleanDualLookMove(static_cast<StereoMode>(mode)) &&
+       !IsOpenXrDirectMode(static_cast<StereoMode>(mode)) &&
+       !IsExternalFpHost(static_cast<StereoMode>(mode)) &&
+       !IsHeadHideNativeOurs(static_cast<StereoMode>(mode))))
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -589,7 +1048,17 @@ bool IsOpenXrDirectMode(StereoMode mode) {
   return mode == StereoMode::OpenXrSameFrameWvp ||
          mode == StereoMode::OpenXrImmersiveMono ||
          mode == StereoMode::OpenXrDrawSceneStereo ||
-         mode == StereoMode::OpenXrTemporalStereo;
+         mode == StereoMode::OpenXrTemporalStereo ||
+         mode == StereoMode::OpenXrFusedFirstPerson;
+}
+
+bool IsOpenXrFusedFirstPerson(StereoMode mode) {
+  return mode == StereoMode::OpenXrFusedFirstPerson;
+}
+
+bool UsesMode204ParentDualPath(StereoMode mode) {
+  return IsOpenXrFusedFirstPerson(mode) ||
+         mode == StereoMode::OursFpSameTickParentDualTry2;
 }
 
 bool UsesAngleCorrectCanvas(StereoMode mode) {
@@ -654,9 +1123,11 @@ bool UsesAerPoseSubmit(StereoMode mode) {
   // Mode 120: real WaitGetPoses+Submit_Default. Mode 136 uses late-latch path
   // (IsCleanDualLateLatch) separately — still Submit_TextureWithPose, but pose
   // is sampled immediately before Submit, not capture-time AER.
+  // Mode 177: capture-time pose on the stale eye so SteamVR can reproject.
   return mode == StereoMode::AerPoseSubmit ||
          mode == StereoMode::HeadOwnedCamStereoAer ||
-         mode == StereoMode::HeadOwnedCamStereoSoftGuard;
+         mode == StereoMode::HeadOwnedCamStereoSoftGuard ||
+         mode == StereoMode::OursFpAer;
 }
 
 bool UsesPedCoupledYaw(StereoMode mode) {
@@ -794,6 +1265,740 @@ bool IsCleanDualLateLatch(StereoMode mode) {
   return mode == StereoMode::CleanDualLateLatch;
 }
 
+bool IsExternalFpHost(StereoMode mode) {
+  return mode == StereoMode::ExternalFpHost ||
+         mode == StereoMode::ExternalFpHostLookFix ||
+         mode == StereoMode::ExternalFpHostLookAlt ||
+         mode == StereoMode::ExternalFpHostLookPitch ||
+         mode == StereoMode::ExternalFpHostLookPitchAlt ||
+         mode == StereoMode::ExternalFpHostLookMove ||
+         mode == StereoMode::ExternalFpHostLookMoveYaw ||
+         mode == StereoMode::ExternalFpHostSoftMove ||
+         mode == StereoMode::ExternalFpHostSoftMoveStick ||
+         mode == StereoMode::HeadHideNativeWithFp;
+}
+
+bool IsExternalFpHostLookFix(StereoMode mode) {
+  return mode == StereoMode::ExternalFpHostLookFix;
+}
+
+bool IsExternalFpHostLookAlt(StereoMode mode) {
+  return mode == StereoMode::ExternalFpHostLookAlt;
+}
+
+bool IsExternalFpHostLookPitch(StereoMode mode) {
+  return mode == StereoMode::ExternalFpHostLookPitch;
+}
+
+bool IsExternalFpHostLookPitchAlt(StereoMode mode) {
+  return mode == StereoMode::ExternalFpHostLookPitchAlt;
+}
+
+bool IsExternalFpHostLookMove(StereoMode mode) {
+  return mode == StereoMode::ExternalFpHostLookMove;
+}
+
+bool IsExternalFpHostLookMoveYaw(StereoMode mode) {
+  return mode == StereoMode::ExternalFpHostLookMoveYaw;
+}
+
+bool IsExternalFpHostSoftMove(StereoMode mode) {
+  return mode == StereoMode::ExternalFpHostSoftMove ||
+         mode == StereoMode::HeadHideNativeWithFp;
+}
+
+bool IsExternalFpHostSoftMoveStick(StereoMode mode) {
+  return mode == StereoMode::ExternalFpHostSoftMoveStick;
+}
+
+bool IsHeadHideNativeWithFp(StereoMode mode) {
+  return mode == StereoMode::HeadHideNativeWithFp;
+}
+
+static bool IsOursFpPost162(StereoMode mode) {
+  return IsOpenXrFusedFirstPerson(mode) ||
+         mode == StereoMode::OursFpFlashGate || mode == StereoMode::OursFpInCarHead ||
+         mode == StereoMode::OursFpEnterCarFp || mode == StereoMode::OursFpHudLayout ||
+         mode == StereoMode::OursFpCarHud || mode == StereoMode::OursFpStableCarHud ||
+         mode == StereoMode::OursFpSafeFlicker || mode == StereoMode::OursFpFreshDual ||
+         mode == StereoMode::OursFpPairFreeze || mode == StereoMode::OursFpMonoPair ||
+         mode == StereoMode::OursFpSameLPhone || mode == StereoMode::OursFpBbPhone ||
+         mode == StereoMode::OursFpBbPhoneNudge || mode == StereoMode::OursFpStereoSimple ||
+         mode == StereoMode::OursFpAer || mode == StereoMode::OursFpSameFrameFreeze ||
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo ||
+         mode == StereoMode::OursFpPhoneCanvasInset || mode == StereoMode::OursFpTimeFreeze ||
+         mode == StereoMode::OursFpPhaseRightDual || mode == StereoMode::OursFpZoomOut ||
+         mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
+}
+
+bool IsHeadHideNativeOurs(StereoMode mode) {
+  return mode == StereoMode::HeadHideNativeOurs || mode == StereoMode::OursFpFovProfile ||
+         mode == StereoMode::OursFpWideUnderPublish || mode == StereoMode::OursFpWideAspectFit ||
+         mode == StereoMode::OursFpEyeCenterCam || mode == StereoMode::OursFpEyeCenterLowRes ||
+         mode == StereoMode::OursFpMildOverscan || mode == StereoMode::OursFpSquareRes ||
+         mode == StereoMode::OursFpStrongOverscan || mode == StereoMode::OursFpSquareLowOverscan ||
+         mode == StereoMode::OursFpSquareZeroOverscan || mode == StereoMode::OursFpSquareWideFov ||
+         IsOursFpPost162(mode);
+}
+
+bool IsOursFpFovProfile(StereoMode mode) {
+  return mode == StereoMode::OursFpFovProfile;
+}
+
+bool IsOursFpWideUnderPublish(StereoMode mode) {
+  return mode == StereoMode::OursFpWideUnderPublish;
+}
+
+bool IsOursFpWideAspectFit(StereoMode mode) {
+  return mode == StereoMode::OursFpWideAspectFit || mode == StereoMode::OursFpEyeCenterCam ||
+         mode == StereoMode::OursFpEyeCenterLowRes || mode == StereoMode::OursFpMildOverscan ||
+         mode == StereoMode::OursFpSquareRes || mode == StereoMode::OursFpStrongOverscan ||
+         mode == StereoMode::OursFpSquareLowOverscan ||
+         mode == StereoMode::OursFpSquareZeroOverscan ||
+         mode == StereoMode::OursFpSquareWideFov || IsOursFpPost162(mode);
+}
+
+bool IsOursFpEyeCenterCam(StereoMode mode) {
+  return mode == StereoMode::OursFpEyeCenterCam || mode == StereoMode::OursFpEyeCenterLowRes ||
+         mode == StereoMode::OursFpMildOverscan || mode == StereoMode::OursFpSquareRes ||
+         mode == StereoMode::OursFpStrongOverscan || mode == StereoMode::OursFpSquareLowOverscan ||
+         mode == StereoMode::OursFpSquareZeroOverscan ||
+         mode == StereoMode::OursFpSquareWideFov || IsOursFpPost162(mode);
+}
+
+bool IsOursFpEyeCenterLow(StereoMode mode) {
+  return mode == StereoMode::OursFpEyeCenterLowRes || mode == StereoMode::OursFpMildOverscan ||
+         mode == StereoMode::OursFpSquareRes || mode == StereoMode::OursFpStrongOverscan ||
+         mode == StereoMode::OursFpSquareLowOverscan ||
+         mode == StereoMode::OursFpSquareZeroOverscan ||
+         mode == StereoMode::OursFpSquareWideFov || IsOursFpPost162(mode);
+}
+
+bool IsOursFpMildOverscan(StereoMode mode) {
+  return mode == StereoMode::OursFpMildOverscan || mode == StereoMode::OursFpSquareRes ||
+         mode == StereoMode::OursFpStrongOverscan || mode == StereoMode::OursFpSquareLowOverscan ||
+         mode == StereoMode::OursFpSquareZeroOverscan ||
+         mode == StereoMode::OursFpSquareWideFov || IsOursFpPost162(mode);
+}
+
+bool IsOursFpSquareRes(StereoMode mode) {
+  return mode == StereoMode::OursFpSquareRes || mode == StereoMode::OursFpStrongOverscan ||
+         mode == StereoMode::OursFpSquareLowOverscan ||
+         mode == StereoMode::OursFpSquareZeroOverscan ||
+         mode == StereoMode::OursFpSquareWideFov || IsOursFpPost162(mode);
+}
+
+bool IsOursFpStrongOverscan(StereoMode mode) {
+  return mode == StereoMode::OursFpStrongOverscan;
+}
+
+bool IsOursFpSquareLowOverscan(StereoMode mode) {
+  return mode == StereoMode::OursFpSquareLowOverscan;
+}
+
+bool IsOursFpSquareZeroOverscan(StereoMode mode) {
+  return mode == StereoMode::OursFpSquareZeroOverscan ||
+         mode == StereoMode::OursFpSquareWideFov || IsOursFpPost162(mode);
+}
+
+bool IsOursFpSquareWideFov(StereoMode mode) {
+  return mode == StereoMode::OursFpSquareWideFov || IsOursFpPost162(mode);
+}
+
+bool IsOursFpFlashGate(StereoMode mode) {
+  return mode == StereoMode::OursFpFlashGate || mode == StereoMode::OursFpInCarHead ||
+         mode == StereoMode::OursFpEnterCarFp || mode == StereoMode::OursFpHudLayout ||
+         mode == StereoMode::OursFpCarHud;
+}
+
+bool IsOursFpFlashStable(StereoMode mode) {
+  return mode == StereoMode::OursFpStableCarHud;
+}
+
+bool IsOursFpSafeFlicker(StereoMode mode) {
+  return mode == StereoMode::OursFpSafeFlicker;
+}
+
+bool IsOursFpFreshDual(StereoMode mode) {
+  return mode == StereoMode::OursFpFreshDual || mode == StereoMode::OursFpPairFreeze ||
+         mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone ||
+         mode == StereoMode::OursFpStereoSimple || mode == StereoMode::OursFpSameFrameFreeze ||
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo ||
+         mode == StereoMode::OursFpPhoneCanvasInset || mode == StereoMode::OursFpTimeFreeze ||
+         mode == StereoMode::OursFpPhaseRightDual || mode == StereoMode::OursFpZoomOut ||
+         mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
+}
+
+bool IsOursFpPairFreeze(StereoMode mode) {
+  return mode == StereoMode::OursFpPairFreeze;
+}
+
+bool IsOursFpSameFrameFreeze(StereoMode mode) {
+  return mode == StereoMode::OursFpSameFrameFreeze || mode == StereoMode::OursFpNoColorFill ||
+         mode == StereoMode::OursFpPhoneStereo;
+}
+
+bool IsOursFpNoColorFill(StereoMode mode) {
+  return mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo;
+}
+
+bool IsOursFpDualCamFreeze(StereoMode mode) {
+  // Mode193: freeze one HEAD-bone eye for the whole L+R pair (stops stereo image jump).
+  // Mode201: freeze full pre-IPD basis for parent dual (look-ghost / fusion).
+  return IsOursFpPairFreeze(mode) || IsOursFpSameFrameFreeze(mode) ||
+         IsOursFpSameTickDual(mode) || IsOursFpHeadBoneCam(mode) ||
+         IsOursFpSameTickParentDualFreeze(mode);
+}
+
+bool IsOursFpMonoPair(StereoMode mode) {
+  // Mode193: ONE DrawScene only. Dual×2 AVs hard at interior doors (Roman apt);
+  // SEH catches it but process still dies after. Keep bone attach + IPD; weaker
+  // parallax (same BB → both eyes with eye-canvas crop).
+  return mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone ||
+         IsOursFpHeadBoneCam(mode);
+}
+
+bool IsOursFpSameLPhone(StereoMode mode) {
+  return mode == StereoMode::OursFpSameLPhone;
+}
+
+bool IsOursFpBbPhone(StereoMode mode) {
+  return mode == StereoMode::OursFpBbPhone || mode == StereoMode::OursFpBbPhoneNudge;
+}
+
+bool IsOursFpBbPhoneNudge(StereoMode mode) {
+  return mode == StereoMode::OursFpBbPhoneNudge;
+}
+
+bool IsOursFpStereoSimple(StereoMode mode) {
+  return mode == StereoMode::OursFpStereoSimple;
+}
+
+bool IsOursFpAer(StereoMode mode) {
+  return mode == StereoMode::OursFpAer;
+}
+
+bool IsOursFpPhoneBounds(StereoMode mode) {
+  // BB-mono / AER / failed-180 only — NEVER Mode183 (soft canvas inset instead).
+  return mode == StereoMode::OursFpBbPhoneNudge || mode == StereoMode::OursFpStereoSimple ||
+         mode == StereoMode::OursFpAer || mode == StereoMode::OursFpPhoneStereo;
+}
+
+bool IsOursFpPhoneCanvasInset(StereoMode mode) {
+  return mode == StereoMode::OursFpPhoneCanvasInset;
+}
+
+bool IsOursFpTimeFreeze(StereoMode mode) {
+  // Mode184 poke stays off; Mode189 uses the stronger same-tick path.
+  return mode == StereoMode::OursFpTimeFreeze;
+}
+
+bool IsOursFpSameTickDual(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickDual;
+}
+
+bool IsOursFpSameTickBuildDual(StereoMode mode) {
+  return IsOpenXrFusedFirstPerson(mode) ||
+         mode == StereoMode::OursFpSameTickBuildDual ||
+         mode == StereoMode::OursFpSameTickPhaseRight ||
+         mode == StereoMode::OursFpSameTickDrawRight ||
+         mode == StereoMode::OursFpSameTickOwnerObserve ||
+         mode == StereoMode::OursFpSameTickOwnerCount ||
+         mode == StereoMode::OursFpSameTickParentProbe ||
+         mode == StereoMode::OursFpSameTickParentCount ||
+         mode == StereoMode::OursFpSameTickParentDual ||
+         mode == StereoMode::OursFpSameTickParentDualFreeze ||
+         mode == StereoMode::OursFpSameTickParentDualVs ||
+         mode == StereoMode::OursFpSameTickParentDualPose ||
+         mode == StereoMode::OursFpSameTickParentDualTry2;
+}
+
+bool IsOursFpSameTickPhaseRight(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickPhaseRight;
+}
+
+bool IsOursFpSameTickDrawRight(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickDrawRight;
+}
+
+bool IsOursFpSameTickOwnerObserve(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickOwnerObserve;
+}
+
+bool IsOursFpSameTickOwnerCount(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickOwnerCount;
+}
+
+bool IsOursFpSameTickParentProbe(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentProbe;
+}
+
+bool IsOursFpSameTickParentCount(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentCount;
+}
+
+bool IsOursFpSameTickParentDual(StereoMode mode) {
+  return IsOpenXrFusedFirstPerson(mode) ||
+         mode == StereoMode::OursFpSameTickParentDual ||
+         mode == StereoMode::OursFpSameTickParentDualFreeze ||
+         mode == StereoMode::OursFpSameTickParentDualVs ||
+         mode == StereoMode::OursFpSameTickParentDualPose ||
+         mode == StereoMode::OursFpSameTickParentDualTry2;
+}
+
+bool IsOursFpSameTickParentDualFreeze(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDualFreeze;
+}
+
+bool IsOursFpSameTickParentDualVs(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDualVs;
+}
+
+bool IsOursFpSameTickParentDualPose(StereoMode mode) {
+  return IsOpenXrFusedFirstPerson(mode) ||
+         mode == StereoMode::OursFpSameTickParentDualPose ||
+         mode == StereoMode::OursFpSameTickParentDualTry2;
+}
+
+bool IsOursFpSameTickParentDualTry2(StereoMode mode) {
+  return IsOpenXrFusedFirstPerson(mode) ||
+         mode == StereoMode::OursFpSameTickParentDualTry2;
+}
+
+bool IsOursFpHeadBoneCam(StereoMode mode) {
+  return mode == StereoMode::OursFpHeadBoneThiscall;
+}
+
+bool IsOursFpTrueWorldScale(StereoMode mode) {
+  return mode == StereoMode::OursFpTrueWorldScale || IsOursFpHeadBoneCam(mode) ||
+         IsOursFpSameTickDual(mode) || IsOursFpSameTickBuildDual(mode);
+}
+
+bool IsOursFpZoomOut(StereoMode mode) {
+  return mode == StereoMode::OursFpZoomOut || IsOursFpTrueWorldScale(mode);
+}
+
+bool IsOursFpPhaseRightDual(StereoMode mode) {
+  return mode == StereoMode::OursFpPhaseRightDual || IsOursFpZoomOut(mode);
+}
+
+bool IsOursFpUiLift(StereoMode mode) {
+  return mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone;
+}
+
+bool IsOursFpAtomicEyePair(StereoMode mode) {
+  return mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker ||
+         mode == StereoMode::OursFpFreshDual || mode == StereoMode::OursFpPairFreeze ||
+         mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone ||
+         mode == StereoMode::OursFpStereoSimple || mode == StereoMode::OursFpSameFrameFreeze ||
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo ||
+         mode == StereoMode::OursFpPhoneCanvasInset || mode == StereoMode::OursFpTimeFreeze ||
+         mode == StereoMode::OursFpPhaseRightDual || mode == StereoMode::OursFpZoomOut ||
+         mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
+}
+
+bool IsOursFpAlwaysBbCapture(StereoMode mode) {
+  return mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker ||
+         mode == StereoMode::OursFpFreshDual || mode == StereoMode::OursFpPairFreeze ||
+         mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone ||
+         mode == StereoMode::OursFpStereoSimple || mode == StereoMode::OursFpSameFrameFreeze ||
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo ||
+         mode == StereoMode::OursFpPhoneCanvasInset || mode == StereoMode::OursFpTimeFreeze ||
+         mode == StereoMode::OursFpPhaseRightDual || mode == StereoMode::OursFpZoomOut ||
+         mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
+}
+
+bool IsOursFpInCarHead(StereoMode mode) {
+  return mode == StereoMode::OursFpInCarHead || mode == StereoMode::OursFpEnterCarFp ||
+         mode == StereoMode::OursFpCarHud || mode == StereoMode::OursFpStableCarHud ||
+         mode == StereoMode::OursFpSafeFlicker || mode == StereoMode::OursFpFreshDual ||
+         mode == StereoMode::OursFpPairFreeze || mode == StereoMode::OursFpMonoPair ||
+         mode == StereoMode::OursFpSameLPhone || mode == StereoMode::OursFpBbPhone ||
+         mode == StereoMode::OursFpBbPhoneNudge || mode == StereoMode::OursFpStereoSimple ||
+         mode == StereoMode::OursFpAer || mode == StereoMode::OursFpSameFrameFreeze ||
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo ||
+         mode == StereoMode::OursFpPhoneCanvasInset || mode == StereoMode::OursFpTimeFreeze ||
+         mode == StereoMode::OursFpPhaseRightDual || mode == StereoMode::OursFpZoomOut ||
+         mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
+}
+
+bool IsOursFpEnterCarFp(StereoMode mode) {
+  return mode == StereoMode::OursFpEnterCarFp || mode == StereoMode::OursFpCarHud ||
+         mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker ||
+         mode == StereoMode::OursFpFreshDual || mode == StereoMode::OursFpPairFreeze ||
+         mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone ||
+         mode == StereoMode::OursFpBbPhone || mode == StereoMode::OursFpBbPhoneNudge ||
+         mode == StereoMode::OursFpStereoSimple || mode == StereoMode::OursFpAer ||
+         mode == StereoMode::OursFpSameFrameFreeze || mode == StereoMode::OursFpNoColorFill ||
+         mode == StereoMode::OursFpPhoneStereo || mode == StereoMode::OursFpPhoneCanvasInset ||
+         mode == StereoMode::OursFpTimeFreeze || mode == StereoMode::OursFpPhaseRightDual ||
+         mode == StereoMode::OursFpZoomOut || mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
+}
+
+bool IsOursFpHudLayout(StereoMode mode) {
+  return mode == StereoMode::OursFpHudLayout || mode == StereoMode::OursFpCarHud ||
+         mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker ||
+         mode == StereoMode::OursFpFreshDual || mode == StereoMode::OursFpPairFreeze ||
+         mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone ||
+         mode == StereoMode::OursFpBbPhone || mode == StereoMode::OursFpBbPhoneNudge ||
+         mode == StereoMode::OursFpStereoSimple || mode == StereoMode::OursFpAer ||
+         mode == StereoMode::OursFpSameFrameFreeze || mode == StereoMode::OursFpNoColorFill ||
+         mode == StereoMode::OursFpPhoneStereo || mode == StereoMode::OursFpPhoneCanvasInset ||
+         mode == StereoMode::OursFpTimeFreeze || mode == StereoMode::OursFpPhaseRightDual ||
+         mode == StereoMode::OursFpZoomOut || mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
+}
+
+bool IsOursFpCarHud(StereoMode mode) {
+  return mode == StereoMode::OursFpCarHud || mode == StereoMode::OursFpStableCarHud ||
+         mode == StereoMode::OursFpSafeFlicker || mode == StereoMode::OursFpFreshDual ||
+         mode == StereoMode::OursFpPairFreeze || mode == StereoMode::OursFpMonoPair ||
+         mode == StereoMode::OursFpSameLPhone || mode == StereoMode::OursFpBbPhone ||
+         mode == StereoMode::OursFpBbPhoneNudge || mode == StereoMode::OursFpStereoSimple ||
+         mode == StereoMode::OursFpAer || mode == StereoMode::OursFpSameFrameFreeze ||
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo ||
+         mode == StereoMode::OursFpPhoneCanvasInset || mode == StereoMode::OursFpTimeFreeze ||
+         mode == StereoMode::OursFpPhaseRightDual || mode == StereoMode::OursFpZoomOut ||
+         mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
+}
+
+bool IsOursFpStableCarHud(StereoMode mode) {
+  return mode == StereoMode::OursFpStableCarHud;
+}
+
+float GetUnderPublishOverscan() {
+  const StereoMode sm = GetStereoMode();
+  if (!IsOursFpMildOverscan(sm))
+    return 1.f;
+  // Mode 161–166: exact fit (0% overscan).
+  if (IsOursFpSquareZeroOverscan(sm))
+    return 1.0f;
+  // Mode 160: Luke Ross square — barely any overscan.
+  if (IsOursFpSquareLowOverscan(sm))
+    return 1.02f;
+  // Mode 159: stronger bar shrink on widescreen / pre-square.
+  if (IsOursFpStrongOverscan(sm))
+    return 1.10f;
+  // Mode 158 with near-square BB: soft overscan.
+  if (sm == StereoMode::OursFpSquareRes) {
+    const float a = GetBackbufferAspect();
+    if (a > 0.85f && a < 1.25f)
+      return 1.03f;
+  }
+  return 1.06f;  // Mode 157 / 158 widescreen
+}
+
+bool WantsExternalFpLookMove(StereoMode mode) {
+  return mode == StereoMode::ExternalFpHostLookMove ||
+         mode == StereoMode::ExternalFpHostLookMoveYaw ||
+         mode == StereoMode::ExternalFpHostSoftMove ||
+         mode == StereoMode::ExternalFpHostSoftMoveStick ||
+         mode == StereoMode::HeadHideNativeWithFp ||
+         mode == StereoMode::HeadHideNativeOurs ||
+         mode == StereoMode::OursFpFovProfile ||
+         mode == StereoMode::OursFpWideUnderPublish ||
+         mode == StereoMode::OursFpWideAspectFit ||
+         mode == StereoMode::OursFpEyeCenterCam ||
+         mode == StereoMode::OursFpEyeCenterLowRes ||
+         mode == StereoMode::OursFpMildOverscan ||
+         mode == StereoMode::OursFpSquareRes ||
+         mode == StereoMode::OursFpStrongOverscan ||
+         mode == StereoMode::OursFpSquareLowOverscan ||
+         mode == StereoMode::OursFpSquareZeroOverscan ||
+         mode == StereoMode::OursFpSquareWideFov ||
+         IsOursFpPost162(mode);
+}
+
+bool WantsSoftPedHeading(StereoMode mode) {
+  return mode == StereoMode::ExternalFpHostSoftMove ||
+         mode == StereoMode::ExternalFpHostSoftMoveStick ||
+         mode == StereoMode::HeadHideNativeWithFp;
+}
+
+bool WantsFpStickInvert(StereoMode mode) {
+  return mode == StereoMode::ExternalFpHostSoftMove ||
+         mode == StereoMode::HeadHideNativeWithFp;
+}
+
+bool WantsNativePedHide(StereoMode mode) {
+  return mode == StereoMode::HeadHideNativeWithFp ||
+         mode == StereoMode::HeadHideNativeOurs ||
+         mode == StereoMode::OursFpFovProfile ||
+         mode == StereoMode::OursFpWideUnderPublish ||
+         mode == StereoMode::OursFpWideAspectFit ||
+         mode == StereoMode::OursFpEyeCenterCam ||
+         mode == StereoMode::OursFpEyeCenterLowRes ||
+         mode == StereoMode::OursFpMildOverscan ||
+         mode == StereoMode::OursFpSquareRes ||
+         mode == StereoMode::OursFpStrongOverscan ||
+         mode == StereoMode::OursFpSquareLowOverscan ||
+         mode == StereoMode::OursFpSquareZeroOverscan ||
+         mode == StereoMode::OursFpSquareWideFov ||
+         IsOursFpPost162(mode);
+}
+
+bool WantsFpAbsoluteFov(StereoMode mode) {
+  return mode == StereoMode::OursFpWideUnderPublish ||
+         mode == StereoMode::OursFpWideAspectFit ||
+         mode == StereoMode::OursFpEyeCenterCam ||
+         mode == StereoMode::OursFpEyeCenterLowRes ||
+         mode == StereoMode::OursFpMildOverscan ||
+         mode == StereoMode::OursFpSquareRes ||
+         mode == StereoMode::OursFpStrongOverscan ||
+         mode == StereoMode::OursFpSquareLowOverscan ||
+         mode == StereoMode::OursFpSquareZeroOverscan ||
+         mode == StereoMode::OursFpSquareWideFov ||
+         IsOursFpPost162(mode);
+}
+
+bool UsesDrawSceneDualPath(StereoMode mode) {
+  return IsCleanDualLookMove(mode) || IsExternalFpHost(mode) || IsHeadHideNativeOurs(mode);
+}
+
+namespace {
+
+void WriteSmallConfigIfMissing(const char* name, const char* contents) {
+  char path[MAX_PATH]{};
+  if (!GetAsiDir(path, MAX_PATH))
+    return;
+  strcat_s(path, name);
+  if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES)
+    return;
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "wb") != 0 || !f)
+    return;
+  std::fputs(contents, f);
+  std::fclose(f);
+  Log("Config: wrote default %s", name);
+}
+
+void WriteSmallConfigAlways(const char* name, const char* contents) {
+  char path[MAX_PATH]{};
+  if (!GetAsiDir(path, MAX_PATH))
+    return;
+  strcat_s(path, name);
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "wb") != 0 || !f)
+    return;
+  std::fputs(contents, f);
+  std::fclose(f);
+  Log("Config: wrote %s", name);
+}
+
+struct FpFovCache {
+  bool loaded = false;
+  float forward = 90.f;
+  float rear = 90.f;
+  float foot = 90.f;
+  float mouseScale = 1.f;
+  float joyScale = 1.f;
+};
+
+FpFovCache& FpCache() {
+  static FpFovCache c;
+  return c;
+}
+
+void LoadFpProfileOnce() {
+  FpFovCache& c = FpCache();
+  if (c.loaded)
+    return;
+  c.loaded = true;
+  char buf[64]{};
+  int a = 90, b = 90, d = 90;
+  if (ReadSmallFile("gtaiv_dxvk_vr.fpfov", buf, sizeof(buf)) > 0 &&
+      sscanf_s(buf, "%d %d %d", &a, &b, &d) >= 1) {
+    if (a >= 40 && a <= 120)
+      c.forward = static_cast<float>(a);
+    if (b >= 40 && b <= 120)
+      c.rear = static_cast<float>(b);
+    if (d >= 40 && d <= 120)
+      c.foot = static_cast<float>(d);
+    Log("Config: fpfov forward=%.0f rear=%.0f foot=%.0f (FirstPerson.ini style; not 111)",
+        c.forward, c.rear, c.foot);
+  } else {
+    Log("Config: fpfov default 90 90 90 (write gtaiv_dxvk_vr.fpfov to change)");
+  }
+  int ms = 50;
+  if (ReadSmallFile("gtaiv_dxvk_vr.mousesens", buf, sizeof(buf)) > 0 &&
+      sscanf_s(buf, "%d", &ms) == 1 && ms >= 1 && ms <= 200) {
+    c.mouseScale = static_cast<float>(ms) / 50.f;
+    Log("Config: mousesens=%d (scale=%.2f vs FirstPerson MouseSens 50)", ms, c.mouseScale);
+  }
+  int j1 = 20;
+  int j2 = 30;
+  if (ReadSmallFile("gtaiv_dxvk_vr.joysens", buf, sizeof(buf)) > 0 &&
+      sscanf_s(buf, "%d %d", &j1, &j2) >= 1 && j1 >= 1 && j1 <= 100) {
+    c.joyScale = static_cast<float>(j1) / 20.f;
+    Log("Config: joysens lev1=%d lev2=%d (scale=%.2f vs JoySensLev1 20)", j1, j2, c.joyScale);
+  }
+}
+
+}  // namespace
+
+void EnsureFpProfileDefaults() {
+  // Match user's working FirstPerson.ini FOV 90 (not inspo 111).
+  WriteSmallConfigIfMissing("gtaiv_dxvk_vr.fpfov", "90 90 90\n");
+  WriteSmallConfigIfMissing("gtaiv_dxvk_vr.mousesens", "50\n");
+  WriteSmallConfigIfMissing("gtaiv_dxvk_vr.joysens", "20 30\n");
+  WriteSmallConfigIfMissing("gtaiv_dxvk_vr.camoff", "0 0 0\n");
+  FpCache().loaded = false;
+  LoadFpProfileOnce();
+}
+
+void ForceFpFovDegrees(int forward, int rear, int foot) {
+  if (forward < 40)
+    forward = 40;
+  if (forward > 120)
+    forward = 120;
+  if (rear < 40)
+    rear = 40;
+  if (rear > 120)
+    rear = 120;
+  if (foot < 40)
+    foot = 40;
+  if (foot > 120)
+    foot = 120;
+  char line[32]{};
+  sprintf_s(line, "%d %d %d\n", forward, rear, foot);
+  WriteSmallConfigAlways("gtaiv_dxvk_vr.fpfov", line);
+  FpCache().loaded = false;
+  LoadFpProfileOnce();
+  Log("Config: forced fpfov %d %d %d (Mode162 wide zoom-out)", forward, rear, foot);
+}
+
+namespace {
+struct VehCamOffCache {
+  bool loaded = false;
+  float right = 0.f;
+  float forward = -0.12f;  // −12 cm (trucks looked odd at −20)
+  float up = 0.f;
+};
+VehCamOffCache& VehCamCache() {
+  static VehCamOffCache c;
+  return c;
+}
+void LoadVehCamOffOnce() {
+  VehCamOffCache& c = VehCamCache();
+  if (c.loaded)
+    return;
+  c.loaded = true;
+  char buf[64]{};
+  int x = 0, y = -12, z = 0;
+  if (ReadSmallFile("gtaiv_dxvk_vr.vehcamoff", buf, sizeof(buf)) > 0 &&
+      sscanf_s(buf, "%d %d %d", &x, &y, &z) >= 1) {
+    if (x >= -50 && x <= 50)
+      c.right = static_cast<float>(x) / 100.f;
+    if (y >= -50 && y <= 50)
+      c.forward = static_cast<float>(y) / 100.f;
+    if (z >= -50 && z <= 50)
+      c.up = static_cast<float>(z) / 100.f;
+    Log("Config: vehcamoff right=%d fwd=%d up=%d cm (Mode164/165 in-car)", x, y, z);
+  } else {
+    Log("Config: vehcamoff default 0 -12 0 cm");
+  }
+}
+}  // namespace
+
+void EnsureVehicleCamOffDefaults() {
+  // Force milder rearward default (trucks odd at −20; ahead a bit vs prior).
+  WriteSmallConfigAlways("gtaiv_dxvk_vr.vehcamoff", "0 -12 0\n");
+  VehCamCache().loaded = false;
+  LoadVehCamOffOnce();
+}
+
+void GetVehicleCamOffsetMeters(float* outRight, float* outForward, float* outUp) {
+  LoadVehCamOffOnce();
+  if (outRight)
+    *outRight = VehCamCache().right;
+  if (outForward)
+    *outForward = VehCamCache().forward;
+  if (outUp)
+    *outUp = VehCamCache().up;
+}
+
+void EnsureVrSquareCommandlineReady() {
+  // Luke-style square render — with our FOV under-publish (not alone).
+  // User renames to commandline.txt and fully restarts GTA (Steam/CE reads at boot).
+  char path[MAX_PATH]{};
+  if (!GetAsiDir(path, MAX_PATH))
+    return;
+  strcat_s(path, "commandline.txt.vr-square");
+  if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES) {
+    Log("Mode158: commandline.txt.vr-square already present — rename to commandline.txt "
+        "and FULL restart for 1440x1440 (backup old commandline.txt first)");
+    return;
+  }
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "wb") != 0 || !f)
+    return;
+  std::fputs("-windowed\n"
+             "-width 1440\n"
+             "-height 1440\n"
+             "-norestrictions\n",
+             f);
+  std::fclose(f);
+  Log("Mode158: wrote commandline.txt.vr-square (1440x1440). "
+      "Backup commandline.txt if any, rename .vr-square -> commandline.txt, FULL restart. "
+      "Revert: delete commandline.txt or restore backup (kill=157)");
+}
+
+float GetFpForwardFovDegrees() {
+  LoadFpProfileOnce();
+  return FpCache().forward;
+}
+
+float GetFpRearFovDegrees() {
+  LoadFpProfileOnce();
+  return FpCache().rear;
+}
+
+float GetFpFootFovDegrees() {
+  LoadFpProfileOnce();
+  return FpCache().foot;
+}
+
+float GetFpMouseSensScale() {
+  LoadFpProfileOnce();
+  return FpCache().mouseScale;
+}
+
+float GetFpJoySensScale() {
+  LoadFpProfileOnce();
+  return FpCache().joyScale;
+}
+
 // Mode 123: once HMD cover FOV is known, pick fovadd so published gameTanH ≈ coverH.
 // Inverse of PublishGameFovFromCCamDegrees (kEng=58.7/45). Assumes live CCam base ≈45°
 // (FusionFix FOV=0); clamps 0..18 so we never re-enter Crop/Mild zoom-IN.
@@ -894,11 +2099,14 @@ void PollIpdScaleHotkey() {
   Log("StereoSep: %d cm (F8) — L4D2 IpdScale knob (presets 1..10; file still 0..500)", cm);
 }
 
+namespace {
+std::atomic<int> g_eyeFwdCm{-1};
+}  // namespace
+
 float GetEyeForwardMeters() {
-  static std::atomic<int> s_cm{-1};
-  int cm = s_cm.load();
+  int cm = g_eyeFwdCm.load();
   if (cm < 0) {
-    // 42cm: past skull/hair. With PedHide on, user can lower via eyefwd file.
+    // 42cm: past skull/hair. Mode 152 forces 0 (FirstPerson-style body visible).
     cm = 42;
     char buf[16]{};
     int v = 0;
@@ -909,9 +2117,27 @@ float GetEyeForwardMeters() {
     } else {
       Log("Config: eyeForward=%d cm (default) — with PedHide try 12–20 for less swing", cm);
     }
-    s_cm.store(cm);
+    g_eyeFwdCm.store(cm);
   }
   return static_cast<float>(cm) / 100.f;
+}
+
+void SetEyeForwardCm(int cm) {
+  if (cm < 0)
+    cm = 0;
+  if (cm > 100)
+    cm = 100;
+  char path[MAX_PATH]{};
+  if (GetAsiDir(path, MAX_PATH)) {
+    strcat_s(path, "gtaiv_dxvk_vr.eyefwd");
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "wb") == 0 && f) {
+      std::fprintf(f, "%d\n", cm);
+      std::fclose(f);
+    }
+  }
+  g_eyeFwdCm.store(cm);
+  Log("Config: eyeForward set live=%d cm (0=FirstPerson-style; look down sees jacket)", cm);
 }
 
 void GetCamOffsetMeters(float* outRight, float* outForward, float* outUp) {
@@ -1050,6 +2276,34 @@ void PollWorldScaleHotkey() {
   ApplyWorldScalePreset(idx, true);
 }
 
+void PollTrueWorldScaleHotkey() {
+  if (!IsOursFpTrueWorldScale(GetStereoMode()))
+    return;
+  static bool wasF11 = false;
+  if (!KeyPressedEdge(VK_F11, &wasF11))
+    return;
+
+  static const int kPresets[] = {100, 125, 150, 175, 200};
+  constexpr int kN = 5;
+  const int curPct = static_cast<int>(g_worldScale.load() * 100.f + 0.5f);
+  int idx = 0;
+  int best = 999;
+  for (int i = 0; i < kN; ++i) {
+    const int d = kPresets[i] > curPct ? kPresets[i] - curPct : curPct - kPresets[i];
+    if (d < best) {
+      best = d;
+      idx = i;
+    }
+  }
+  idx = (idx + 1) % kN;
+  const int pct = kPresets[idx];
+  SetWorldScalePercent(pct);
+  SaveScaleFile(pct);
+  Log("TrueWorldScale: %d%% (F11) — HIGHER = smaller world (scale×IPD uncapped; "
+      "fusion may break above ~150%%); kill=.scale=100 or stereo=186",
+      pct);
+}
+
 void PollStereoScaleHotkey() {
   static bool wasF6 = false;
   if (!KeyPressedEdge(VK_F6, &wasF6))
@@ -1072,6 +2326,112 @@ void PollStereoScaleHotkey() {
   SetStereoScalePercent(pct);
   SaveStereoScaleFile(pct);
   Log("StereoScale: %.2f (F6) — HIGHER = stronger 3D / smaller world (cap 1.30)", pct / 100.f);
+}
+
+uint32_t GetCanvasMaxDim() {
+  int v = g_canvasMaxDim.load();
+  if (v < 512)
+    v = 512;
+  if (v > 4096)
+    v = 4096;
+  return static_cast<uint32_t>(v);
+}
+
+uint32_t GetCanvasMaxDimGeneration() {
+  return g_canvasMaxDimGen.load();
+}
+
+void SetCanvasMaxDim(uint32_t dim, bool fromHotkey) {
+  if (dim < 512)
+    dim = 512;
+  if (dim > 4096)
+    dim = 4096;
+  g_canvasMaxDim.store(static_cast<int>(dim));
+  g_canvasMaxDimGen.fetch_add(1);
+
+  char path[MAX_PATH]{};
+  if (GetAsiDir(path, MAX_PATH)) {
+    strcat_s(path, "gtaiv_dxvk_vr.vres");
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "wb") == 0 && f) {
+      std::fprintf(f, "%u\n", dim);
+      std::fclose(f);
+    }
+  }
+
+  if (fromHotkey)
+    Log("VrRes: F5 eye-canvas maxDim=%u (saved gtaiv_dxvk_vr.vres; RTs recreate next frame; "
+        "SteamVR SS unchanged)",
+        dim);
+  else
+    Log("VrRes: eye-canvas maxDim=%u (gtaiv_dxvk_vr.vres; F5 cycles 1024..2048 + recommended)",
+        dim);
+}
+
+void ReloadCanvasMaxDim() {
+  char buf[16]{};
+  int v = 0;
+  if (ReadSmallFile("gtaiv_dxvk_vr.vres", buf, sizeof(buf)) > 0 &&
+      sscanf_s(buf, "%d", &v) == 1 && v >= 512 && v <= 4096) {
+    g_canvasMaxDim.store(v);
+    g_canvasMaxDimGen.fetch_add(1);
+    Log("Config: vres maxDim=%d (gtaiv_dxvk_vr.vres) — eye-canvas cap; F5 cycles", v);
+    return;
+  }
+  // No file: keep current atomic (Mode enter / default 1536).
+}
+
+void PollVrResHotkey() {
+  // Mode 156: cycle eye-canvas maxDim. Also allow on 154/155 family for A/B.
+  if (!IsHeadHideNativeOurs(GetStereoMode()) && !IsCleanDualLookMove(GetStereoMode()))
+    return;
+  static bool wasF5 = false;
+  static bool primed = false;
+  if (!primed) {
+    ReloadCanvasMaxDim();
+    wasF5 = (GetAsyncKeyState(VK_F5) & 0x8000) != 0;
+    primed = true;
+    return;
+  }
+  if (!KeyPressedEdge(VK_F5, &wasF5))
+    return;
+
+  // Increments: common VR RT caps + SteamVR recommended (clamped).
+  static const uint32_t kFixed[] = {1024, 1280, 1536, 1792, 2048};
+  constexpr int kFixedN = 5;
+  uint32_t rec = 0;
+  if (vr::VRSystem()) {
+    uint32_t rw = 0, rh = 0;
+    vr::VRSystem()->GetRecommendedRenderTargetSize(&rw, &rh);
+    rec = rw > rh ? rw : rh;
+    if (rec < 512)
+      rec = 0;
+    if (rec > 4096)
+      rec = 4096;
+  }
+
+  const uint32_t cur = GetCanvasMaxDim();
+  int idx = 0;
+  int best = 999999;
+  for (int i = 0; i < kFixedN; ++i) {
+    const int d = static_cast<int>(kFixed[i] > cur ? kFixed[i] - cur : cur - kFixed[i]);
+    if (d < best) {
+      best = d;
+      idx = i;
+    }
+  }
+  // If current matches recommended closer than fixed, treat as past last fixed.
+  if (rec > 0) {
+    const int dRec = static_cast<int>(rec > cur ? rec - cur : cur - rec);
+    if (dRec < best)
+      idx = kFixedN;  // "at recommended" → next = first fixed
+  }
+  const int nSteps = kFixedN + (rec > 0 ? 1 : 0);
+  idx = (idx + 1) % nSteps;
+  const uint32_t next = (idx < kFixedN) ? kFixed[idx] : rec;
+  SetCanvasMaxDim(next, true);
+  if (idx >= kFixedN)
+    Log("VrRes: F5 picked SteamVR recommended maxDim=%u", next);
 }
 
 }  // namespace asi
