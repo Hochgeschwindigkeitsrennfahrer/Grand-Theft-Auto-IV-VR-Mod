@@ -1,8 +1,74 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-26 23:19 PT
+**As of:** 2026-07-27 16:31 PT
 
-## Direct Quest/OpenXR integration — transport/input verified; world stereo still gated
+## Current candidate: Mode 56 direct OpenXR L/R pair (offline PASS, no headset result)
+
+Upstream was fetched on 2026-07-27: `origin/master` is still `01f355b` and is
+already contained by this branch. The newer `origin/backup/clean-session-20260727`
+reference (`416427e`) is not a merge target; its useful guarded DrawScene x2 seam is
+ported below without its OpenVR compositor and stale-HOLD experiments.
+
+The prior GPU bridge is not a usable gameplay route: its host release fence blocked
+the GTA/DXVK queue after a few world transactions, leaving the headset on stale
+images. The direct OpenXR route now uses the FNVVR-style CPU mailbox instead: no host
+release fence, shared Vulkan image, or GPU queue wait is placed in GTA.
+
+Mode **56** ports only the newest usable upstream rendering seam from
+`origin/backup/clean-session-20260727` (`416427e`): guarded **DrawScene ×2**. It
+renders GTA once with the left OpenXR eye pose and once with the right OpenXR eye pose,
+then publishes the two completed images as one atomic transaction. It intentionally
+does **not** import upstream OpenVR submission, SteamVR calls, stale-frame HOLD, or
+mono-look experiments.
+
+| GTA state | Mode 56 OpenXR presentation | Required behavior |
+|---|---|---|
+| gameplay | distinct left/right projection textures | real binocular candidate from two GTA renders pinned to one cached OpenXR pose |
+| pause/map, loading, phone | local-space quad latched where it opens | fixed virtual screen, correct GTA aspect, never face-locked |
+| fallback | Mode 55 center-eye projection | head-tracked mono if the guarded DrawScene seam disables itself |
+| both | Quest Touch through GTA's XInput path | sticks, triggers, face/shoulder/thumb buttons, D-pad/Start/Back chords, recenter, and rumble-to-haptics |
+
+The mailbox ABI is now **v6 / CPU v2**. Each triple-buffered slot reserves two
+1280×720 BGRA images. World-stereo is accepted only when the producer marks a
+same-tick `VerifiedDrawSceneStereo` pair; the x64 host copies left and right into
+different private D3D11 textures. Mono world and UI send one source image and the host
+duplicates it deliberately. This makes the transport honest: it cannot call a
+single-image frame stereo.
+
+The washed-out color fix remains active: host sampling uses an explicit
+`*_UNORM_SRGB` SRV, so GTA's gamma-encoded pixels are decoded exactly once before the
+OpenXR sRGB swapchain write.
+
+Offline gates now pass:
+
+- x86 ASI build and direct-OpenXR isolation checks;
+- stereo/WVP regression suite;
+- controller suite:
+  `sticks=1 triggers=1 face=1 shoulders=1 thumbs=1 dpad=1 menu=1 recenter=1 haptics=1`;
+- x64 WARP mailbox ingest/readback for mono duplication, distinct L/R world stereo,
+  and world-stereo -> stationary-UI switching:
+  `protocol=v6 worldStrict=1 wvpProof=1 drawSceneProof=1 immersiveMono=1 cpuMailbox=1 cpuMailboxStereo=1 cpuMailboxWorldUi=1 stationaryUiQuad=1 uiAspect=1 routeSwitch=1 srgbDecode=1 runtimeUntouched=1`.
+
+Current dirty-build artifacts (not deployed): x86 ASI SHA-256
+`7BD1A12021562E7517B75101DE4C3BCEC3C37B994E80F0ECA6EC417A5354DA1A`;
+x64 host SHA-256
+`0640E674CCBE059F1656496EE362B1241E4329A7ACDF5DEA624D95456EDE035D`.
+No GTA, OpenXR session, Steam, or SteamVR process was started for these builds.
+
+The guarded launcher remains SteamVR-blocked and restores the installed game state.
+It defaults to Mode 55; the explicit Mode 56 test command is:
+
+```powershell
+.\scripts\run-openxr-gta-steam-safe.ps1 -GameDir "D:\SteamLibrary\steamapps\common\Grand Theft Auto IV\GTAIV" -StereoMode 56 -MaxSeconds 900 -Authorized
+```
+
+It removes/backups `openvr_api.dll`, writes the disable sentinel, checks the Meta
+OpenXR runtime, polls for every SteamVR process every 100 ms, and aborts if SteamVR
+appears. It has not been run against Mode 56. A single supervised headset result must
+prove smooth world motion, real L/R depth, stationary menus, color, and controls
+before this can be called working.
+
+## Earlier direct Quest/OpenXR integration and live-run history
 
 **Controlled launch result, 2026-07-26 22:46 PT:** the x64 host used the Oculus
 OpenXR runtime, identified Meta Quest 3 and the RTX 4070 SUPER, created the D3D11
@@ -42,6 +108,18 @@ the legacy OpenVR projection cache. The build adds a source isolation gate plus
 numeric left/right/top/bottom regression coverage. Clean x86 ASI SHA-256:
 `09DC5691BC0324D71C88FB38E725DFD10A69FB3AA0AB5BCCB50C12F4D23FE3E8`.
 
+**Fourth controlled result, 2026-07-26 23:22 PT:** the same guarded launcher again
+kept SteamVR absent, and the OpenXR per-eye tangent fix reached gameplay
+successfully. Mode 54 still produced no accepted world frame. Its own audit reported
+left/right draw sequences `0/0` and `verified=0`, while later logs showed the real
+vertex-shader/draw traffic executing on GTA's dedicated replay thread after the
+supposed dual-pass window had closed. This is decisive: the ASI `Execute`-twice
+window does not own the D3D9 geometry execution and cannot create true stereo there.
+The user also reported a washed-out image, which led to the sRGB fix in the current
+Mode 55 candidate. Evidence:
+`out-openxr/runs/20260726-232255-steam-safe/`. The game, host, and all settings were
+stopped/restored after the test.
+
 The logs proved two independent SteamVR triggers:
 
 - the historical restart script called
@@ -68,12 +146,14 @@ fallback; `backend=off` is truly flat and initializes no compositor.
 The failed DXVK D3D9 KMT-handle route has been replaced. The x86 ASI now creates
 native D3D11 NT-handle textures and shared fences on DXVK's exact adapter, imports
 them into DXVK's Vulkan device, and GPU-copies a distinct L/R transaction. The x64
-host duplicates and opens those D3D11 handles. The contract is pointer-free ABI v4,
-triple-buffered, ready/release timeline synchronized, and contains no CPU pixels.
-The 23:11 test live-verified this transport through host GPU acquisition. It did not
+host duplicates and opens those D3D11 handles. At the 23:11 test the contract was
+pointer-free ABI v4, triple-buffered, ready/release timeline synchronized, and
+contained no CPU pixels. The current Mode 55 candidate advances that contract to v5
+for explicit immersive-mono and UI-content-aspect metadata. The 23:11 test
+live-verified the underlying transport through host GPU acquisition. It did not
 verify world stereo because the producer failed before a proved WVP pair.
 
-Mode 54 is now the non-default direct-OpenXR same-frame stereo candidate. It keeps
+Mode 54 was the non-default direct-OpenXR same-frame stereo candidate. It keeps
 Mode 23's stable per-phase `Execute`-twice boundary, but intercepts the actual D3D9
 `Draw*` calls during the second pass. The active vertex shader's embedded CTAB must
 declare an exact row-major `gWorldViewProj`; shaders that also declare `gWorld` prove
@@ -87,14 +167,16 @@ was proved, original constants match, and every Set/restore succeeds. ABI v4 car
 `VerifiedWvpStereo`; the x86 producer withholds unproved world frames and the x64 host
 rejects them. Missing/malformed CTAB, ambiguous camera factors, temporal pairs, mono
 pairs, and partial coverage therefore produce no world transaction instead of being
-called stereo. UI quads intentionally do not require the world-WVP proof.
+called stereo. UI quads intentionally do not require the world-WVP proof. The 23:22
+run proved that GTA's real draw replay occurs outside this capture window, so Mode 54
+is retained as diagnostic history and is not the next headset target.
 
 Pose and input are now wired, not merely logged: exact OpenXR eye pose/FOV history is
 matched to accepted world frames; fresh focused Quest Touch actions feed GTA's native
 XInput path; stale/unfocused input falls through to a physical controller; XInput
 rumble is bridged back to OpenXR haptics.
 
-Menus are implemented offline as a separate presentation mode:
+The Mode-54-era menu implementation used a separate presentation mode:
 
 - world gameplay: strict same-simulation-tick stereo projection;
 - pause/map, loading, and phone: one fresh GTA image on a view-space, head-locked
@@ -103,11 +185,10 @@ Menus are implemented offline as a separate presentation mode:
   to arm;
 - normal GTA XInput navigation remains active on the Touch sticks/buttons.
 
-The 23:11 headset test confirmed that the mono menu image reaches the quad, but the
+The 23:11 headset test confirmed that the mono menu image reached the quad, but the
 user rejected the head-locked placement: it must be a virtual screen fixed in the
-local world when opened, **not glued to the face**. That stationary-quad placement is
-the next separate UI behavior change after world stereo passes; do not combine it
-with the per-eye capture fix in one headset test.
+local world when opened, **not glued to the face**. Mode 55 replaces that behavior
+with the stationary local-space latch described at the top of this document.
 
 Offline signature check against the installed `GTAIV.exe` (file version 1.2.0.59,
 SHA-256 `08759A5516F9837920EA504436236BBAB89D0826A8E4D04FF106345177B5345D`)
@@ -115,7 +196,7 @@ found exactly one supported pause/map fallback, one loading signature, and one p
 signature. The newest FusionFix pause signature itself is absent from this disk image,
 so the verified 1.2.0.59 form is retained as an explicit fallback.
 
-Both builds pass offline checks: ASI PE32/x86; host PE32+/x64. The new x86 test reports
+At that point both builds passed offline checks: ASI PE32/x86; host PE32+/x64. The x86 test reported
 `StereoWvpTest: PASS math=5 ctab=1 pairAudit=1 openxrFov=1 openxrEyeRaw=1 runtimeUntouched=1`;
 the host reports
 `protocol=v4 worldStrict=1 wvpProof=1 uiQuad=1 runtimeUntouched=1`.
@@ -124,12 +205,10 @@ Clean build from code commit `85a9967`: ASI SHA-256
 x64 host SHA-256
 `C7F02CA8F40351B7F7DEAFD6006E7D440EFF9D2222F9B1C2D26E86681C83B472`.
 
-**Important:** Mode 54 is compiled and guarded, but true same-frame world
-stereo/parallax is **not yet a live result**. We have not proved that DXVK's replay
-reaches these six draw hooks, that all runtime shader families classify, or that the
-right-eye constant change reaches the GPU command consumed by each draw. Do not call
-this full stereo until the logs pass and the headset confirms fusion, near/far
-parallax, correct eye order, and no temporal jump.
+**Important historical conclusion:** Mode 54 is compiled and fail-closed, but the
+23:22 run proved that DXVK/GTA replay does **not** reach its six draw hooks inside the
+dual-pass window. It produced `draws=0/0`, no WVP proof, and no stereo. Do not repeat
+Mode 54 tuning or call it full stereo.
 
 **Safety:** the installed game is restored to the original ASI, `backend=off`, and
 `stereo=0`. GTA, Meta host, and SteamVR processes are absent.
@@ -137,7 +216,8 @@ parallax, correct eye order, and no temporal jump.
 Steam, or SteamVR. The next GTA test must use
 `scripts/run-openxr-gta-steam-safe.ps1`, including its OpenVR DLL removal and disable
 sentinel, and requires a new explicit authorization.
-**Do not put on the headset yet.** The per-eye OpenXR capture fix has no live result.
+**Do not put on the headset yet.** The complete Mode 55 gameplay/menu/color candidate
+has no live result.
 **Last OpenVR baseline (not running; backend is now `off`):** stereo **`51`**
 (Mode-50 always-distinct L/R + **`Submit_TextureWithPose`**
 AER) + **`fovadd=18`**, **`ipd=3`**, scale **`100`**, stereoscale **`125`**. Mode **50**

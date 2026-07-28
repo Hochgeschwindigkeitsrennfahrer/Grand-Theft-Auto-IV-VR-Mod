@@ -25,16 +25,43 @@ foreach ($forbidden in @(
 }
 Write-Host "OpenXR isolation source check: PASS (no OpenVR API/display calls)"
 
+$stereoConfigSource = Get-Content -LiteralPath "$Root\src\asi\stereo_config.cpp" -Raw
+if (-not $stereoConfigSource.Contains(
+    "if (!directOpenXr)")) {
+  throw "OpenXR isolation check failed: direct mode defaults may query OpenVR IPD"
+}
+
 $stereoRenderSource = Get-Content -LiteralPath "$Root\src\asi\stereo_render.cpp" -Raw
 if (-not $stereoRenderSource.Contains(
     "ComputeOpenXrEyeRawTangents(")) {
-  throw "OpenXR stereo isolation check failed: Mode54 has no OpenXR per-eye FOV path"
+  throw "OpenXR frame isolation check failed: direct modes have no OpenXR per-eye FOV path"
 }
 if ($stereoRenderSource.Contains(
     "if (!GetEyeRawProjection(eye, &l, &r, &t, &b)")) {
-  throw "OpenXR stereo isolation check failed: canvas still calls OpenVR projection directly"
+  throw "OpenXR frame isolation check failed: canvas still calls OpenVR projection directly"
 }
-Write-Host "OpenXR stereo isolation source check: PASS (per-eye FOV comes from PoseBridge)"
+foreach ($requiredMonoSource in @(
+  "CaptureOpenXrWorldMonoPair(",
+  "StereoMode::OpenXrImmersiveMono",
+  "StereoMono: center-eye capture pair",
+  "RunOpenXrDrawSceneStereoGuarded(",
+  "StereoMode::OpenXrDrawSceneStereo",
+  "StereoOpenXR: DrawScene L/R pair"
+)) {
+  if (-not $stereoRenderSource.Contains($requiredMonoSource)) {
+    throw "OpenXR direct-render source check failed: missing '$requiredMonoSource'"
+  }
+}
+foreach ($requiredBridgeSource in @(
+  "pair.verifiedDrawSceneStereo",
+  "StereoMode::OpenXrDrawSceneStereo",
+  "CpuFrameEyeCount"
+)) {
+  if (-not $openXrSource.Contains($requiredBridgeSource)) {
+    throw "OpenXR stereo-mailbox source check failed: missing '$requiredBridgeSource'"
+  }
+}
+Write-Host "OpenXR frame isolation source check: PASS (Mode55 mono + Mode56 distinct L/R mailbox)"
 
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found" }
@@ -90,6 +117,10 @@ cd /d "$Root"
 cl /nologo /EHsc /O2 /MD /W4 /WX /std:c++17 tests\gtaiv_stereo_wvp_test.cpp /Fo:"$outDir\gtaiv_stereo_wvp_test.obj" /Fe:"$outDir\gtaiv_stereo_wvp_test.exe"
 if errorlevel 1 exit /b 1
 "$outDir\gtaiv_stereo_wvp_test.exe"
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /MD /W4 /WX /std:c++17 tests\gtaiv_openxr_controller_test.cpp /Fo:"$outDir\gtaiv_openxr_controller_test.obj" /Fe:"$outDir\gtaiv_openxr_controller_test.exe"
+if errorlevel 1 exit /b 1
+"$outDir\gtaiv_openxr_controller_test.exe"
 if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /MD /W3 /std:c++17 /DWIN32 /D_WINDOWS /DUNICODE /D_UNICODE $($includes -join ' ') $($src -join ' ') /link /DLL /OUT:"$outDir\gtaiv_dxvk_vr.dll" $libpath /DELAYLOAD:openvr_api.dll openvr_api.lib delayimp.lib d3d9.lib d3d11.lib dxgi.lib user32.lib shell32.lib psapi.lib xinput.lib
 if errorlevel 1 exit /b 1

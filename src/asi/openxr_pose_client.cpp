@@ -120,7 +120,9 @@ public:
 
 private:
     static constexpr uint64_t kMappingRetryMs = 1000u;
-    static constexpr uint64_t kMaxHeartbeatAgeMs = 250u;
+    // Keep the established GTA camera/input loop alive through a bounded
+    // compositor scheduling bubble without accepting a genuinely dead host.
+    static constexpr uint64_t kMaxHeartbeatAgeMs = 1000u;
 
     void setLatest(const PoseBridge* value)
     {

@@ -10,6 +10,7 @@
 #include "stereo_render.h"
 #include "ui_state.h"
 #include "vr_display.h"
+#include "vr_move.h"
 #include "../bridge/gtaiv_xr_frame_bridge.h"
 
 #include <windows.h>
@@ -98,6 +99,19 @@ PixelFormat protocolFormat(VkFormat format)
             return PixelFormat::B8G8R8A8Unorm;
         case VK_FORMAT_R8G8B8A8_UNORM:
             return PixelFormat::R8G8B8A8Unorm;
+        default:
+            return PixelFormat::Unknown;
+    }
+}
+
+PixelFormat protocolFormat(D3DFORMAT format)
+{
+    switch (format)
+    {
+        case D3DFMT_A8R8G8B8:
+            return PixelFormat::B8G8R8A8Unorm;
+        case D3DFMT_X8R8G8B8:
+            return PixelFormat::B8G8R8X8Unorm;
         default:
             return PixelFormat::Unknown;
     }
@@ -288,12 +302,20 @@ struct SharedSlot
 class OpenXrFrameProducer
 {
 public:
+    void heartbeat()
+    {
+        publishHeartbeat();
+    }
+
     void publish(IDirect3DDevice9* gameDevice)
     {
         if (permanentlyDisabled_ || !gameDevice)
             return;
 
         const UiPresentationState uiState = GetUiPresentationState();
+        const bool immersiveMono =
+            !uiState
+            && GetStereoMode() == StereoMode::OpenXrImmersiveMono;
         PairLease lease;
         if (!StereoAcquireOpenXrPair(&lease.pair))
         {
@@ -310,12 +332,33 @@ public:
             publishHeartbeat();
             return;
         }
-        if (!uiState
-            && (!lease.pair.sameSimulationTick
-                || !lease.pair.verifiedWvpStereo))
+        if (static_cast<bool>(uiState) != lease.pair.uiQuad
+            || (!uiState
+                && immersiveMono != lease.pair.immersiveMono))
         {
             logRateLimited(
-                "OpenXRBridge: world pair lacks same-frame WVP proof; "
+                "OpenXRBridge: captured frame route does not match current "
+                "menu/game state; old transaction held",
+                lastRouteWaitLogTick_);
+            publishHeartbeat();
+            return;
+        }
+        if (!uiState && !lease.pair.sameSimulationTick)
+        {
+            logRateLimited(
+                "OpenXRBridge: world frame is not one simulation tick/pose; "
+                "GPU transaction withheld",
+                lastPairWaitLogTick_);
+            publishHeartbeat();
+            return;
+        }
+        if (!uiState
+            && !immersiveMono
+            && !lease.pair.verifiedWvpStereo
+            && !lease.pair.verifiedDrawSceneStereo)
+        {
+            logRateLimited(
+                "OpenXRBridge: world pair lacks validated same-frame proof; "
                 "GPU transaction withheld",
                 lastPairWaitLogTick_);
             publishHeartbeat();
@@ -325,6 +368,42 @@ public:
         {
             if (!uiState)
                 publishHeartbeat();
+            return;
+        }
+
+        const bool cpuMailboxRoute =
+            GetStereoMode() == StereoMode::OpenXrImmersiveMono
+            || GetStereoMode() == StereoMode::OpenXrDrawSceneStereo;
+        if (cpuMailboxRoute)
+        {
+            if (!ready_)
+            {
+                if (!initializeCpuMailbox(gameDevice, lease.pair))
+                {
+                    disable("FNVVR-style CPU frame mailbox initialization failed");
+                    return;
+                }
+            }
+            else if (!cpuMailboxMode_
+                     || !sameComIdentity(gameDevice_.Get(), gameDevice)
+                     || width_ != lease.pair.width
+                     || height_ != lease.pair.height)
+            {
+                disable("CPU mailbox game device or capture size changed");
+                return;
+            }
+            if (!publishCpuMailboxFrame(
+                    gameDevice,
+                    lease.pair,
+                    uiState,
+                    immersiveMono))
+            {
+                logRateLimited(
+                    "OpenXRBridge: CPU mailbox capture unavailable; "
+                    "last complete frame retained",
+                    lastCpuFailureLogTick_);
+                publishHeartbeat();
+            }
             return;
         }
 
@@ -362,9 +441,17 @@ public:
             return;
         }
 
+        const bool singleEyeTransport =
+            uiState || lease.pair.immersiveMono;
+        const uint32_t copyEyeCount =
+            singleEyeTransport ? 1u : gtaiv_xr_bridge::EyeCount;
         const uint64_t transaction = nextTransaction_ + 1u;
         if (transaction == 0u
-            || !submitCopy(slotIndex, transaction, source))
+            || !submitCopy(
+                slotIndex,
+                transaction,
+                source,
+                copyEyeCount))
         {
             disable("Vulkan stereo copy submission failed");
             return;
@@ -380,10 +467,13 @@ public:
         lastPairId_ = lease.pair.pairId;
         lastPresentationMode_ = uiState
             ? gtaiv_xr_bridge::PresentationMode::UiQuad
-            : gtaiv_xr_bridge::PresentationMode::WorldStereo;
+            : lease.pair.immersiveMono
+                ? gtaiv_xr_bridge::PresentationMode::WorldMono
+                : gtaiv_xr_bridge::PresentationMode::WorldStereo;
         lastUiReasonFlags_ = uiState.reasonFlags;
-        lastUiEye_ =
-            lease.pair.sourceFrameId[1] > lease.pair.sourceFrameId[0]
+        lastUiEye_ = singleEyeTransport
+            ? 0u
+            : lease.pair.sourceFrameId[1] > lease.pair.sourceFrameId[0]
                 ? 1u
                 : 0u;
         publishDescriptor();
@@ -391,11 +481,17 @@ public:
         if (transaction == 1u || transaction % 120u == 0u)
         {
             Log(
-                "OpenXRBridge: stereo transaction=%llu slot=%u pair=%llu "
-                "sameTick=%d wvpProof=%d pose=%llu/%llu source=%llu/%llu",
+                "OpenXRBridge: frame transaction=%llu slot=%u pair=%llu "
+                "presentation=%s sameTick=%d wvpProof=%d "
+                "pose=%llu/%llu source=%llu/%llu",
                 static_cast<unsigned long long>(transaction),
                 slotIndex,
                 static_cast<unsigned long long>(lease.pair.pairId),
+                lease.pair.immersiveMono
+                    ? "world-immersive-mono"
+                    : lease.pair.uiQuad
+                        ? "stationary-ui-quad"
+                        : "world-stereo",
                 lease.pair.sameSimulationTick ? 1 : 0,
                 lease.pair.verifiedWvpStereo ? 1 : 0,
                 static_cast<unsigned long long>(lease.pair.poseSequence[0]),
@@ -428,6 +524,16 @@ public:
             CloseHandle(mapping_);
             mapping_ = nullptr;
         }
+        if (cpuMailbox_)
+        {
+            UnmapViewOfFile(cpuMailbox_);
+            cpuMailbox_ = nullptr;
+        }
+        if (cpuFrameMapping_)
+        {
+            CloseHandle(cpuFrameMapping_);
+            cpuFrameMapping_ = nullptr;
+        }
         // This function is called from DLL_PROCESS_DETACH. Do not wait on the
         // DXVK queue or tear down imported GPU objects under the loader lock;
         // process teardown releases those process-lifetime objects.
@@ -435,6 +541,341 @@ public:
     }
 
 private:
+    uint8_t* cpuSlotPixels(uint32_t slot, uint32_t eye) const
+    {
+        if (!cpuMailbox_
+            || slot >= gtaiv_xr_bridge::SlotCount
+            || eye >= gtaiv_xr_bridge::CpuFrameEyeCount)
+        {
+            return nullptr;
+        }
+        return reinterpret_cast<uint8_t*>(cpuMailbox_)
+            + sizeof(gtaiv_xr_bridge::CpuFrameMailbox)
+            + static_cast<size_t>(
+                slot * gtaiv_xr_bridge::CpuFrameSlotBytes)
+            + static_cast<size_t>(
+                eye * gtaiv_xr_bridge::CpuFrameEyeBytes);
+    }
+
+    bool createCpuFrameMapping()
+    {
+        static_assert(
+            gtaiv_xr_bridge::CpuFrameMappingBytes <= MAXDWORD,
+            "CPU frame mailbox exceeds Win32 mapping size");
+        cpuFrameMapping_ = CreateFileMappingW(
+            INVALID_HANDLE_VALUE,
+            nullptr,
+            PAGE_READWRITE,
+            0u,
+            static_cast<DWORD>(
+                gtaiv_xr_bridge::CpuFrameMappingBytes),
+            gtaiv_xr_bridge::CpuFrameMappingName);
+        if (!cpuFrameMapping_)
+        {
+            Log(
+                "OpenXRBridge: CreateFileMapping(CPU frame) failed win32=%lu",
+                static_cast<unsigned long>(GetLastError()));
+            return false;
+        }
+        cpuMailbox_ =
+            static_cast<gtaiv_xr_bridge::CpuFrameMailbox*>(
+                MapViewOfFile(
+                    cpuFrameMapping_,
+                    FILE_MAP_READ | FILE_MAP_WRITE,
+                    0u,
+                    0u,
+                    static_cast<SIZE_T>(
+                        gtaiv_xr_bridge::CpuFrameMappingBytes)));
+        if (!cpuMailbox_)
+        {
+            Log(
+                "OpenXRBridge: MapViewOfFile(CPU frame) failed win32=%lu",
+                static_cast<unsigned long>(GetLastError()));
+            return false;
+        }
+        std::memset(
+            cpuMailbox_,
+            0,
+            sizeof(gtaiv_xr_bridge::CpuFrameMailbox));
+        cpuMailbox_->magic = gtaiv_xr_bridge::CpuFrameMagic;
+        cpuMailbox_->version = gtaiv_xr_bridge::CpuFrameVersion;
+        cpuMailbox_->headerBytes =
+            sizeof(gtaiv_xr_bridge::CpuFrameMailbox);
+        cpuMailbox_->slotCount = gtaiv_xr_bridge::SlotCount;
+        cpuMailbox_->maxWidth =
+            gtaiv_xr_bridge::CpuFrameMaxWidth;
+        cpuMailbox_->maxHeight =
+            gtaiv_xr_bridge::CpuFrameMaxHeight;
+        cpuMailbox_->bytesPerPixel =
+            gtaiv_xr_bridge::CpuFrameBytesPerPixel;
+        cpuMailbox_->eyeCount = gtaiv_xr_bridge::CpuFrameEyeCount;
+        cpuMailbox_->mappingBytes =
+            gtaiv_xr_bridge::CpuFrameMappingBytes;
+        return true;
+    }
+
+    bool initializeCpuMailbox(
+        IDirect3DDevice9* gameDevice,
+        const OpenXrStereoPair& pair)
+    {
+        if (!gameDevice
+            || !pair.eyes[0]
+            || (pair.verifiedDrawSceneStereo && !pair.eyes[1])
+            || pair.width == 0u
+            || pair.height == 0u
+            || pair.width > gtaiv_xr_bridge::CpuFrameMaxWidth
+            || pair.height > gtaiv_xr_bridge::CpuFrameMaxHeight)
+        {
+            return false;
+        }
+
+        ComPtr<IDirect3DSurface9> source;
+        D3DSURFACE_DESC description {};
+        if (FAILED(pair.eyes[0]->GetSurfaceLevel(0, &source))
+            || !source
+            || FAILED(source->GetDesc(&description))
+            || description.Width != pair.width
+            || description.Height != pair.height)
+        {
+            return false;
+        }
+        cpuProtocolFormat_ = protocolFormat(description.Format);
+        if (cpuProtocolFormat_ == PixelFormat::Unknown)
+        {
+            Log(
+                "OpenXRBridge: CPU mailbox rejects D3D9 format=%u",
+                static_cast<unsigned>(description.Format));
+            return false;
+        }
+        for (ComPtr<IDirect3DSurface9>& readback : cpuReadbacks_)
+        {
+            if (FAILED(gameDevice->CreateOffscreenPlainSurface(
+                    pair.width,
+                    pair.height,
+                    description.Format,
+                    D3DPOOL_SYSTEMMEM,
+                    &readback,
+                    nullptr))
+                || !readback)
+            {
+                Log(
+                    "OpenXRBridge: CPU mailbox readback surface creation failed "
+                    "size=%ux%u format=%u",
+                    pair.width,
+                    pair.height,
+                    static_cast<unsigned>(description.Format));
+                return false;
+            }
+        }
+
+        gameDevice_ = gameDevice;
+        width_ = pair.width;
+        height_ = pair.height;
+        cpuD3dFormat_ = description.Format;
+        if (!createCpuFrameMapping() || !createMapping())
+            return false;
+
+        LARGE_INTEGER counter {};
+        QueryPerformanceCounter(&counter);
+        producerEpoch_ =
+            static_cast<uint64_t>(counter.QuadPart)
+            ^ (static_cast<uint64_t>(GetCurrentProcessId()) << 32u)
+            ^ GetTickCount64();
+        if (producerEpoch_ == 0u)
+            producerEpoch_ = 1u;
+        resourceSetId_ =
+            producerEpoch_
+            ^ (static_cast<uint64_t>(width_) << 32u)
+            ^ static_cast<uint64_t>(height_)
+            ^ 0x4350554d41494cULL;
+        if (resourceSetId_ == 0u)
+            resourceSetId_ = 1u;
+        resourceGeneration_ = 1u;
+        cpuMailboxMode_ = true;
+        ready_ = true;
+        publishDescriptor();
+        Log(
+            "OpenXRBridge: READY FNVVR-style advancing CPU mailbox "
+            "capture=%ux%u eyes=%u slots=%u (no host fence on GTA/DXVK queue)",
+            width_,
+            height_,
+            gtaiv_xr_bridge::CpuFrameEyeCount,
+            gtaiv_xr_bridge::SlotCount);
+        return true;
+    }
+
+    bool publishCpuMailboxFrame(
+        IDirect3DDevice9* gameDevice,
+        const OpenXrStereoPair& pair,
+        const UiPresentationState& uiState,
+        bool immersiveMono)
+    {
+        if (!cpuMailboxMode_
+            || !cpuMailbox_
+            || !gameDevice
+            || !pair.eyes[0])
+        {
+            return false;
+        }
+
+        const bool distinctStereo =
+            !uiState && !immersiveMono && pair.verifiedDrawSceneStereo;
+        const uint32_t sourceEyeCount = distinctStereo
+            ? gtaiv_xr_bridge::EyeCount
+            : 1u;
+        if (sourceEyeCount == gtaiv_xr_bridge::EyeCount && !pair.eyes[1])
+            return false;
+
+        std::array<ComPtr<IDirect3DSurface9>, gtaiv_xr_bridge::EyeCount>
+            sources;
+        std::array<D3DLOCKED_RECT, gtaiv_xr_bridge::EyeCount> locked {};
+        std::array<bool, gtaiv_xr_bridge::EyeCount> isLocked {};
+        const auto unlockAll = [&]() {
+            for (uint32_t eye = 0u; eye < sourceEyeCount; ++eye)
+            {
+                if (isLocked[eye])
+                {
+                    cpuReadbacks_[eye]->UnlockRect();
+                    isLocked[eye] = false;
+                }
+            }
+        };
+
+        const uint32_t rowBytes =
+            width_ * gtaiv_xr_bridge::CpuFrameBytesPerPixel;
+        LARGE_INTEGER start {};
+        LARGE_INTEGER afterReadback {};
+        LARGE_INTEGER finished {};
+        QueryPerformanceCounter(&start);
+        for (uint32_t eye = 0u; eye < sourceEyeCount; ++eye)
+        {
+            D3DSURFACE_DESC description {};
+            if (!cpuReadbacks_[eye]
+                || FAILED(pair.eyes[eye]->GetSurfaceLevel(
+                    0u, &sources[eye]))
+                || !sources[eye]
+                || FAILED(sources[eye]->GetDesc(&description))
+                || description.Width != width_
+                || description.Height != height_
+                || description.Format != cpuD3dFormat_
+                || FAILED(gameDevice->GetRenderTargetData(
+                    sources[eye].Get(), cpuReadbacks_[eye].Get())))
+            {
+                unlockAll();
+                return false;
+            }
+            if (FAILED(cpuReadbacks_[eye]->LockRect(
+                    &locked[eye], nullptr, D3DLOCK_READONLY)))
+            {
+                unlockAll();
+                return false;
+            }
+            isLocked[eye] = true;
+            if (!locked[eye].pBits
+                || locked[eye].Pitch < static_cast<INT>(rowBytes))
+            {
+                unlockAll();
+                return false;
+            }
+        }
+        QueryPerformanceCounter(&afterReadback);
+
+        const uint32_t slot = nextSlot_;
+        nextSlot_ =
+            (nextSlot_ + 1u) % gtaiv_xr_bridge::SlotCount;
+        volatile LONG* slotSequence =
+            reinterpret_cast<volatile LONG*>(
+                &cpuMailbox_->slotSequence[slot]);
+        LONG current =
+            InterlockedCompareExchange(slotSequence, 0, 0);
+        LONG writing = (current & 1) ? current + 2 : current + 1;
+        InterlockedExchange(slotSequence, writing);
+        MemoryBarrier();
+
+        for (uint32_t eye = 0u; eye < sourceEyeCount; ++eye)
+        {
+            uint8_t* destination = cpuSlotPixels(slot, eye);
+            if (!destination)
+            {
+                unlockAll();
+                InterlockedExchange(slotSequence, writing + 1);
+                return false;
+            }
+            const auto* sourceBytes =
+                static_cast<const uint8_t*>(locked[eye].pBits);
+            for (uint32_t y = 0u; y < height_; ++y)
+            {
+                std::memcpy(
+                    destination + static_cast<size_t>(y) * rowBytes,
+                    sourceBytes
+                        + static_cast<size_t>(y)
+                            * static_cast<size_t>(locked[eye].Pitch),
+                    rowBytes);
+            }
+        }
+        unlockAll();
+
+        const uint64_t transaction = nextTransaction_ + 1u;
+        if (transaction == 0u)
+            return false;
+        cpuMailbox_->slotTransactionId[slot] = transaction;
+        MemoryBarrier();
+        InterlockedExchange(slotSequence, writing + 1);
+
+        nextTransaction_ = transaction;
+        currentSlot_ = slot;
+        lastPair_ = pair;
+        lastPair_.eyes[0] = nullptr;
+        lastPair_.eyes[1] = nullptr;
+        lastPairId_ = pair.pairId;
+        lastPresentationMode_ = uiState
+            ? gtaiv_xr_bridge::PresentationMode::UiQuad
+            : immersiveMono
+                ? gtaiv_xr_bridge::PresentationMode::WorldMono
+                : gtaiv_xr_bridge::PresentationMode::WorldStereo;
+        lastUiReasonFlags_ = uiState.reasonFlags;
+        lastUiEye_ = 0u;
+        publishDescriptor();
+        QueryPerformanceCounter(&finished);
+
+        ++cpuCaptureCount_;
+        if (cpuCaptureCount_ <= 4u
+            || cpuCaptureCount_ % 120u == 0u
+            || lastLoggedCpuPresentation_ != lastPresentationMode_)
+        {
+            LARGE_INTEGER frequency {};
+            QueryPerformanceFrequency(&frequency);
+            const double ticksPerMs =
+                frequency.QuadPart > 0
+                    ? static_cast<double>(frequency.QuadPart) / 1000.0
+                    : 1.0;
+            Log(
+                "OpenXRBridge: CPU mailbox transaction=%llu slot=%u "
+                "presentation=%s eyes=%u capture=%ux%u "
+                "readbackMs=%.2f copyMs=%.2f",
+                static_cast<unsigned long long>(transaction),
+                slot,
+                lastPresentationMode_
+                        == gtaiv_xr_bridge::PresentationMode::UiQuad
+                    ? "stationary-ui-quad"
+                    : lastPresentationMode_
+                            == gtaiv_xr_bridge::PresentationMode::WorldStereo
+                        ? "world-drawscene-stereo"
+                        : "world-immersive-mono",
+                sourceEyeCount,
+                width_,
+                height_,
+                static_cast<double>(
+                    afterReadback.QuadPart - start.QuadPart)
+                    / ticksPerMs,
+                static_cast<double>(
+                    finished.QuadPart - afterReadback.QuadPart)
+                    / ticksPerMs);
+            lastLoggedCpuPresentation_ = lastPresentationMode_;
+        }
+        return true;
+    }
+
     bool querySourceEyes(
         IDirect3DDevice9* gameDevice,
         const OpenXrStereoPair& pair,
@@ -568,7 +1009,7 @@ private:
         ready_ = true;
         publishDescriptor();
         Log(
-            "OpenXRBridge: READY Vulkan-imported D3D11 NT stereo "
+            "OpenXRBridge: READY Vulkan-imported D3D11 NT frame resources "
             "adapterLuid=%08lx%08lx size=%ux%u vkFormat=%d slots=%u",
             static_cast<unsigned long>(
                 static_cast<uint32_t>(adapterLuid_ >> 32u)),
@@ -1074,7 +1515,7 @@ private:
         if (!mapping_)
         {
             Log(
-                "OpenXRBridge: CreateFileMapping(v4) failed win32=%lu",
+                "OpenXRBridge: CreateFileMapping(v5) failed win32=%lu",
                 static_cast<unsigned long>(GetLastError()));
             return false;
         }
@@ -1087,7 +1528,7 @@ private:
         if (!shared_)
         {
             Log(
-                "OpenXRBridge: MapViewOfFile(v4) failed win32=%lu",
+                "OpenXRBridge: MapViewOfFile(v5) failed win32=%lu",
                 static_cast<unsigned long>(GetLastError()));
             return false;
         }
@@ -1126,8 +1567,14 @@ private:
 
     bool recordCopy(
         SharedSlot& slot,
-        const std::array<SourceEye, gtaiv_xr_bridge::EyeCount>& source)
+        const std::array<SourceEye, gtaiv_xr_bridge::EyeCount>& source,
+        uint32_t copyEyeCount)
     {
+        if (copyEyeCount == 0u
+            || copyEyeCount > gtaiv_xr_bridge::EyeCount)
+        {
+            return false;
+        }
         if (vk_.resetCommandBuffer(slot.commandBuffer, 0u) != VK_SUCCESS)
             return false;
         VkCommandBufferBeginInfo begin {
@@ -1141,7 +1588,7 @@ private:
         std::array<VkImageMemoryBarrier, gtaiv_xr_bridge::EyeCount>
             destinationToCopy {};
         for (uint32_t eye = 0u;
-             eye < gtaiv_xr_bridge::EyeCount;
+             eye < copyEyeCount;
              ++eye)
         {
             sourceToCopy[eye] = {
@@ -1190,7 +1637,7 @@ private:
             nullptr,
             0u,
             nullptr,
-            static_cast<uint32_t>(sourceToCopy.size()),
+            copyEyeCount,
             sourceToCopy.data());
         vk_.cmdPipelineBarrier(
             slot.commandBuffer,
@@ -1201,7 +1648,7 @@ private:
             nullptr,
             0u,
             nullptr,
-            static_cast<uint32_t>(destinationToCopy.size()),
+            copyEyeCount,
             destinationToCopy.data());
 
         const VkImageCopy region {
@@ -1211,7 +1658,7 @@ private:
             {0, 0, 0},
             {width_, height_, 1u}};
         for (uint32_t eye = 0u;
-             eye < gtaiv_xr_bridge::EyeCount;
+             eye < copyEyeCount;
              ++eye)
         {
             vk_.cmdCopyImage(
@@ -1229,7 +1676,7 @@ private:
         std::array<VkImageMemoryBarrier, gtaiv_xr_bridge::EyeCount>
             destinationRelease {};
         for (uint32_t eye = 0u;
-             eye < gtaiv_xr_bridge::EyeCount;
+             eye < copyEyeCount;
              ++eye)
         {
             sourceRestore[eye] = {
@@ -1275,7 +1722,7 @@ private:
             nullptr,
             0u,
             nullptr,
-            static_cast<uint32_t>(sourceRestore.size()),
+            copyEyeCount,
             sourceRestore.data());
         vk_.cmdPipelineBarrier(
             slot.commandBuffer,
@@ -1286,7 +1733,7 @@ private:
             nullptr,
             0u,
             nullptr,
-            static_cast<uint32_t>(destinationRelease.size()),
+            copyEyeCount,
             destinationRelease.data());
         return vk_.endCommandBuffer(slot.commandBuffer) == VK_SUCCESS;
     }
@@ -1294,13 +1741,15 @@ private:
     bool submitCopy(
         uint32_t slotIndex,
         uint64_t transaction,
-        const std::array<SourceEye, gtaiv_xr_bridge::EyeCount>& source)
+        const std::array<SourceEye, gtaiv_xr_bridge::EyeCount>& source,
+        uint32_t copyEyeCount)
     {
         SharedSlot& slot = slots_[slotIndex];
         interop_->FlushRenderingCommands();
         interop_->LockSubmissionQueue();
 
-        const bool recorded = recordCopy(slot, source);
+        const bool recorded =
+            recordCopy(slot, source, copyEyeCount);
         VkResult result = recorded ? VK_SUCCESS : VK_ERROR_UNKNOWN;
         if (recorded)
         {
@@ -1355,12 +1804,26 @@ private:
         value.adapterLuid = adapterLuid_;
         value.width = width_;
         value.height = height_;
-        value.format = protocolFormat(vkFormat_);
-        value.flags =
-            gtaiv_xr_bridge::Running
-            | gtaiv_xr_bridge::GpuD3D11NtHandles
-            | gtaiv_xr_bridge::Stereo
-            | gtaiv_xr_bridge::EyesDistinct;
+        value.format = cpuMailboxMode_
+            ? cpuProtocolFormat_
+            : protocolFormat(vkFormat_);
+        value.flags = gtaiv_xr_bridge::Running;
+        if (cpuMailboxMode_)
+        {
+            value.flags |= gtaiv_xr_bridge::CpuBgraMailbox;
+            if (lastPresentationMode_
+                == gtaiv_xr_bridge::PresentationMode::WorldStereo)
+            {
+                value.flags |= gtaiv_xr_bridge::Stereo
+                    | gtaiv_xr_bridge::EyesDistinct;
+            }
+        }
+        else
+        {
+            value.flags |= gtaiv_xr_bridge::GpuD3D11NtHandles
+                | gtaiv_xr_bridge::Stereo
+                | gtaiv_xr_bridge::EyesDistinct;
+        }
         if (lastPair_.sameSimulationTick)
             value.flags |= gtaiv_xr_bridge::SameSimulationTick;
         else
@@ -1369,6 +1832,11 @@ private:
             value.flags |= gtaiv_xr_bridge::PoseStamped;
         if (lastPair_.verifiedWvpStereo)
             value.flags |= gtaiv_xr_bridge::VerifiedWvpStereo;
+        if (lastPair_.verifiedDrawSceneStereo)
+            value.flags |= gtaiv_xr_bridge::VerifiedDrawSceneStereo;
+        if (lastPresentationMode_
+            == gtaiv_xr_bridge::PresentationMode::WorldMono)
+            value.flags |= gtaiv_xr_bridge::ImmersiveMono;
         value.currentSlot = currentSlot_;
         value.resourceGeneration = resourceGeneration_;
         value.transactionId = nextTransaction_;
@@ -1384,26 +1852,40 @@ private:
                 lastPair_.renderedDisplayTime[eye];
         }
         value.heartbeatTickMs = GetTickCount64();
-        value.readyFenceHandle = handleValue(readyFenceHandle_);
-        value.releaseFenceHandle = handleValue(releaseFenceHandle_);
+        if (!cpuMailboxMode_)
+        {
+            value.readyFenceHandle = handleValue(readyFenceHandle_);
+            value.releaseFenceHandle = handleValue(releaseFenceHandle_);
+        }
         for (uint32_t slot = 0u;
              slot < gtaiv_xr_bridge::SlotCount;
              ++slot)
         {
-            for (uint32_t eye = 0u;
-                 eye < gtaiv_xr_bridge::EyeCount;
-                 ++eye)
+            if (cpuMailboxMode_)
             {
-                value.slots[slot].eyes[eye].textureHandle =
-                    handleValue(slots_[slot].eyes[eye].sharedHandle);
+                value.slots[slot].transactionId = cpuMailbox_
+                    ? cpuMailbox_->slotTransactionId[slot]
+                    : 0u;
             }
-            value.slots[slot].transactionId =
-                slots_[slot].transactionId;
+            else
+            {
+                for (uint32_t eye = 0u;
+                     eye < gtaiv_xr_bridge::EyeCount;
+                     ++eye)
+                {
+                    value.slots[slot].eyes[eye].textureHandle =
+                        handleValue(slots_[slot].eyes[eye].sharedHandle);
+                }
+                value.slots[slot].transactionId =
+                    slots_[slot].transactionId;
+            }
         }
         value.mappingBytes = sizeof(FrameBridge);
         value.presentationMode = lastPresentationMode_;
         value.uiReasonFlags = lastUiReasonFlags_;
         value.uiEye = lastUiEye_;
+        value.contentWidth = lastPair_.contentWidth;
+        value.contentHeight = lastPair_.contentHeight;
         return value;
     }
 
@@ -1480,6 +1962,7 @@ private:
 
     bool ready_ = false;
     bool permanentlyDisabled_ = false;
+    bool cpuMailboxMode_ = false;
     ComPtr<IDirect3DDevice9> gameDevice_;
     ComPtr<ID3D9VkInteropDevice> interop_;
     VulkanFunctions vk_;
@@ -1507,6 +1990,13 @@ private:
     VkCommandPool commandPool_ = VK_NULL_HANDLE;
     HANDLE mapping_ = nullptr;
     FrameBridge* shared_ = nullptr;
+    HANDLE cpuFrameMapping_ = nullptr;
+    gtaiv_xr_bridge::CpuFrameMailbox* cpuMailbox_ = nullptr;
+    std::array<
+        ComPtr<IDirect3DSurface9>,
+        gtaiv_xr_bridge::EyeCount> cpuReadbacks_;
+    D3DFORMAT cpuD3dFormat_ = D3DFMT_UNKNOWN;
+    PixelFormat cpuProtocolFormat_ = PixelFormat::Unknown;
 
     OpenXrStereoPair lastPair_ {};
     uint64_t producerEpoch_ = 0u;
@@ -1516,13 +2006,18 @@ private:
     uint64_t lastPairId_ = 0u;
     uint64_t lastHeartbeatPublishTick_ = 0u;
     uint64_t lastPairWaitLogTick_ = 0u;
+    uint64_t lastRouteWaitLogTick_ = 0u;
     uint64_t lastBusyLogTick_ = 0u;
+    uint64_t lastCpuFailureLogTick_ = 0u;
+    uint64_t cpuCaptureCount_ = 0u;
     uint32_t resourceGeneration_ = 0u;
     uint32_t currentSlot_ = 0u;
     uint32_t nextSlot_ = 0u;
     uint32_t width_ = 0u;
     uint32_t height_ = 0u;
     gtaiv_xr_bridge::PresentationMode lastPresentationMode_ =
+        gtaiv_xr_bridge::PresentationMode::Unknown;
+    gtaiv_xr_bridge::PresentationMode lastLoggedCpuPresentation_ =
         gtaiv_xr_bridge::PresentationMode::Unknown;
     uint32_t lastUiReasonFlags_ = gtaiv_xr_bridge::UiReasonNone;
     uint32_t lastUiEye_ = 0u;
@@ -1536,6 +2031,8 @@ bool g_openXrGameplayArmed = false;
 bool g_openXrArmAttempted = false;
 bool g_openXrPoseLostLogged = false;
 bool g_openXrOpenVrLoadedLogged = false;
+gtaiv_xr_bridge::PoseBridge g_openXrPoseForNextFrame {};
+bool g_openXrHavePoseForNextFrame = false;
 }
 
 VrBackend GetVrBackend()
@@ -1602,6 +2099,8 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
         }
         g_openXrGameplayArmed = false;
         g_openXrArmAttempted = true;
+        g_openXrHavePoseForNextFrame = false;
+        StereoSetOpenXrRenderPose(nullptr);
         SetCamMatrixGameplayActive(false);
         return true;
     };
@@ -1612,6 +2111,8 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
     if (!GetLatestOpenXrPoseBridge(&pose))
     {
         InvalidateHmdPose();
+        g_openXrHavePoseForNextFrame = false;
+        StereoSetOpenXrRenderPose(nullptr);
         SetCamMatrixGameplayActive(false);
         g_openXrValidFrames = 0u;
         if (!g_openXrPoseLostLogged)
@@ -1621,9 +2122,17 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
                 "and frame heartbeat paused");
             g_openXrPoseLostLogged = true;
         }
+        if (g_producer)
+            g_producer->heartbeat();
         return;
     }
     g_openXrPoseLostLogged = false;
+    StereoSetOpenXrRenderPose(
+        g_openXrHavePoseForNextFrame
+            ? &g_openXrPoseForNextFrame
+            : nullptr);
+    g_openXrPoseForNextFrame = pose;
+    g_openXrHavePoseForNextFrame = true;
     UpdateHmdPoseFromOpenXr(pose);
 
     if (!g_openXrGameplayArmed)
@@ -1634,13 +2143,15 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
             return;
         g_openXrArmAttempted = true;
         ReloadStereoMode();
-        if (GetStereoMode() != StereoMode::OpenXrSameFrameWvp)
+        const StereoMode directMode = GetStereoMode();
+        if (!IsOpenXrDirectMode(directMode))
         {
             Log(
                 "OpenXRBridge: direct world presentation requires stereo mode "
-                "54 (verified same-frame WVP); current mode=%d, so no GTA "
+                "55 (immersive mono), 56 (guarded DrawScene stereo), or 54 "
+                "(experimental WVP); current mode=%d, so no GTA "
                 "camera, controller, or frame hooks were armed",
-                static_cast<int>(GetStereoMode()));
+                static_cast<int>(directMode));
             return;
         }
         if (!InstallUiStateProbe())
@@ -1679,9 +2190,13 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
         UpdatePedHeadHide();
         g_openXrGameplayArmed = true;
         Log(
-            "OpenXRBridge: GTA camera/stereo armed after 360 fresh host "
-            "samples; display FOV comes from OpenXR and OpenVR remains "
-            "uninitialized");
+            "OpenXRBridge: GTA camera/frame capture armed in mode %d after "
+            "360 fresh host samples; display FOV comes from OpenXR and "
+            "OpenVR remains uninitialized",
+            static_cast<int>(directMode));
+        // Hooks armed at this EndScene can only affect the next GTA frame.
+        // Do not stamp the already-rendered native frame as head-owned.
+        return;
     }
     else
     {
@@ -1699,10 +2214,16 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
     PumpOpenXrControllerBridge();
     if (g_producer)
         g_producer->publish(device);
+    // Keep the established GTA-side locomotion/right-stick behavior identical
+    // across compositors. OpenXR only supplies the cached HMD pose and XInput
+    // state; vr_move.cpp remains the single owner of gameplay movement policy.
+    UpdateVrMoveAndStick();
 }
 
 void ShutdownOpenXrBridge()
 {
+    g_openXrHavePoseForNextFrame = false;
+    StereoSetOpenXrRenderPose(nullptr);
     if (g_producer)
         g_producer->announceStopped();
 }

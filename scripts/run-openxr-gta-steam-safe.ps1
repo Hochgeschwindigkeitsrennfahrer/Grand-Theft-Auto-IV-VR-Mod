@@ -3,6 +3,8 @@ param(
   [string]$GameDir = "D:\SteamLibrary\steamapps\common\Grand Theft Auto IV\GTAIV",
   [ValidateRange(120, 1800)]
   [uint32]$MaxSeconds = 900,
+  [ValidateSet(55, 56)]
+  [uint32]$StereoMode = 55,
   [switch]$Authorized
 )
 
@@ -89,6 +91,58 @@ function Read-Text([string]$Path) {
   }
 }
 
+function Get-SteamAppLaunchOptions([string]$AppId) {
+  $userdata = Join-Path (Split-Path -Parent $SteamExe) "userdata"
+  if (-not (Test-Path -LiteralPath $userdata -PathType Container)) {
+    return @()
+  }
+  $escapedAppId = [regex]::Escape($AppId)
+  $results = @()
+  Get-ChildItem -LiteralPath $userdata -Directory -ErrorAction SilentlyContinue |
+    ForEach-Object {
+      $config = Join-Path $_.FullName "config\localconfig.vdf"
+      if (-not (Test-Path -LiteralPath $config -PathType Leaf)) {
+        return
+      }
+      $awaitingBlock = $false
+      $inAppBlock = $false
+      $depth = 0
+      foreach ($line in Get-Content -LiteralPath $config -ErrorAction SilentlyContinue) {
+        if (-not $inAppBlock) {
+          if ($line -match ('^\s*"' + $escapedAppId + '"\s*\{\s*$')) {
+            $inAppBlock = $true
+            $depth = 1
+            $awaitingBlock = $false
+          }
+          elseif ($line -match ('^\s*"' + $escapedAppId + '"\s*$')) {
+            $awaitingBlock = $true
+          }
+          elseif ($awaitingBlock -and $line -match '^\s*\{\s*$') {
+            $inAppBlock = $true
+            $depth = 1
+            $awaitingBlock = $false
+          }
+          elseif ($awaitingBlock -and $line.Trim().Length -gt 0) {
+            $awaitingBlock = $false
+          }
+          continue
+        }
+
+        if ($depth -eq 1 -and
+            $line -match '^\s*"LaunchOptions"\s*"(.*)"\s*$') {
+          $results += $Matches[1]
+        }
+        $depth += ([regex]::Matches($line, '\{')).Count
+        $depth -= ([regex]::Matches($line, '\}')).Count
+        if ($depth -le 0) {
+          $inAppBlock = $false
+          $depth = 0
+        }
+      }
+    }
+  return @($results | Select-Object -Unique)
+}
+
 function Get-PeMachine([string]$Path) {
   $bytes = [IO.File]::ReadAllBytes($Path)
   if ($bytes.Length -lt 256) {
@@ -172,18 +226,27 @@ $failure = ""
 $gameStarted = $false
 $hostFocused = $false
 $backendOpenXr = $false
-$mode54 = $false
+$stereoModeReady = $false
 $controllerReady = $false
-$drawHooksReady = $false
 $bridgeReady = $false
-$verifiedWvp = $false
+$worldCaptureReady = $false
+$colorPathReady = $false
+$stationaryUiQuad = $false
 $producerTransaction = $false
 $hostConnected = $false
 $hostAcquired = $false
+$gamePoseMatched = $false
 
 try {
   Write-Status "SAFETY: Meta OpenXR active; SteamVR absent"
   Write-Status "SAFETY: normal Steam authentication allowed; SteamVR polled every 100 ms"
+  $gtaLaunchOptions = @(Get-SteamAppLaunchOptions "12210")
+  foreach ($launchOptions in $gtaLaunchOptions) {
+    if ($launchOptions -match '(?i)(openvr|steamvr|vrmode|\-vr\b)') {
+      throw "GTA IV Steam launch options request VR: '$launchOptions'. Clear them in Steam before this no-SteamVR test."
+    }
+  }
+  Write-Status "SAFETY: GTA IV Steam launch options contain no OpenVR/SteamVR request"
   Write-Status "ARTIFACT: ASI sha256=$(Get-Sha256 $CandidateAsi)"
   Write-Status "ARTIFACT: host sha256=$(Get-Sha256 $HostExe)"
 
@@ -205,13 +268,30 @@ try {
 
   Copy-Item -LiteralPath $CandidateAsi -Destination $InstalledAsi -Force
   Set-Content -LiteralPath $BackendFile -Value "openxr" -Encoding ASCII -NoNewline
-  Set-Content -LiteralPath $StereoFile -Value "54" -Encoding ASCII -NoNewline
+  Set-Content -LiteralPath $StereoFile -Value "$StereoMode" -Encoding ASCII -NoNewline
   Set-Content -LiteralPath $DisableFile -Value "1" -Encoding ASCII -NoNewline
   if (Test-Path -LiteralPath $InstalledOpenVr -PathType Leaf) {
     Remove-Item -LiteralPath $InstalledOpenVr -Force
   }
-  Write-Status "DEPLOYED: backend=openxr stereo=54"
+  $stereoDescription = if ($StereoMode -eq 56) {
+    "DrawScene L/R stereo candidate"
+  }
+  else {
+    "immersive mono baseline"
+  }
+  Write-Status "DEPLOYED: backend=openxr stereo=$StereoMode ($stereoDescription)"
   Write-Status "OPENVR HARD-BLOCKED: disable sentinel present; openvr_api.dll removed and backed up"
+
+  & $HostExe --self-test | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "OpenXR host offline self-test failed."
+  }
+  $selfTestText = Read-Text $HostLog
+  if ($selfTestText -notmatch
+      "protocol=v6.*wvpProof=1.*drawSceneProof=1.*immersiveMono=1.*cpuMailbox=1.*cpuMailboxStereo=1.*cpuMailboxWorldUi=1.*stationaryUiQuad=1.*uiAspect=1.*routeSwitch=1.*srgbDecode=1.*runtimeUntouched=1") {
+    throw "OpenXR host baseline gates were not proven by the offline self-test."
+  }
+  Write-Status "OFFLINE GATES: protocol v6, CPU mono/stereo mailbox, stationary UI, and sRGB decode PASS"
 
   Assert-And-Stop-SteamVr
   $hostProcess = Start-Process `
@@ -269,10 +349,10 @@ try {
     $gameText = Read-Text $GameLog
     if ($gameText -match "ASI loaded" -and
         $gameText -match "Backend: OpenXR" -and
-        $gameText -match "StereoMode: 54") {
+        $gameText -match "StereoMode: $StereoMode") {
       $gameStarted = $true
       $backendOpenXr = $true
-      $mode54 = $true
+      $stereoModeReady = $true
       break
     }
     if ($gameText -match "Backend: OpenVR") {
@@ -284,10 +364,15 @@ try {
     Start-Sleep -Milliseconds 100
   }
   if (-not $gameStarted) {
-    throw "No fresh GTA OpenXR/Mode 54 ASI session appeared within 120 seconds."
+    throw "No fresh GTA OpenXR/Mode $StereoMode ASI session appeared within 120 seconds."
   }
-  Write-Status "GTA READY: fresh x86 ASI session backend=OpenXR stereo=54"
-  Write-Status "HEADSET: GTA is live; inspect stereo, head tracking, menus, and Touch controls"
+  Write-Status "GTA READY: fresh x86 ASI session backend=OpenXR stereo=$StereoMode"
+  if ($StereoMode -eq 56) {
+    Write-Status "HEADSET: inspect distinct L/R world stereo, stationary menus, color, and Touch controls"
+  }
+  else {
+    Write-Status "HEADSET: inspect head-tracked mono world, stationary menus, color, and Touch controls"
+  }
 
   $runDeadline = [DateTime]::UtcNow.AddSeconds($MaxSeconds)
   $gameGoneSince = $null
@@ -320,34 +405,63 @@ try {
       $controllerReady = $true
       Write-Status "MARKER: Touch -> XInput controller bridge READY"
     }
-    if (-not $drawHooksReady -and
-        $gameText -match "StereoWvp: six-method draw interception READY") {
-      $drawHooksReady = $true
-      Write-Status "MARKER: six-method WVP interception READY"
-    }
     if (-not $bridgeReady -and $gameText -match "OpenXRBridge: READY") {
       $bridgeReady = $true
-      Write-Status "MARKER: x86/x64 GPU bridge READY"
+      Write-Status "MARKER: x86 CPU mailbox producer READY"
     }
-    if (-not $verifiedWvp -and
-        $gameText -match "StereoWvp: pair=.*verified=1") {
-      $verifiedWvp = $true
-      Write-Status "MARKER: same-frame WVP stereo pair VERIFIED"
+    if (-not $worldCaptureReady) {
+      if ($StereoMode -eq 56 -and
+          $gameText -match "StereoOpenXR: DrawScene L/R pair") {
+        $worldCaptureReady = $true
+        Write-Status "MARKER: guarded DrawScene L/R capture READY"
+      }
+      elseif ($StereoMode -eq 55 -and
+          $gameText -match "StereoMono: center-eye capture pair") {
+        $worldCaptureReady = $true
+        Write-Status "MARKER: center-eye mono capture READY"
+      }
+    }
+    $expectedProducerPresentation = if ($StereoMode -eq 56) {
+      "world-drawscene-stereo"
+    }
+    else {
+      "world-immersive-mono"
     }
     if (-not $producerTransaction -and
-        $gameText -match "OpenXRBridge: stereo transaction=") {
+        $gameText -match "OpenXRBridge: CPU mailbox transaction=.*presentation=$expectedProducerPresentation") {
       $producerTransaction = $true
-      Write-Status "MARKER: GTA published stereo transaction"
+      Write-Status "MARKER: GTA published CPU mailbox $expectedProducerPresentation transaction"
     }
     if (-not $hostConnected -and
-        $hostText -match "GameBridge: CONNECTED stereo") {
+        $hostText -match "GameBridge: CONNECTED FNVVR-style CPU mailbox") {
       $hostConnected = $true
-      Write-Status "MARKER: host connected to GTA stereo"
+      Write-Status "MARKER: host connected to CPU mailbox"
     }
     if (-not $hostAcquired -and
-        $hostText -match "GameBridge: stereo acquired transaction=") {
+        $hostText -match "GameBridge: CPU mailbox acquired transaction=.*presentation=$expectedProducerPresentation") {
       $hostAcquired = $true
-      Write-Status "MARKER: host acquired GTA stereo"
+      Write-Status "MARKER: host acquired $expectedProducerPresentation mailbox frame"
+    }
+    $expectedHostPresentation = if ($StereoMode -eq 56) {
+      "world-stereo"
+    }
+    else {
+      "world-headtracked-mono-projection"
+    }
+    if (-not $gamePoseMatched -and
+        $hostText -match "XRHost: presentation=$expectedHostPresentation") {
+      $gamePoseMatched = $true
+      Write-Status "MARKER: OpenXR $expectedHostPresentation presentation active"
+    }
+    if (-not $colorPathReady -and
+        $hostText -match "CONNECTED FNVVR-style CPU mailbox.*sRGB decode SRV") {
+      $colorPathReady = $true
+      Write-Status "MARKER: sRGB decode color path READY"
+    }
+    if (-not $stationaryUiQuad -and
+        $hostText -match "XRHost: stationary UI latched localPose=") {
+      $stationaryUiQuad = $true
+      Write-Status "MARKER: stationary menu/loading/phone quad READY"
     }
 
     if ($gameText -match "Backend: OpenVR" -or
@@ -398,14 +512,17 @@ finally {
     "gameStarted=$gameStarted"
     "hostFocused=$hostFocused"
     "backendOpenXr=$backendOpenXr"
-    "mode54=$mode54"
+    "stereoMode=$StereoMode"
+    "stereoModeReady=$stereoModeReady"
     "controllerReady=$controllerReady"
-    "drawHooksReady=$drawHooksReady"
     "bridgeReady=$bridgeReady"
-    "verifiedWvp=$verifiedWvp"
+    "worldCaptureReady=$worldCaptureReady"
+    "colorPathReady=$colorPathReady"
+    "stationaryUiQuad=$stationaryUiQuad"
     "producerTransaction=$producerTransaction"
     "hostConnected=$hostConnected"
     "hostAcquired=$hostAcquired"
+    "gamePoseMatched=$gamePoseMatched"
   )
   Set-Content -LiteralPath $ResultPath -Value $result -Encoding UTF8
   Write-Status "RESULT: $outcome"

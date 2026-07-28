@@ -8,7 +8,9 @@
 #include <wrl/client.h>
 
 #include "game_bridge.h"
+#include "game_texture_layout.h"
 #include "haptic_bridge.h"
+#include "menu_quad_pose.h"
 #include "pose_bridge.h"
 
 #include <algorithm>
@@ -37,6 +39,7 @@ using Microsoft::WRL::ComPtr;
 
 constexpr XrDuration SwapchainWaitTimeout = 2'000'000'000;
 constexpr uint32_t EyeCount = 2;
+constexpr uint32_t GameProjectionDimension = 1536u;
 std::atomic<bool> stopRequested { false };
 
 const char* CalibrationShader = R"HLSL(
@@ -210,6 +213,7 @@ SamplerState gameSampler : register(s0);
 cbuffer GameConstants : register(b1)
 {
     float4 gameSourceAndViewport;
+    float4 gamePresentation;
 };
 
 float4 psGame(VsOutput input) : SV_Target
@@ -220,20 +224,34 @@ float4 psGame(VsOutput input) : SV_Target
     const float sourceAspect = sourceSize.x / sourceSize.y;
     const float viewportAspect = viewportSize.x / viewportSize.y;
 
-    float2 contentScale = float2(1.0, 1.0);
-    if (viewportAspect > sourceAspect)
-        contentScale.x = sourceAspect / viewportAspect;
-    else
-        contentScale.y = viewportAspect / sourceAspect;
-
     const float2 centered = viewportUv - 0.5;
-    if (abs(centered.x) > contentScale.x * 0.5
-        || abs(centered.y) > contentScale.y * 0.5)
+    float2 sourceUv;
+    if (gamePresentation.x >= 0.5)
     {
-        return float4(0.0, 0.0, 0.0, 1.0);
+        // Immersive mono is a center-eye render. Crop its 16:9 capture to
+        // each runtime eye target instead of exposing a head-locked quad or
+        // black letterbox border.
+        float2 cropScale = float2(1.0, 1.0);
+        if (viewportAspect > sourceAspect)
+            cropScale.y = sourceAspect / viewportAspect;
+        else
+            cropScale.x = viewportAspect / sourceAspect;
+        sourceUv = centered * cropScale + 0.5;
     }
-
-    const float2 sourceUv = centered / contentScale + 0.5;
+    else
+    {
+        float2 contentScale = float2(1.0, 1.0);
+        if (viewportAspect > sourceAspect)
+            contentScale.x = sourceAspect / viewportAspect;
+        else
+            contentScale.y = viewportAspect / sourceAspect;
+        if (abs(centered.x) > contentScale.x * 0.5
+            || abs(centered.y) > contentScale.y * 0.5)
+        {
+            return float4(0.0, 0.0, 0.0, 1.0);
+        }
+        sourceUv = centered / contentScale + 0.5;
+    }
     const float3 color = gameFrame.SampleLevel(gameSampler, sourceUv, 0.0).rgb;
     return float4(color, 1.0);
 }
@@ -254,8 +272,9 @@ static_assert(sizeof(EyeConstants) % 16 == 0, "D3D11 constant buffer must be 16-
 struct alignas(16) GameConstants
 {
     float sourceAndViewport[4];
+    float presentation[4];
 };
-static_assert(sizeof(GameConstants) == 16, "GameConstants ABI changed");
+static_assert(sizeof(GameConstants) == 32, "GameConstants ABI changed");
 static_assert(sizeof(void*) == 8, "The OpenXR host must remain x64");
 
 struct Vec3
@@ -1154,15 +1173,25 @@ private:
         for (uint32_t eye = 0; eye < EyeCount; ++eye)
         {
             ColorSwapchain& swapchain = swapchains_[eye];
+            const uint32_t projectionWidth = gameMode_
+                ? (std::min)(
+                    GameProjectionDimension,
+                    viewConfigurationViews_[eye].maxImageRectWidth)
+                : viewConfigurationViews_[eye].recommendedImageRectWidth;
+            const uint32_t projectionHeight = gameMode_
+                ? (std::min)(
+                    GameProjectionDimension,
+                    viewConfigurationViews_[eye].maxImageRectHeight)
+                : viewConfigurationViews_[eye].recommendedImageRectHeight;
             createColorSwapchain(
                 swapchain,
                 selectedFormat,
-                viewConfigurationViews_[eye].recommendedImageRectWidth,
-                viewConfigurationViews_[eye].recommendedImageRectHeight,
+                projectionWidth,
+                projectionHeight,
                 "xrCreateSwapchain(projection)");
 
             std::ostringstream message;
-            message << "XRHost: view[" << eye << "] recommended="
+            message << "XRHost: view[" << eye << "] projection="
                     << swapchain.width << 'x' << swapchain.height
                     << " samples=" << viewConfigurationViews_[eye].recommendedSwapchainSampleCount
                     << " swapchainImages=" << swapchain.images.size();
@@ -1182,7 +1211,7 @@ private:
                 uiHeight,
                 "xrCreateSwapchain(UI quad)");
             std::ostringstream message;
-            message << "XRHost: head-locked UI swapchain="
+            message << "XRHost: stationary UI swapchain="
                     << uiSwapchain_.width << 'x' << uiSwapchain_.height
                     << " swapchainImages=" << uiSwapchain_.images.size();
             logger_.write(message.str());
@@ -1814,10 +1843,8 @@ private:
         projectionLayer.views = projectionViews.data();
 
         XrCompositionLayerQuad uiLayer { XR_TYPE_COMPOSITION_LAYER_QUAD };
-        uiLayer.space = viewSpace_;
+        uiLayer.space = space_;
         uiLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-        uiLayer.pose.orientation.w = 1.0f;
-        uiLayer.pose.position.z = -1.8f;
         uiLayer.size.width = 1.8f;
         uiLayer.size.height =
             uiLayer.size.width
@@ -1843,6 +1870,28 @@ private:
                 && gameFrame_
                 && gameFrame_.presentationMode
                     == gtaiv_xr_bridge::PresentationMode::UiQuad;
+            const bool quadPresentation = uiQuad;
+            const bool menuQuadWasLatched =
+                menuQuadLatch_.active();
+            const bool uiQuadPoseReady =
+                menuQuadLatch_.update(
+                    uiQuad,
+                    referenceSpaceGeneration_,
+                    views,
+                    1.8f);
+            if (uiQuadPoseReady)
+                uiLayer.pose = menuQuadLatch_.pose();
+            const bool quadPoseReady = uiQuadPoseReady;
+            if (uiQuadPoseReady && !menuQuadWasLatched)
+            {
+                std::ostringstream message;
+                message << std::fixed << std::setprecision(3)
+                        << "XRHost: stationary UI latched localPose=("
+                        << uiLayer.pose.position.x << ','
+                        << uiLayer.pose.position.y << ','
+                        << uiLayer.pose.position.z << ')';
+                logger_.write(message.str());
+            }
             if (gameMode_
                 && gameFrame_
                 && gameFrame_.presentationMode
@@ -1851,8 +1900,11 @@ private:
                 std::ostringstream message;
                 message << "XRHost: presentation="
                         << (uiQuad
-                                ? "head-locked-ui-quad"
-                                : "world-stereo")
+                                ? "stationary-ui-quad"
+                                : gameFrame_.presentationMode
+                                        == gtaiv_xr_bridge::PresentationMode::WorldMono
+                                    ? "world-headtracked-mono-projection"
+                                    : "world-stereo")
                         << " reasons=0x" << std::hex
                         << gameFrame_.uiReasonFlags;
                 logger_.write(message.str());
@@ -1862,40 +1914,61 @@ private:
 
             std::array<XrView, EyeCount> submittedViews = views;
             gameFramePoseMatched_ =
-                !gameMode_ || !gameFrame_ || uiQuad;
-            if (gameMode_ && gameFrame_ && !uiQuad)
+                !gameMode_ || !gameFrame_ || quadPresentation;
+            if (gameMode_ && gameFrame_ && !quadPresentation)
             {
+                // Usability branch: a stale pair audit must never hide a usable
+                // GTA world frame. Present the newest valid transaction against
+                // the current OpenXR views; pair/pose identities remain logged
+                // for diagnosis but are not a black-frame gate.
                 gameFramePoseMatched_ = true;
-                for (uint32_t eye = 0u; eye < EyeCount; ++eye)
+                if (!loggedGamePoseMatch_)
                 {
-                    if (!findRenderedView(
-                            gameFrame_.poseSequence[eye],
-                            gameFrame_.renderedDisplayTime[eye],
-                            eye,
-                            submittedViews[eye]))
-                    {
-                        gameFramePoseMatched_ = false;
-                        break;
-                    }
+                    std::ostringstream message;
+                    message
+                        << "XRHost: latest-frame world presentation active "
+                           "(no pair/pose black gate) "
+                        << "transaction=" << gameFrame_.transactionId
+                        << " pose=" << gameFrame_.poseSequence[0];
+                    logger_.write(message.str());
+                    loggedGamePoseMatch_ = true;
                 }
-                if (!gameFramePoseMatched_)
-                {
-                    const uint64_t now = GetTickCount64();
-                    if (lastPoseMissLogTick_ == 0u
-                        || now - lastPoseMissLogTick_ >= 2000u)
-                    {
-                        std::ostringstream message;
-                        message
-                            << "XRHost: holding black; transaction "
-                            << gameFrame_.transactionId
-                            << " has no exact retained pose/FOV "
-                            << gameFrame_.poseSequence[0] << '/'
-                            << gameFrame_.poseSequence[1];
-                        logger_.write(message.str());
-                        lastPoseMissLogTick_ = now;
-                    }
-                    submittedViews = views;
-                }
+            }
+            if (gameMode_
+                && gameFrame_
+                && gameFrame_.presentationMode
+                    == gtaiv_xr_bridge::PresentationMode::WorldMono)
+            {
+                // The game produced one center-eye camera image. Submit that
+                // same render pose to both eyes so the compositor has an
+                // honest mono source for reprojection; the current per-eye
+                // FOVs still fill the headset and head motion remains live.
+                XrView renderedLeft { XR_TYPE_VIEW };
+                XrView renderedRight { XR_TYPE_VIEW };
+                const bool haveRenderedViews =
+                    findRenderedView(
+                        gameFrame_.poseSequence[0],
+                        gameFrame_.renderedDisplayTime[0],
+                        0u,
+                        renderedLeft)
+                    && findRenderedView(
+                        gameFrame_.poseSequence[1],
+                        gameFrame_.renderedDisplayTime[1],
+                        1u,
+                        renderedRight);
+                const XrView& left =
+                    haveRenderedViews ? renderedLeft : views[0];
+                const XrView& right =
+                    haveRenderedViews ? renderedRight : views[1];
+                XrPosef centerPose = left.pose;
+                centerPose.position.x =
+                    (left.pose.position.x + right.pose.position.x) * 0.5f;
+                centerPose.position.y =
+                    (left.pose.position.y + right.pose.position.y) * 0.5f;
+                centerPose.position.z =
+                    (left.pose.position.z + right.pose.position.z) * 0.5f;
+                submittedViews[0].pose = centerPose;
+                submittedViews[1].pose = centerPose;
             }
 
             if (!loggedFov_)
@@ -1918,14 +1991,30 @@ private:
                 loggedFov_ = true;
             }
 
-            if (uiQuad)
+            if (quadPresentation)
             {
-                renderGameTexture(
-                    uiSwapchain_,
-                    gameFrame_.eyeViews[gameFrame_.uiEye]);
-                submittedLayer =
-                    reinterpret_cast<const XrCompositionLayerBaseHeader*>(
-                        &uiLayer);
+                if (quadPoseReady)
+                {
+                    const uint32_t contentWidth =
+                        gameFrame_.contentWidth != 0u
+                            ? gameFrame_.contentWidth
+                            : gameFrame_.width;
+                    const uint32_t contentHeight =
+                        gameFrame_.contentHeight != 0u
+                            ? gameFrame_.contentHeight
+                            : gameFrame_.height;
+                    const uint32_t sourceEye =
+                        uiQuad ? gameFrame_.uiEye : 0u;
+                    renderGameTexture(
+                        uiSwapchain_,
+                        gameFrame_.eyeViews[sourceEye],
+                        contentWidth,
+                        contentHeight,
+                        false);
+                    submittedLayer =
+                        reinterpret_cast<const XrCompositionLayerBaseHeader*>(
+                            &uiLayer);
+                }
             }
             else
             {
@@ -1951,7 +2040,7 @@ private:
                     reinterpret_cast<const XrCompositionLayerBaseHeader*>(
                         &projectionLayer);
             }
-            rendered = true;
+            rendered = !quadPresentation || quadPoseReady;
         }
 
         XrFrameEndInfo endInfo { XR_TYPE_FRAME_END_INFO };
@@ -1966,7 +2055,10 @@ private:
 
     void renderGameTexture(
         ColorSwapchain& swapchain,
-        ID3D11ShaderResourceView* sourceView)
+        ID3D11ShaderResourceView* sourceView,
+        uint32_t contentWidth,
+        uint32_t contentHeight,
+        bool cropToFill)
     {
         uint32_t imageIndex = 0;
         XrSwapchainImageAcquireInfo acquireInfo { XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO };
@@ -2000,13 +2092,20 @@ private:
         {
             GameConstants constants {};
             constants.sourceAndViewport[0] =
-                static_cast<float>(gameFrame_.width);
+                static_cast<float>(
+                    contentWidth != 0u
+                        ? contentWidth
+                        : gameFrame_.width);
             constants.sourceAndViewport[1] =
-                static_cast<float>(gameFrame_.height);
+                static_cast<float>(
+                    contentHeight != 0u
+                        ? contentHeight
+                        : gameFrame_.height);
             constants.sourceAndViewport[2] =
                 static_cast<float>(swapchain.width);
             constants.sourceAndViewport[3] =
                 static_cast<float>(swapchain.height);
+            constants.presentation[0] = cropToFill ? 1.0f : 0.0f;
             context_->UpdateSubresource(
                 gameConstantBuffer_.Get(),
                 0,
@@ -2040,11 +2139,32 @@ private:
         ColorSwapchain& swapchain = swapchains_[eye];
         if (gameMode_)
         {
+            const bool immersiveMono =
+                gameFrame_.presentationMode
+                    == gtaiv_xr_bridge::PresentationMode::WorldMono;
+            const uint32_t sourceEye = immersiveMono ? 0u : eye;
             ID3D11ShaderResourceView* sourceView =
                 gameFrame_ && gameFramePoseMatched_
-                    ? gameFrame_.eyeViews[eye]
+                    ? gameFrame_.eyeViews[sourceEye]
                     : nullptr;
-            renderGameTexture(swapchain, sourceView);
+            const gtaiv_xr_host::GameTextureLayout layout = immersiveMono
+                ? gtaiv_xr_host::GameTextureLayout {
+                    gameFrame_.width,
+                    gameFrame_.height }
+                : gtaiv_xr_host::ResolveGameTextureLayout(
+                    gameFrame_.presentationMode,
+                    gameFrame_.width,
+                    gameFrame_.height,
+                    gameFrame_.contentWidth,
+                    gameFrame_.contentHeight,
+                    swapchain.width,
+                    swapchain.height);
+            renderGameTexture(
+                swapchain,
+                sourceView,
+                layout.aspectWidth,
+                layout.aspectHeight,
+                immersiveMono);
             return;
         }
 
@@ -2268,6 +2388,7 @@ private:
     gtaiv_xr_host::GameFrameView gameFrame_;
     gtaiv_xr_host::HapticBridge hapticBridge_;
     gtaiv_xr_host::PoseBridgePublisher poseBridge_;
+    gtaiv_xr_host::StationaryMenuQuadLatch menuQuadLatch_;
     std::array<LocatedViewSample, 256u> locatedViewHistory_;
 
     std::vector<XrViewConfigurationView> viewConfigurationViews_;
@@ -2295,6 +2416,7 @@ private:
     bool inputSyncErrorLogged_ = false;
     bool recenterChordDown_ = false;
     bool gameFramePoseMatched_ = false;
+    bool loggedGamePoseMatch_ = false;
     bool gameMode_ = false;
     gtaiv_xr_bridge::PresentationMode lastLoggedPresentationMode_ =
         gtaiv_xr_bridge::PresentationMode::Unknown;
@@ -2369,9 +2491,37 @@ int main(int argc, char** argv)
                     "Frame bridge protocol self-test failed: "
                     + protocolFailure);
             }
+            std::string cpuMailboxFailure;
+            if (!gtaiv_xr_host::GameBridgeCpuMailboxSelfTest(
+                    cpuMailboxFailure))
+            {
+                throw std::runtime_error(
+                    "CPU mailbox self-test failed: "
+                    + cpuMailboxFailure);
+            }
+            std::string menuQuadFailure;
+            if (!gtaiv_xr_host::StationaryMenuQuadPoseSelfTest(
+                    menuQuadFailure))
+            {
+                throw std::runtime_error(
+                    "Stationary menu quad self-test failed: "
+                    + menuQuadFailure);
+            }
+            std::string textureLayoutFailure;
+            if (!gtaiv_xr_host::GameTextureLayoutSelfTest(
+                    textureLayoutFailure))
+            {
+                throw std::runtime_error(
+                    "Game/menu texture routing self-test failed: "
+                    + textureLayoutFailure);
+            }
             logger->write(
-                "SelfTest: PASS pointerBits=64 shaders=ok protocol=v4 "
-                "worldStrict=1 wvpProof=1 uiQuad=1 runtimeUntouched=1");
+                "SelfTest: PASS pointerBits=64 shaders=ok protocol=v6 "
+                "worldStrict=1 wvpProof=1 drawSceneProof=1 immersiveMono=1 "
+                "cpuMailbox=1 cpuMailboxStereo=1 cpuMailboxWorldUi=1 "
+                "stationaryUiQuad=1 uiAspect=1 routeSwitch=1 "
+                "srgbDecode=1 "
+                "runtimeUntouched=1");
             return 0;
         }
 

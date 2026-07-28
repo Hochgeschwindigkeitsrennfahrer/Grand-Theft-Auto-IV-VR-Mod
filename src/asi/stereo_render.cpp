@@ -11,6 +11,7 @@
 #include "ui_state.h"
 #include "vr_display.h"
 
+#include "../bridge/gtaiv_xr_frame_bridge.h"
 #include "../bridge/gtaiv_xr_fov_math.h"
 #include "../../thirdparty/dxvk/d3d9_vk_interop.h"
 #include "../../thirdparty/minhook/include/MinHook.h"
@@ -79,6 +80,8 @@ bool g_haveR = false;
 bool g_loggedIpd = false;
 std::atomic<uint32_t> g_temporalFrames{0};
 std::atomic<uint32_t> g_sameFrameCount{0};
+std::atomic<bool> g_openXrDrawSceneStereoDead{false};
+std::atomic<uint32_t> g_openXrDrawSceneStereoCount{0};
 
 // Mode 30 phase machine (no prologue hooks — reuses Mode 23 exec path).
 enum class Mode30Phase : int { SoftStart = 0, Dual = 1, PairHold = 2 };
@@ -118,25 +121,61 @@ OpenXrCaptureStamp g_submitOpenXrStamp[2]{};
 std::atomic<uint64_t> g_openXrPairId{0};
 bool g_openXrPairSameTick = false;
 bool g_openXrPairVerifiedWvp = false;
+bool g_openXrPairVerifiedDrawScene = false;
+bool g_openXrPairUiQuad = false;
+bool g_openXrPairImmersiveMono = false;
+uint32_t g_openXrPairContentWidth = 0u;
+uint32_t g_openXrPairContentHeight = 0u;
+gtaiv_xr_bridge::PoseBridge g_openXrRenderPose{};
+bool g_openXrRenderPoseValid = false;
+
+enum class OpenXrCaptureRoute : uint32_t {
+  None = 0u,
+  UiQuad = 1u,
+  WorldMono = 2u,
+  WorldStereo = 3u,
+};
+
+uint64_t g_lastOpenXrCapturePoseSequence = 0u;
+OpenXrCaptureRoute g_lastOpenXrCaptureRoute =
+    OpenXrCaptureRoute::None;
+
+bool OpenXrCaptureAlreadyCompleted(OpenXrCaptureRoute route) {
+  return g_openXrRenderPoseValid &&
+      g_openXrRenderPose.frameId != 0u &&
+      g_lastOpenXrCapturePoseSequence == g_openXrRenderPose.frameId &&
+      g_lastOpenXrCaptureRoute == route;
+}
+
+void MarkOpenXrCaptureCompleted(OpenXrCaptureRoute route) {
+  g_lastOpenXrCapturePoseSequence = g_openXrRenderPose.frameId;
+  g_lastOpenXrCaptureRoute = route;
+}
 
 OpenXrCaptureStamp CaptureOpenXrStamp() {
   OpenXrCaptureStamp stamp{};
-  gtaiv_xr_bridge::PoseBridge pose{};
-  if (!GetLatestOpenXrPoseBridge(&pose) ||
-      (pose.flags & gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
-      pose.frameId == 0u) {
+  if (!g_openXrRenderPoseValid ||
+      (g_openXrRenderPose.flags &
+       gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
+      g_openXrRenderPose.frameId == 0u) {
     return stamp;
   }
   stamp.sourceFrameId = g_frameSeq.load(std::memory_order_relaxed);
-  stamp.poseSequence = pose.frameId;
-  stamp.renderedDisplayTime = pose.predictedDisplayTime;
+  stamp.poseSequence = g_openXrRenderPose.frameId;
+  stamp.renderedDisplayTime =
+      g_openXrRenderPose.predictedDisplayTime;
   stamp.valid = true;
   return stamp;
 }
 
 void CompleteOpenXrPair(const OpenXrCaptureStamp& left,
                         const OpenXrCaptureStamp& right,
-                        bool verifiedWvpStereo = false) {
+                        bool verifiedWvpStereo = false,
+                        uint32_t contentWidth = 0u,
+                        uint32_t contentHeight = 0u,
+                        bool uiQuad = false,
+                        bool immersiveMono = false,
+                        bool verifiedDrawSceneStereo = false) {
   g_submitOpenXrStamp[0] = left;
   g_submitOpenXrStamp[1] = right;
   g_openXrPairSameTick =
@@ -145,6 +184,14 @@ void CompleteOpenXrPair(const OpenXrCaptureStamp& left,
       left.poseSequence == right.poseSequence;
   g_openXrPairVerifiedWvp =
       g_openXrPairSameTick && verifiedWvpStereo;
+  g_openXrPairVerifiedDrawScene =
+      g_openXrPairSameTick && verifiedDrawSceneStereo;
+  g_openXrPairUiQuad = uiQuad;
+  g_openXrPairImmersiveMono = immersiveMono;
+  g_openXrPairContentWidth =
+      contentWidth != 0u ? contentWidth : g_rtW;
+  g_openXrPairContentHeight =
+      contentHeight != 0u ? contentHeight : g_rtH;
   g_openXrPairId.fetch_add(1u, std::memory_order_release);
 }
 
@@ -162,7 +209,8 @@ bool UsesFovComfortPath(StereoMode mode) {
          mode == StereoMode::HeadOwnedCamStereoAlways ||
          mode == StereoMode::HeadOwnedCamStereoAer ||
          mode == StereoMode::HeadOwnedCamStereoSwap ||
-         mode == StereoMode::HeadOwnedCamStereoSoftGuard;
+         mode == StereoMode::HeadOwnedCamStereoSoftGuard ||
+         mode == StereoMode::OpenXrImmersiveMono;
 }
 
 bool UsesTrueFovCanvasPublish(StereoMode mode) {
@@ -681,14 +729,16 @@ constexpr uint32_t kCanvasMaxDim = 2048;
 constexpr uint32_t kCanvasMaxDimComfort = 1536;
 
 bool GetCanvasCoverFovTangents(float* horizontal, float* vertical) {
-  if (GetStereoMode() != StereoMode::OpenXrSameFrameWvp)
+  if (!IsOpenXrDirectMode(GetStereoMode()))
     return GetCoverFovTangents(horizontal, vertical);
 
-  gtaiv_xr_bridge::PoseBridge pose{};
-  if (!GetLatestOpenXrPoseBridge(&pose) ||
-      (pose.flags & gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
+  if (!g_openXrRenderPoseValid ||
+      (g_openXrRenderPose.flags &
+       gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
       !gtaiv_xr_bridge::ComputeOpenXrCoverTangents(
-          pose.eyeFovs, horizontal, vertical)) {
+          g_openXrRenderPose.eyeFovs,
+          horizontal,
+          vertical)) {
     return false;
   }
 
@@ -709,16 +759,21 @@ bool GetCanvasEyeRawProjection(vr::EVREye eye,
                                float* right,
                                float* top,
                                float* bottom) {
-  if (GetStereoMode() != StereoMode::OpenXrSameFrameWvp)
+  if (!IsOpenXrDirectMode(GetStereoMode()))
     return GetEyeRawProjection(eye, left, right, top, bottom);
 
-  gtaiv_xr_bridge::PoseBridge pose{};
   const uint32_t eyeIndex =
       eye == vr::Eye_Right ? 1u : 0u;
-  if (!GetLatestOpenXrPoseBridge(&pose) ||
-      (pose.flags & gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
+  if (!g_openXrRenderPoseValid ||
+      (g_openXrRenderPose.flags &
+       gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
       !gtaiv_xr_bridge::ComputeOpenXrEyeRawTangents(
-          pose.eyeFovs, eyeIndex, left, right, top, bottom)) {
+          g_openXrRenderPose.eyeFovs,
+          eyeIndex,
+          left,
+          right,
+          top,
+          bottom)) {
     return false;
   }
 
@@ -735,6 +790,24 @@ bool GetCanvasEyeRawProjection(vr::EVREye eye,
 void ComputeCanvasSize(uint32_t bbW, uint32_t bbH, uint32_t* outW, uint32_t* outH) {
   *outW = bbW;
   *outH = bbH;
+  if (GetStereoMode() == StereoMode::OpenXrImmersiveMono ||
+      GetStereoMode() == StereoMode::OpenXrDrawSceneStereo) {
+    // The advancing CPU mailbox uses a fixed 16:9 capture. GTA can keep its
+    // desktop resolution, but neither the mono route nor the L/R pair route
+    // reads back or uploads that 4K allocation.
+    *outW = gtaiv_xr_bridge::CpuFrameMaxWidth;
+    *outH = gtaiv_xr_bridge::CpuFrameMaxHeight;
+    static bool logged = false;
+    if (!logged) {
+      logged = true;
+      Log(
+          "StereoCanvasSize: OpenXR CPU mailbox=%ux%u "
+          "(GTA backbuffer is downscaled before readback)",
+          *outW,
+          *outH);
+    }
+    return;
+  }
   float coverH = 0.f, coverV = 0.f;
   if (!GetCanvasCoverFovTangents(&coverH, &coverV))
     return;
@@ -820,39 +893,17 @@ bool CopyBbToUiTexture(IDirect3DDevice9* dev, IDirect3DTexture9* texture) {
     source->Release();
     return false;
   }
-  RECT destinationRect{
-      0,
-      0,
-      static_cast<LONG>(destinationDescription.Width),
-      static_cast<LONG>(destinationDescription.Height)};
-  const float sourceAspect =
-      static_cast<float>(sourceDescription.Width) /
-      static_cast<float>((std::max)(1u, sourceDescription.Height));
-  const float destinationAspect =
-      static_cast<float>(destinationDescription.Width) /
-      static_cast<float>((std::max)(1u, destinationDescription.Height));
-  if (destinationAspect > sourceAspect) {
-    const LONG contentWidth = static_cast<LONG>(
-        static_cast<float>(destinationDescription.Height) * sourceAspect + 0.5f);
-    destinationRect.left =
-        (static_cast<LONG>(destinationDescription.Width) - contentWidth) / 2;
-    destinationRect.right = destinationRect.left + contentWidth;
-  } else {
-    const LONG contentHeight = static_cast<LONG>(
-        static_cast<float>(destinationDescription.Width) / sourceAspect + 0.5f);
-    destinationRect.top =
-        (static_cast<LONG>(destinationDescription.Height) - contentHeight) / 2;
-    destinationRect.bottom = destinationRect.top + contentHeight;
-  }
-
   HRESULT result =
       dev->ColorFill(destination, nullptr, D3DCOLOR_XRGB(0, 0, 0));
   if (SUCCEEDED(result)) {
+    // The world and UI presentations intentionally share one stable texture
+    // allocation. Fill it completely here; protocol v5 carries the original
+    // backbuffer aspect so the x64 host restores the menu shape on its quad.
     result = dev->StretchRect(
         source,
         nullptr,
         destination,
-        &destinationRect,
+        nullptr,
         D3DTEXF_LINEAR);
   }
   destination->Release();
@@ -861,6 +912,10 @@ bool CopyBbToUiTexture(IDirect3DDevice9* dev, IDirect3DTexture9* texture) {
 }
 
 bool CaptureOpenXrUiPair(IDirect3DDevice9* device) {
+  if (OpenXrCaptureAlreadyCompleted(
+          OpenXrCaptureRoute::UiQuad)) {
+    return true;
+  }
   g_haveL = false;
   g_haveR = false;
   g_pairAwaitingR = false;
@@ -891,21 +946,32 @@ bool CaptureOpenXrUiPair(IDirect3DDevice9* device) {
   if (!EnsureEyeRts(device, textureWidth, textureHeight))
     return false;
 
+  // Quad presentation consumes eye 0 only. Keep the second texture allocated
+  // for the fixed stereo ABI, but do not spend another GTA/DXVK copy on an
+  // identical image.
   const bool leftReady = CopyBbToUiTexture(device, g_texL);
-  const bool rightReady = CopyBbToUiTexture(device, g_texR);
+  const bool rightReady = g_texR != nullptr;
   const OpenXrCaptureStamp stamp = CaptureOpenXrStamp();
   if (!leftReady || !rightReady || !stamp.valid)
     return false;
 
   g_haveL = true;
   g_haveR = true;
-  CompleteOpenXrPair(stamp, stamp);
+  CompleteOpenXrPair(
+      stamp,
+      stamp,
+      false,
+      description.Width,
+      description.Height,
+      true,
+      false);
+  MarkOpenXrCaptureCompleted(OpenXrCaptureRoute::UiQuad);
   static uint32_t count = 0u;
   ++count;
   if (count <= 4u || count % 300u == 0u) {
     Log(
-        "StereoUI: same-frame aspect-preserved pair #%u source=%ux%u "
-        "texture=%ux%u pose=%llu",
+        "StereoUI: same-frame quad pair #%u sourceAspect=%ux%u "
+        "sharedTexture=%ux%u pose=%llu",
         count,
         description.Width,
         description.Height,
@@ -1072,6 +1138,84 @@ bool CopyBbToEyeCanvas(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye
   const bool ok = CopySurfToEyeCanvas(dev, bb, tex, eye);
   bb->Release();
   return ok;
+}
+
+bool CaptureOpenXrWorldMonoPair(IDirect3DDevice9* device) {
+  if (OpenXrCaptureAlreadyCompleted(
+          OpenXrCaptureRoute::WorldMono)) {
+    return true;
+  }
+  g_haveL = false;
+  g_haveR = false;
+  g_pairAwaitingR = false;
+  g_holdOpenXrStamp[0] = {};
+  g_holdOpenXrStamp[1] = {};
+  SetStereoEye(StereoEye::Left);
+
+  IDirect3DSurface9* backBuffer = nullptr;
+  if (!device ||
+      FAILED(device->GetBackBuffer(
+          0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) ||
+      !backBuffer) {
+    return false;
+  }
+  D3DSURFACE_DESC description{};
+  const HRESULT descriptionResult = backBuffer->GetDesc(&description);
+  backBuffer->Release();
+  if (FAILED(descriptionResult))
+    return false;
+
+  uint32_t textureWidth = description.Width;
+  uint32_t textureHeight = description.Height;
+  ComputeCanvasSize(
+      description.Width,
+      description.Height,
+      &textureWidth,
+      &textureHeight);
+  if (!EnsureEyeRts(device, textureWidth, textureHeight))
+    return false;
+
+  // Keep gameplay on the same proven, unwarped, single-pass transport as the
+  // menu. The x64 host presents this center-eye image through a full OpenXR
+  // projection layer; GTA's existing camera hook consumes OpenXR head pose,
+  // so looking around changes the rendered world without a world-screen quad.
+  if (UsesPreCaptureCamRefresh(GetStereoMode()))
+    RefreshLiveCamForStereoEye();
+  const bool leftReady =
+      CopyBbToUiTexture(device, g_texL);
+  // World mono is submitted from eye 0. The distinct right allocation remains
+  // present for ABI compatibility and future true stereo, but is deliberately
+  // not copied for this one-image route.
+  const bool rightReady = g_texR != nullptr;
+  const OpenXrCaptureStamp stamp = CaptureOpenXrStamp();
+  if (!leftReady || !rightReady || !stamp.valid)
+    return false;
+
+  g_haveL = true;
+  g_haveR = true;
+  CompleteOpenXrPair(
+      stamp,
+      stamp,
+      false,
+      description.Width,
+      description.Height,
+      false,
+      true);
+  MarkOpenXrCaptureCompleted(OpenXrCaptureRoute::WorldMono);
+  static uint32_t count = 0u;
+  ++count;
+  if (count <= 4u || count % 300u == 0u) {
+    Log(
+        "StereoMono: center-eye capture pair #%u source=%ux%u "
+        "texture=%ux%u pose=%llu sameTick=1 disparity=0",
+        count,
+        description.Width,
+        description.Height,
+        textureWidth,
+        textureHeight,
+        static_cast<unsigned long long>(stamp.poseSequence));
+  }
+  return true;
 }
 
 // Mode 23: the scene may still live in the CURRENT color RT (offscreen) at
@@ -4887,6 +5031,72 @@ void RunSameFrameDualFromDrawScene(void* drawSelf, void* edx, bool useCurrentRt)
   }
 }
 
+// Direct OpenXR stereo route. This is the useful part of the newest upstream
+// clean branch: two guarded DrawScene passes, each captured into its own eye
+// canvas. Unlike the failed WVP experiment, it does not depend on replay-thread
+// Draw* interception. Unlike the legacy path, it uses only the cached OpenXR
+// pose and never queries or initializes OpenVR.
+bool RunOpenXrDrawSceneStereoGuarded(void* drawSelf, void* edx) {
+  if (!g_origBuild || !drawSelf || !g_device || !g_texL || !g_texR ||
+      !g_openXrRenderPoseValid)
+    return false;
+
+  __try {
+    // Pin both GTA eye renders to the exact pose carried by the transaction
+    // stamp. The host may publish a newer pose while GTA is executing, but it
+    // must not split an L/R pair across two head samples.
+    UpdateHmdPoseFromOpenXr(g_openXrRenderPose);
+    const OpenXrCaptureStamp stamp = CaptureOpenXrStamp();
+    if (!stamp.valid)
+      return false;
+
+    g_haveL = false;
+    g_haveR = false;
+    SetStereoEye(StereoEye::Left);
+    RefreshLiveCamForStereoEye();
+    g_origBuild(drawSelf, edx);
+    const bool leftReady = CopyBbToEyeCanvas(g_device, g_texL, vr::Eye_Left);
+
+    SetStereoEye(StereoEye::Right);
+    RefreshLiveCamForStereoEye();
+    g_origBuild(drawSelf, edx);
+    const bool rightReady = CopyBbToEyeCanvas(g_device, g_texR, vr::Eye_Right);
+
+    SetStereoEye(StereoEye::Left);
+    RefreshLiveCamForStereoEye();
+    if (!leftReady || !rightReady)
+      return false;
+
+    g_haveL = true;
+    g_haveR = true;
+    CompleteOpenXrPair(
+        stamp,
+        stamp,
+        false,
+        g_rtW,
+        g_rtH,
+        false,
+        false,
+        true);
+    MarkOpenXrCaptureCompleted(OpenXrCaptureRoute::WorldStereo);
+
+    const uint32_t count = ++g_openXrDrawSceneStereoCount;
+    if (count <= 4u || count % 120u == 0u) {
+      Log(
+          "StereoOpenXR: DrawScene L/R pair #%u capture=%ux%u "
+          "pose=%llu proof=draw-scene",
+          count,
+          g_rtW,
+          g_rtH,
+          static_cast<unsigned long long>(stamp.poseSequence));
+    }
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    SetStereoEye(StereoEye::Left);
+    return false;
+  }
+}
+
 void __fastcall HookBuildRenderList(void* self, void* edx) {
   if (!g_origBuild)
     return;
@@ -4895,6 +5105,40 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
   const StereoMode mode = GetStereoMode();
   if (mode == StereoMode::RenderRootProbe)
     LogRenderRootRet("BuildDrawScene", _ReturnAddress());
+
+  if (mode == StereoMode::OpenXrDrawSceneStereo) {
+    if (g_openXrDrawSceneStereoDead.load() || g_inDual.load() ||
+        GetUiPresentationState() || !IsCamMatrixOverrideEnabled() ||
+        !g_device || !g_texL || !g_texR ||
+        !g_openXrRenderPoseValid ||
+        (g_openXrRenderPose.flags &
+         gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
+        g_openXrRenderPose.frameId == 0u) {
+      // Host/session startup can legitimately precede the first usable OpenXR
+      // view packet. That is not a DrawScene seam failure: keep native GTA
+      // rendering until the shared pose bridge is ready instead of permanently
+      // killing the one stereo attempt on the loading/menu frames.
+      g_origBuild(self, edx);
+      return;
+    }
+
+    g_inDual.store(true);
+    const bool captured = RunOpenXrDrawSceneStereoGuarded(self, edx);
+    g_inDual.store(false);
+    if (captured)
+      return;
+
+    // Keep the user in native GTA rather than repeatedly corrupting a live
+    // frame if the upstream DrawScene seam is not valid for this scene.
+    g_openXrDrawSceneStereoDead.store(true);
+    g_haveL = false;
+    g_haveR = false;
+    Log(
+        "StereoOpenXR: DrawScene stereo capture failed; disabled for this "
+        "run and native GTA continues (Mode55 remains the safe fallback)");
+    g_origBuild(self, edx);
+    return;
+  }
 
   if (NeedsExecHooks(mode)) {
     TryInstallExecFromVtbl(self, 9, &g_execDHooked, &g_origExecD,
@@ -5279,6 +5523,20 @@ bool InstallAllThreePhases() {
 
 }  // namespace
 
+void StereoSetOpenXrRenderPose(
+    const gtaiv_xr_bridge::PoseBridge* pose) {
+  if (!pose ||
+      (pose->flags & gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
+      pose->frameId == 0u ||
+      pose->predictedDisplayTime == 0) {
+    g_openXrRenderPose = {};
+    g_openXrRenderPoseValid = false;
+    return;
+  }
+  g_openXrRenderPose = *pose;
+  g_openXrRenderPoseValid = true;
+}
+
 bool InstallStereoRenderHooks() {
   if (g_ok.load())
     return true;
@@ -5288,6 +5546,51 @@ bool InstallStereoRenderHooks() {
   if (mode == StereoMode::Off) {
     Log("StereoRender: mode 0 - skipped");
     return false;
+  }
+
+  if (mode == StereoMode::OpenXrImmersiveMono) {
+    SetStereoEye(StereoEye::Left);
+    g_haveL = false;
+    g_haveR = false;
+    g_pairAwaitingR = false;
+    g_openXrPairSameTick = false;
+    g_openXrPairVerifiedWvp = false;
+    const bool fovReady = InstallFovRecomputeSiteHook();
+    g_ok = fovReady;
+    Log(
+        "StereoRender: mode 55 OPENXR IMMERSIVE MONO "
+        "(one center-eye GTA render -> two projection textures; "
+        "no draw replay, no binocular stereo claim) fovOk=%d",
+        fovReady ? 1 : 0);
+    return g_ok.load();
+  }
+
+  if (mode == StereoMode::OpenXrDrawSceneStereo) {
+    SetStereoEye(StereoEye::Left);
+    g_haveL = false;
+    g_haveR = false;
+    g_pairAwaitingR = false;
+    g_openXrPairSameTick = false;
+    g_openXrPairVerifiedWvp = false;
+    g_openXrPairVerifiedDrawScene = false;
+    g_openXrDrawSceneStereoDead.store(false);
+    g_openXrDrawSceneStereoCount.store(0u);
+    const bool fovReady = InstallFovRecomputeSiteHook();
+    const uintptr_t drawScene = FindDrawSceneBuildRenderList();
+    const bool drawReady = HookOneBuild(
+        "OpenXrDrawScene",
+        drawScene,
+        reinterpret_cast<void*>(&HookBuildRenderList),
+        &g_origBuild);
+    g_ok = fovReady && drawReady;
+    Log(
+        "StereoRender: mode 56 OPENXR DRAWSCENE STEREO "
+        "(upstream L/R DrawScene x2 -> atomic CPU mailbox pair; "
+        "no OpenVR calls) fovOk=%d drawOk=%d",
+        fovReady ? 1 : 0,
+        drawReady ? 1 : 0);
+    Log("StereoRender: Mode55 is the immediate fallback if the guarded seam disables");
+    return g_ok.load();
   }
 
   if (IsTemporalStereoMode(mode)) {
@@ -5896,6 +6199,53 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
     }
     return;
   }
+  if (mode == StereoMode::OpenXrImmersiveMono) {
+    if (!CaptureOpenXrWorldMonoPair(device)) {
+      static uint64_t lastMonoFailureLogTick = 0u;
+      const uint64_t now = GetTickCount64();
+      if (lastMonoFailureLogTick == 0u ||
+          now - lastMonoFailureLogTick >= 2000u) {
+        Log(
+            "StereoMono: center-eye capture unavailable; "
+            "old transaction will not be refreshed");
+        lastMonoFailureLogTick = now;
+      }
+    }
+    return;
+  }
+  if (mode == StereoMode::OpenXrDrawSceneStereo) {
+    // The DrawScene hook creates the pair before this EndScene. This boundary
+    // only arms the fixed-size eye canvases for the next frame and clears the
+    // once-per-frame guard; it never replays or re-captures a stale pair.
+    g_dualDoneThisFrame = false;
+    IDirect3DSurface9* backBuffer = nullptr;
+    if (FAILED(device->GetBackBuffer(
+            0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) ||
+        !backBuffer) {
+      return;
+    }
+    D3DSURFACE_DESC description{};
+    const HRESULT described = backBuffer->GetDesc(&description);
+    backBuffer->Release();
+    if (FAILED(described))
+      return;
+    uint32_t textureWidth = description.Width;
+    uint32_t textureHeight = description.Height;
+    ComputeCanvasSize(
+        description.Width,
+        description.Height,
+        &textureWidth,
+        &textureHeight);
+    if (!EnsureEyeRts(device, textureWidth, textureHeight)) {
+      static uint64_t lastFailureTick = 0u;
+      const uint64_t now = GetTickCount64();
+      if (lastFailureTick == 0u || now - lastFailureTick >= 2000u) {
+        Log("StereoOpenXR: could not allocate the L/R CPU-mailbox canvases");
+        lastFailureTick = now;
+      }
+    }
+    return;
+  }
   if (!mode54DrawReady) {
     g_haveL = g_haveR = false;
     static uint64_t lastMode54HookFailureLogTick = 0u;
@@ -6188,6 +6538,8 @@ bool StereoAcquireOpenXrPair(OpenXrStereoPair* output) {
   output->eyes[1] = g_texR;
   output->width = left.Width;
   output->height = left.Height;
+  output->contentWidth = g_openXrPairContentWidth;
+  output->contentHeight = g_openXrPairContentHeight;
   output->format = left.Format;
   output->pairId = pairId;
   for (uint32_t eye = 0; eye < 2u; ++eye) {
@@ -6200,6 +6552,9 @@ bool StereoAcquireOpenXrPair(OpenXrStereoPair* output) {
   output->poseStamped =
       g_submitOpenXrStamp[0].valid && g_submitOpenXrStamp[1].valid;
   output->verifiedWvpStereo = g_openXrPairVerifiedWvp;
+  output->verifiedDrawSceneStereo = g_openXrPairVerifiedDrawScene;
+  output->uiQuad = g_openXrPairUiQuad;
+  output->immersiveMono = g_openXrPairImmersiveMono;
   return true;
 }
 

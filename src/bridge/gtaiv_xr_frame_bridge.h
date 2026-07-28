@@ -8,11 +8,28 @@
 // consumer from producerPid before they are opened.
 namespace gtaiv_xr_bridge
 {
-constexpr wchar_t MappingName[] = L"Local\\GTAIV_XR_FrameBridge_v4";
+constexpr wchar_t MappingName[] = L"Local\\GTAIV_XR_FrameBridge_v6";
 constexpr uint32_t Magic = 0x46525847u;  // "GXRF" in little-endian memory.
-constexpr uint32_t Version = 4u;
+constexpr uint32_t Version = 6u;
 constexpr uint32_t EyeCount = 2u;
 constexpr uint32_t SlotCount = 3u;
+constexpr wchar_t CpuFrameMappingName[] =
+    L"Local\\GTAIV_XR_CpuFrame_v2";
+constexpr uint32_t CpuFrameMagic = 0x50435847u; // "GXCP"
+constexpr uint32_t CpuFrameVersion = 2u;
+constexpr uint32_t CpuFrameMaxWidth = 1280u;
+constexpr uint32_t CpuFrameMaxHeight = 720u;
+constexpr uint32_t CpuFrameBytesPerPixel = 4u;
+constexpr uint32_t CpuFrameEyeCount = EyeCount;
+constexpr uint64_t CpuFrameEyeBytes =
+    static_cast<uint64_t>(CpuFrameMaxWidth)
+    * static_cast<uint64_t>(CpuFrameMaxHeight)
+    * CpuFrameBytesPerPixel;
+// Every slot reserves both eyes. Mono/UI transactions publish one source eye
+// and the host duplicates it into two private textures; validated world-stereo
+// transactions publish both images atomically under the same slot sequence.
+constexpr uint64_t CpuFrameSlotBytes =
+    static_cast<uint64_t>(CpuFrameEyeCount) * CpuFrameEyeBytes;
 
 enum class PixelFormat : uint32_t
 {
@@ -32,6 +49,14 @@ enum FrameFlags : uint32_t
     PoseStamped = 1u << 5u,
     TemporalStereo = 1u << 6u,
     VerifiedWvpStereo = 1u << 7u,
+    ImmersiveMono = 1u << 8u,
+    // Proven FNVVR-style advancing CPU mailbox. This is the isolated
+    // reliability path. It supports mono/UI and an atomic distinct-eye pair
+    // without placing a host release fence on GTA/DXVK's graphics queue.
+    CpuBgraMailbox = 1u << 9u,
+    // A same-tick L/R pair created by the known working DrawScene x2 seam.
+    // This is deliberately distinct from the stricter WVP-draw proof above.
+    VerifiedDrawSceneStereo = 1u << 10u,
 };
 
 enum class PresentationMode : uint32_t
@@ -39,6 +64,7 @@ enum class PresentationMode : uint32_t
     Unknown = 0u,
     WorldStereo = 1u,
     UiQuad = 2u,
+    WorldMono = 3u,
 };
 
 enum UiReasonFlags : uint32_t
@@ -59,6 +85,26 @@ struct ResourceSlot
 {
     EyeResource eyes[EyeCount];
     uint64_t transactionId;
+};
+
+// Pixels follow this header as SlotCount fixed-size BGRA slots. slotSequence
+// is odd while that slot is being written and even while stable. The consumer
+// accepts a slot only when the sequence is unchanged across its memcpy and the
+// slot transaction matches FrameBridge::transactionId.
+struct CpuFrameMailbox
+{
+    uint32_t magic;
+    uint32_t version;
+    uint32_t headerBytes;
+    uint32_t slotCount;
+    uint32_t maxWidth;
+    uint32_t maxHeight;
+    uint32_t bytesPerPixel;
+    uint32_t eyeCount;
+    volatile int32_t slotSequence[SlotCount];
+    uint32_t reserved1;
+    uint64_t slotTransactionId[SlotCount];
+    uint64_t mappingBytes;
 };
 
 // publicationSequence is odd while the producer writes and even when stable.
@@ -95,17 +141,21 @@ struct FrameBridge
     PresentationMode presentationMode;
     uint32_t uiReasonFlags;
     uint32_t uiEye;
+    uint32_t contentWidth;
+    uint32_t contentHeight;
     uint32_t reserved32;
-    uint64_t reserved64;
 };
 #pragma pack(pop)
 
 static_assert(sizeof(EyeResource) == 8u, "EyeResource ABI changed");
 static_assert(sizeof(ResourceSlot) == 24u, "ResourceSlot ABI changed");
+static_assert(sizeof(CpuFrameMailbox) == 80u, "CPU mailbox ABI changed");
 static_assert(sizeof(FrameBridge) == 256u, "FrameBridge ABI changed");
 static_assert(offsetof(FrameBridge, producerEpoch) == 24u, "FrameBridge layout changed");
 static_assert(offsetof(FrameBridge, transactionId) == 72u, "FrameBridge layout changed");
 static_assert(offsetof(FrameBridge, slots) == 152u, "FrameBridge layout changed");
 static_assert(offsetof(FrameBridge, mappingBytes) == 224u, "FrameBridge layout changed");
 static_assert(offsetof(FrameBridge, presentationMode) == 232u, "FrameBridge layout changed");
+constexpr uint64_t CpuFrameMappingBytes =
+    sizeof(CpuFrameMailbox) + SlotCount * CpuFrameSlotBytes;
 }

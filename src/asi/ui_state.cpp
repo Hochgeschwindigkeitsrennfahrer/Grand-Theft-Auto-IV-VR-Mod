@@ -2,6 +2,7 @@
 
 #include "aob.h"
 #include "log.h"
+#include "stereo_config.h"
 #include "../bridge/gtaiv_xr_frame_bridge.h"
 
 #include <windows.h>
@@ -155,7 +156,10 @@ UiPresentationState GetUiPresentationState()
     {
         Log(
             "UiState: presentation=%s reasons=0x%X",
-            state ? "head-locked quad" : "world stereo",
+            state ? "stationary local-space quad"
+                  : GetStereoMode() == StereoMode::OpenXrImmersiveMono
+                      ? "world immersive mono"
+                      : "world stereo",
             state.reasonFlags);
         g_lastLoggedReasons = state.reasonFlags;
     }

@@ -260,7 +260,21 @@ enum class StereoMode : int {
   // WVP contract is accounted for, and at least one gWorld factor proves the
   // camera transform. This mode is non-default and fail-closed.
   OpenXrSameFrameWvp = 54,
+  // Direct-OpenXR usability baseline. Applies one center-eye HMD camera,
+  // captures the completed GTA backbuffer once, and presents that same angular
+  // world image through both OpenXR projection views. This is
+  // immersive, head-tracked mono: no binocular depth claim and no draw replay.
+  OpenXrImmersiveMono = 55,
+  // Direct-OpenXR true-stereo candidate. Ports the newest upstream's guarded
+  // DrawScene x2 seam: GTA renders a matched L/R pair from the same cached
+  // OpenXR pose, and the sidecar publishes it only as a distinct-eye CPU
+  // mailbox transaction. It never calls OpenVR or SteamVR.
+  OpenXrDrawSceneStereo = 56,
 };
+
+// Modes whose compositor, pose, FOV and frame transport are the separate x64
+// OpenXR host. These modes must never consult OpenVR at runtime.
+bool IsOpenXrDirectMode(StereoMode mode);
 
 // Mode 40–49: rapid HMD delta → temporary mono pair. Mode 50+ never flattens.
 bool UsesMotionGuardStereo(StereoMode mode);

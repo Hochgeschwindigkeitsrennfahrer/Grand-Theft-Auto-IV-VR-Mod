@@ -170,7 +170,8 @@ void ApplyGeometryCanvasDefaults() {
     SaveStereoScaleFile(115);
   }
   if (!haveIpd) {
-    const int cm = static_cast<int>(ReadHmdIpdMeters() * 100.f + 0.5f);
+    const int cm =
+        static_cast<int>(ReadHmdIpdMeters() * 100.f + 0.5f);
     SetSepCm(cm);
     SaveIpdFile(cm);
   }
@@ -256,11 +257,11 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  // Two-digit modes 10..54. Mode 46 is remapped to protected Mode 45 below:
+  // Two-digit modes 10..56. Mode 46 is remapped to protected Mode 45 below:
   // its direct full-basis camera write froze after loading in a headset test.
   if (n >= 2 && buf[0] >= '1' && buf[0] <= '5' && buf[1] >= '0' && buf[1] <= '9') {
     const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 54)
+    if (v <= 56)
       return v;
   }
   if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
@@ -293,7 +294,7 @@ void ReloadStereoMode() {
     Log("StereoMode: requested 46 is DISABLED (post-load freeze); using protected mode 45");
   }
   int prev = g_mode.load();
-  if (v >= 0 && v <= 54) {
+  if (v >= 0 && v <= 56) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -330,9 +331,16 @@ void ReloadStereoMode() {
                            v == static_cast<int>(StereoMode::HeadOwnedCamStereoAlways) ||
                            v == static_cast<int>(StereoMode::HeadOwnedCamStereoAer) ||
                            v == static_cast<int>(StereoMode::HeadOwnedCamStereoSwap) ||
-                           v == static_cast<int>(StereoMode::HeadOwnedCamStereoSoftGuard) ||
-                           v == static_cast<int>(StereoMode::OpenXrSameFrameWvp))) {
-    ApplyGeometryCanvasDefaults();
+                            v == static_cast<int>(StereoMode::HeadOwnedCamStereoSoftGuard) ||
+                            v == static_cast<int>(StereoMode::OpenXrSameFrameWvp) ||
+                            v == static_cast<int>(StereoMode::OpenXrImmersiveMono) ||
+                            v == static_cast<int>(StereoMode::OpenXrDrawSceneStereo))) {
+    const bool directOpenXr = IsOpenXrDirectMode(static_cast<StereoMode>(v));
+    // Direct OpenXR must not query vr::VRSystem or create legacy OpenVR
+    // defaults. Existing user files are still read below; missing files keep
+    // the neutral in-memory defaults (WorldScale 1.0, IPD unused in Mode 55).
+    if (!directOpenXr)
+      ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadWorldScale();
     ReloadStereoScale();
@@ -344,7 +352,7 @@ void ReloadStereoMode() {
 }
 
 void WriteStereoModeFile(int mode) {
-  if (mode < 0 || mode > 54)
+  if (mode < 0 || mode > 56)
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -366,6 +374,12 @@ StereoMode GetStereoMode() {
 bool IsTemporalStereoMode(StereoMode mode) {
   return mode == StereoMode::DualRtSubmit ||
          (mode >= StereoMode::StereoFusion && mode <= StereoMode::CamFovWrite);
+}
+
+bool IsOpenXrDirectMode(StereoMode mode) {
+  return mode == StereoMode::OpenXrSameFrameWvp ||
+         mode == StereoMode::OpenXrImmersiveMono ||
+         mode == StereoMode::OpenXrDrawSceneStereo;
 }
 
 bool UsesAngleCorrectCanvas(StereoMode mode) {
@@ -396,8 +410,8 @@ bool UsesAngleCorrectCanvas(StereoMode mode) {
          mode == StereoMode::HeadOwnedCamStereoAlways ||
          mode == StereoMode::HeadOwnedCamStereoAer ||
          mode == StereoMode::HeadOwnedCamStereoSwap ||
-         mode == StereoMode::HeadOwnedCamStereoSoftGuard ||
-         mode == StereoMode::OpenXrSameFrameWvp;
+          mode == StereoMode::HeadOwnedCamStereoSoftGuard ||
+          IsOpenXrDirectMode(mode);
 }
 
 bool UsesMotionGuardStereo(StereoMode mode) {
@@ -427,12 +441,18 @@ bool UsesAerPoseSubmit(StereoMode mode) {
 }
 
 bool UsesPedCoupledYaw(StereoMode mode) {
-  return mode == StereoMode::HeadOwnedCamPedCoupled || UsesStereoAlwaysDistinct(mode);
+  return mode == StereoMode::HeadOwnedCamPedCoupled ||
+          mode == StereoMode::OpenXrImmersiveMono ||
+         mode == StereoMode::OpenXrDrawSceneStereo ||
+         UsesStereoAlwaysDistinct(mode);
 }
 
 bool UsesPreCaptureCamRefresh(StereoMode mode) {
   return mode == StereoMode::HeadOwnedCamPitchStable ||
-         mode == StereoMode::HeadOwnedCamPedCoupled || UsesStereoAlwaysDistinct(mode);
+         mode == StereoMode::HeadOwnedCamPedCoupled ||
+         mode == StereoMode::OpenXrImmersiveMono ||
+         mode == StereoMode::OpenXrDrawSceneStereo ||
+         UsesStereoAlwaysDistinct(mode);
 }
 
 bool UsesRtLockFovGate(StereoMode mode) {
@@ -441,7 +461,10 @@ bool UsesRtLockFovGate(StereoMode mode) {
          mode == StereoMode::HeadOwnedCamFullPose ||
          mode == StereoMode::HeadOwnedCamLeveledPitchFlip ||
          mode == StereoMode::HeadOwnedCamPitchStable ||
-         mode == StereoMode::HeadOwnedCamPedCoupled || UsesStereoAlwaysDistinct(mode);
+         mode == StereoMode::HeadOwnedCamPedCoupled ||
+         mode == StereoMode::OpenXrImmersiveMono ||
+         mode == StereoMode::OpenXrDrawSceneStereo ||
+         UsesStereoAlwaysDistinct(mode);
 }
 
 float GetStereoSepMeters() {

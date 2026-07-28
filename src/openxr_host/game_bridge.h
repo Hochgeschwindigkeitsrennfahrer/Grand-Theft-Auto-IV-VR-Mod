@@ -17,6 +17,8 @@ struct GameFrameView
     ID3D11ShaderResourceView* eyeViews[GameEyeCount] = {};
     uint32_t width = 0u;
     uint32_t height = 0u;
+    uint32_t contentWidth = 0u;
+    uint32_t contentHeight = 0u;
     uint64_t transactionId = 0u;
     uint64_t sourceFrameId[GameEyeCount] = {};
     uint64_t poseSequence[GameEyeCount] = {};
@@ -64,4 +66,8 @@ private:
 // Pure protocol checks used by --self-test. Does not open OpenXR, D3D, GTA,
 // Steam, or any shared mapping.
 bool GameBridgeProtocolSelfTest(std::string& failure);
+
+// Exercises the actual named CPU mailbox ingest path with a WARP D3D11 device.
+// This remains offline: it does not start OpenXR, GTA, Steam, or SteamVR.
+bool GameBridgeCpuMailboxSelfTest(std::string& failure);
 }

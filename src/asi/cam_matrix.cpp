@@ -391,7 +391,8 @@ void ApplyHmdToCam(Matrix44* mat) {
   // Cover FOV + TextureBounds (Submit) handle fusion; IPD alone is not enough.
   float ipdX = 0.f, ipdY = 0.f, ipdZ = 0.f;
   const bool rightEye = (GetStereoEye() == StereoEye::Right);
-  if (GetStereoMode() >= StereoMode::DualIpd) {
+  if (sm >= StereoMode::DualIpd &&
+      sm != StereoMode::OpenXrImmersiveMono) {
     float hrx, hry, hrz;
     OvrToGta(h.m[0][0], h.m[1][0], h.m[2][0], &hrx, &hry, &hrz);
     float hrlen = std::sqrt(hrx * hrx + hry * hry + hrz * hrz);
@@ -408,18 +409,35 @@ void ApplyHmdToCam(Matrix44* mat) {
     // Optional EyeToHead forward (OpenVR col2 translation) like L4D2 m_EyeZ.
     float eyeZ = 0.f;
     EyeOffset eyeOffset{};
-    if (GetCachedEyeOffset(rightEye, &eyeOffset))
+    const bool haveEyeOffset = GetCachedEyeOffset(rightEye, &eyeOffset);
+    if (haveEyeOffset)
       eyeZ = eyeOffset.z;
 
     // WorldScale (F7) = 6DoF only. StereoScale (F6, default 1.15, cap 1.30) =
     // soft disparity for size-without-fusion-break. Raw WorldScale×IPD at 1.5
     // made ~9 cm sep → fusion gone + violent jump (headset 2026-07-24).
-    const float half = 0.5f * GetStereoSepMeters() * GetStereoScale();
-    const float s = rightEye ? half : -half;
-    const float fzOff = -eyeZ;
-    ipdX = hrx * s + fx * fzOff;
-    ipdY = hry * s + fy * fzOff;
-    ipdZ = hrz * s + fz * fzOff;
+    if (sm == StereoMode::OpenXrDrawSceneStereo && haveEyeOffset) {
+      // The x64 OpenXR host supplies exact LOCAL-space eye poses. Transform
+      // the complete eye-to-head vector through the cached HMD basis rather
+      // than inventing an IPD from the legacy user configuration.
+      float hux, huy, huz;
+      float hbackX, hbackY, hbackZ;
+      OvrToGta(h.m[0][1], h.m[1][1], h.m[2][1], &hux, &huy, &huz);
+      OvrToGta(h.m[0][2], h.m[1][2], h.m[2][2],
+               &hbackX, &hbackY, &hbackZ);
+      Normalize(&hux, &huy, &huz);
+      Normalize(&hbackX, &hbackY, &hbackZ);
+      ipdX = hrx * eyeOffset.x + hux * eyeOffset.y + hbackX * eyeOffset.z;
+      ipdY = hry * eyeOffset.x + huy * eyeOffset.y + hbackY * eyeOffset.z;
+      ipdZ = hrz * eyeOffset.x + huz * eyeOffset.y + hbackZ * eyeOffset.z;
+    } else {
+      const float half = 0.5f * GetStereoSepMeters() * GetStereoScale();
+      const float s = rightEye ? half : -half;
+      const float fzOff = -eyeZ;
+      ipdX = hrx * s + fx * fzOff;
+      ipdY = hry * s + fy * fzOff;
+      ipdZ = hrz * s + fz * fzOff;
+    }
     if (std::isfinite(ipdX) && std::isfinite(ipdY) && std::isfinite(ipdZ) &&
         std::fabs(ipdX) < 20.f && std::fabs(ipdY) < 20.f && std::fabs(ipdZ) < 20.f) {
       eye.x += ipdX;
@@ -849,7 +867,9 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         sm == StereoMode::HeadOwnedCamStereoAlways ||
         sm == StereoMode::HeadOwnedCamStereoAer ||
         sm == StereoMode::HeadOwnedCamStereoSwap ||
-        sm == StereoMode::HeadOwnedCamStereoSoftGuard)
+        sm == StereoMode::HeadOwnedCamStereoSoftGuard ||
+        sm == StereoMode::OpenXrImmersiveMono ||
+        sm == StereoMode::OpenXrDrawSceneStereo)
       PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
 
     // Modes 45/46/47/48/49: Rage can revise a camera after CopyMat but before this already-safe
@@ -863,7 +883,9 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         sm == StereoMode::HeadOwnedCamStereoAlways ||
         sm == StereoMode::HeadOwnedCamStereoAer ||
         sm == StereoMode::HeadOwnedCamStereoSwap ||
-        sm == StereoMode::HeadOwnedCamStereoSoftGuard) {
+        sm == StereoMode::HeadOwnedCamStereoSoftGuard ||
+        sm == StereoMode::OpenXrImmersiveMono ||
+        sm == StereoMode::OpenXrDrawSceneStereo) {
       RefreshLiveCamForStereoEye();
       static uint32_t s_headOwnedRefreshes = 0;
       const uint32_t refreshes = ++s_headOwnedRefreshes;

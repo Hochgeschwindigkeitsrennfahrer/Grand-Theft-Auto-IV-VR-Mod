@@ -12,22 +12,26 @@ cd D:\code\gta-iv
 
 The build fetches the exact Khronos OpenXR SDK `release-1.1.61`, builds
 `out-openxr\gtaiv_xr_host.exe`, verifies PE machine `0x8664`, and runs a shader
-self-test plus ABI-v4 presentation checks without touching the headset runtime.
+self-test plus ABI-v6 mono/stereo mailbox, stationary-UI, aspect, and sRGB checks without
+touching the headset runtime.
 
 For the live Quest test, follow [`OPENXR_QUEST3_TEST.md`](OPENXR_QUEST3_TEST.md).
 
 ## Direct GTA-to-Quest image test (no SteamVR)
 
-The x86 ASI publishes distinct GTA eye resources through a GPU-only bridge: native
-D3D11 NT textures/fences are imported into DXVK's Vulkan device for the copy, then
-opened by the x64 host. The host uses stereo projection for an accepted same-tick
-world pair and a head-locked mono quad for pause/map, loading, and phone UI. OpenVR is
-a delayed fallback import, so `backend=openxr` does not load `openvr_api.dll` or start
-SteamVR.
+Mode 55 is the guarded FNVVR-style CPU-mailbox mono fallback. Mode 56 uses that same
+no-fence transport for a guarded DrawScene x2 left/right pair: the x86 ASI downsizes
+each GTA eye render to 1280x720 and writes both into one advancing triple-slot BGRA
+transaction. The x64 host ingests them into separate D3D11 textures and accepts world
+stereo only with the same-tick DrawScene proof. Pause/map, loading, and phone retain
+the stationary local-space quad with original GTA aspect. The host samples GTA pixels
+through an sRGB SRV. OpenVR is a delayed fallback import, so `backend=openxr` does not
+load `openvr_api.dll` or start SteamVR.
 
 The x86 build also compiles and runs `gtaiv_stereo_wvp_test.exe`. It checks row-vector
 WVP math, inverse residuals, singular/NaN rejection, exact CTAB parsing, and rejection
-of mismatched or partially patched draw-pair audits. This test does not load GTA,
+of mismatched or partially patched draw-pair audits. A second x86 test checks all
+Touch-to-XInput mappings and haptic motor routing. These tests do not load GTA,
 OpenXR, OpenVR, Steam, or a headset runtime.
 
 ```powershell

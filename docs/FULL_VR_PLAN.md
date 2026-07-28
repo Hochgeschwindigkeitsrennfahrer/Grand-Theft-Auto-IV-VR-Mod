@@ -6,11 +6,15 @@
 `codex/openxr-sidecar-integration` branch
 
 **Status:** implementation plan, not a claim that the OpenXR product path is complete.
-The replacement GPU-only ABI-v4 frame bridge, exact pose/FOV flow, Touch/XInput and
-haptics, UI quad, and guarded Mode 54 same-frame WVP candidate now compile and pass
-offline self-tests. None is a live acceptance result. True same-frame GTA world
-stereo remains unresolved until Mode 54's runtime draw audit and headset fusion tests
-pass.
+The former GPU-only ABI-v5 bridge stalled GTA/DXVK during live gameplay while waiting
+for host release fences. ABI-v6 uses a FNVVR-style 1280x720 triple-slot CPU mailbox.
+Mode 55 is the mono reliability fallback; Mode 56 carries a same-tick guarded
+DrawScene x2 left/right pair into two host textures. Exact pose/FOV flow, Touch/XInput
+and haptics, mono/stereo mailbox ingest, stationary UI quad, original UI aspect, and
+sRGB decode pass offline self-tests, including actual WARP readback. Neither Mode 55
+nor Mode 56 has a live acceptance result. The Mode 54 runtime audit failed
+architecturally: GTA's real draws execute later on a replay thread, outside its
+`Execute`-twice window.
 
 **Primary headset:** Meta Quest 3
 
@@ -366,15 +370,18 @@ The replacement keeps stock DXVK 3.0.2:
    D3D11 resources, GPU-copies the selected slot to private textures, signals release,
    and never aliases L/R views.
 
-The pointer-free ABI v4 publishes a complete transaction only after both eye copies
-are queued. World transactions additionally require the producer's
-`VerifiedWvpStereo` proof; UI quads do not. A slot cannot be reused until the release
-fence reaches its transaction. No CPU image path exists.
+The pointer-free ABI v5 publishes a complete transaction only after both eye copies
+are queued. `WorldStereo` additionally requires the producer's
+`VerifiedWvpStereo` proof; `WorldMono` requires the explicit immersive-mono flag and
+one exact source tick/pose; `UiQuad` carries the original content aspect. A slot
+cannot be reused until the release fence reaches its transaction. No CPU image path
+exists.
 
-Offline status on 2026-07-26: x86 and x64 builds pass; the x64 self-test verifies
-strict world-pair rejection and UI-quad acceptance without touching OpenXR. The GPU
-transport is still **not a live pass** until a separately authorized headset test
-proves adapter import, synchronization, changing pixels, and clean shutdown.
+Live status on 2026-07-26: the guarded 23:11 run proved adapter import, timeline
+synchronization, transaction publication/acquisition, and clean shutdown while
+SteamVR remained absent. ABI-v5 presentation semantics, sRGB private views, and
+stationary UI placement pass offline and still need the complete Mode 55 headset
+acceptance.
 
 ### Route C - last resort: minimal DXVK 3.0.2 patch
 
@@ -546,7 +553,7 @@ Pass:
 
 Publish the locked same-frame `StereoPair`:
 
-- distinct left/right GPU resources;
+- distinct left/right source images and host textures;
 - one game simulation tick;
 - one accepted pose sequence;
 - exact render poses/FOV;
@@ -564,13 +571,15 @@ Pass:
 
 ### Gate 7 - exact WVP surgery if Mode 24 fails
 
-Offline implementation update (2026-07-26): Mode 54 now parses the active shader's
+Historical implementation result (2026-07-26): Mode 54 parses the active shader's
 embedded CTAB, clusters exact `gWorld`/`gWorldViewProj` camera factors, patches only
 the dominant gameplay factor at each right-eye `Draw*`, restores constants
 immediately, and compares complete L/R draw sequences. Missing CTAB, ambiguous
 factors, partial patch coverage, changed constants, or failed restore invalidates the
-pair. ABI v4 carries that proof to both producer and host. This is a candidate, not a
-gate pass: runtime hook coverage and headset fusion/parallax remain untested.
+pair. ABI v5 preserves that proof for a future valid stereo producer. The guarded
+23:22 run reported `draws=0/0` and `verified=0`, while actual VS/draw work appeared
+later on the replay thread. Mode 54 is therefore a failed seam, not a candidate for
+more headset tuning.
 
 Use the FNVVR coordinate/WVP proof concept, not its game offsets:
 
@@ -631,8 +640,9 @@ Presentation modes:
 
 | Game state | OpenXR presentation |
 |---|---|
-| world gameplay | stereo projection layer |
-| pause/map/phone/menu/loading | stable mono quad layer |
+| world gameplay, Mode 55 fallback | immersive mono projection layer |
+| world gameplay, Mode 56 candidate | DrawScene-proof verified stereo projection layer |
+| pause/map/phone/menu/loading | stationary local-space mono quad layer |
 | invalid/stale transition | last safe UI quad for a bounded time, then blank |
 
 Add a read-only GTA UI-state probe before suppressing or moving any draw. Do not infer
@@ -640,25 +650,26 @@ all menu state from pixels.
 
 Offline implementation status (2026-07-26):
 
-- frame ABI v4 stamps `WorldStereo` or `UiQuad`, reason flags, the world-WVP proof,
-  and the freshest source
-  eye as one GPU transaction;
+- frame ABI v5 stamps `WorldMono`, `WorldStereo`, or `UiQuad`, reason flags,
+  immersive-mono/WVP-proof flags, original content dimensions, and the freshest
+  source eye as one GPU transaction;
 - GTA IV CE 1.2.0.59 pause/map, loading, and phone bytes are resolved read-only from
   unique AOB signatures; all probes are required or presentation fails closed;
-- at `EndScene`, UI mode copies the unwarped GTA backbuffer into two distinct textures
-  from the same frame, preserving the source aspect inside the existing GPU texture;
+- at `EndScene`, UI mode copies the unwarped GTA backbuffer into two distinct stable
+  textures from the same frame; v5 carries the original source dimensions so the
+  host restores its aspect on the quad;
 - `UiQuad` intentionally displays only one selected source image identically to both
   eyes; the protocol does not impose the world-stereo same-tick rule on UI;
-- the x64 host currently renders that image to a 16:9 swapchain and submits a core
-  `XrCompositionLayerQuad` in `XR_REFERENCE_SPACE_TYPE_VIEW`, 1.8 m forward;
-- headset feedback on 2026-07-26 rejected that face-locked placement; the accepted
-  target is a stationary local-space screen placed in front of the user when the UI
-  opens, which remains fixed while the head turns or translates;
+- the x64 host renders that image to its UI swapchain and submits a core
+  `XrCompositionLayerQuad` in `XR_REFERENCE_SPACE_TYPE_LOCAL`; its pose is latched
+  1.8 m in front of the current view when the UI opens and remains fixed while the
+  head turns or translates;
 - world mode remains strict: same source frame, pose sequence, and rendered
   `XrTime`, with exact retained pose/FOV or black.
 
-The head-locked quad reached the headset, but stationary placement remains a separate
-unimplemented behavior gate.
+The earlier head-locked quad reached the headset. Stationary placement and aspect
+restoration now pass pure offline tests but still need the complete Mode 55/56 headset
+acceptance.
 
 OpenXR actions:
 

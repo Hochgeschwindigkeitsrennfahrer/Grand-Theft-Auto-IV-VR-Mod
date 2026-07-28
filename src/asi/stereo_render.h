@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../bridge/gtaiv_xr_pose_bridge.h"
 #include "../../thirdparty/dxvk/d3d9_vk_interop.h"
 
 #include <cstdint>
@@ -10,6 +11,8 @@ struct OpenXrStereoPair {
   IDirect3DTexture9* eyes[2] = {nullptr, nullptr};
   uint32_t width = 0;
   uint32_t height = 0;
+  uint32_t contentWidth = 0;
+  uint32_t contentHeight = 0;
   D3DFORMAT format = D3DFMT_UNKNOWN;
   uint64_t pairId = 0;
   uint64_t sourceFrameId[2] = {};
@@ -18,12 +21,19 @@ struct OpenXrStereoPair {
   bool sameSimulationTick = false;
   bool poseStamped = false;
   bool verifiedWvpStereo = false;
+  bool verifiedDrawSceneStereo = false;
+  bool uiQuad = false;
+  bool immersiveMono = false;
 };
 
 bool InstallStereoRenderHooks();
 
 // Create/resize eye RTs when mode >= 4.
 void StereoRenderOnDevice(IDirect3DDevice9* device);
+// Pose/FOV that GTA used to render the frame currently at EndScene.
+// Null invalidates capture after host loss and before the first owned frame.
+void StereoSetOpenXrRenderPose(
+    const gtaiv_xr_bridge::PoseBridge* pose);
 
 // If mode >= 4 and RTs ready, Submit L/R from eye textures. Returns true if handled.
 bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop);

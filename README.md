@@ -9,20 +9,21 @@ GTAIV.exe (32-bit, D3D9)
   → d3d9.dll              (DXVK 3.0.2 — flat / desktop OK)
   → gtaiv_dxvk_vr.asi     (x86 GTA hooks + stereo capture)
       ├─ fallback: OpenVR Submit via ID3D9VkInterop → SteamVR
-      └─ direct: x86 GPU bridge → gtaiv_xr_host.exe (x64) → Meta OpenXR
+      └─ direct: x86 CPU mailbox → gtaiv_xr_host.exe (x64) → Meta OpenXR
 ```
 
-**Status (WIP):** the latest upstream camera/stereo code through Modes **50–53** is
-integrated. The direct OpenXR path builds offline as an x86 Vulkan/D3D11 GPU-frame
-producer plus x64 host. It includes exact pose/FOV matching, Quest Touch-to-XInput
-controls and haptics, strict same-tick world transactions, and a head-locked 2D quad
-for pause/map, loading, and phone UI. It does not load or call OpenVR when
-`backend=openxr`.
+**Status (WIP):** the latest `origin/master` camera/stereo code through Modes
+**50–53** is integrated. Direct-OpenXR Mode **56** now ports the newest upstream
+guarded DrawScene x2 seam into a two-image CPU-mailbox transaction; Mode **55** remains
+the center-eye mono fallback. The x86 ASI never initializes SteamVR on this route; the
+separate x64 host owns OpenXR. Pause/map, loading, and phone use a local-space quad
+fixed where it opens. Quest Touch maps through GTA's XInput path with haptics, and the
+host uses an explicit sRGB decode path.
 
-The replacement GPU transport and UI path are **not deployed or headset-tested**.
-True same-frame world parallax is still unresolved, so this is not yet full stereo.
-The game remains `backend=off`, and `scripts/run-openxr-gta.ps1` is preflight-only:
-it cannot start GTA, the host, Steam, or SteamVR. See `docs/CURRENT-STATE.md`.
+Mode 56's distinct L/R transport, Mode 55 fallback, stationary UI, and color handling
+pass offline tests but are **not deployed or headset-tested**. The game remains `backend=off`, and
+`scripts/run-openxr-gta.ps1` is preflight-only: it cannot start GTA, the host, Steam,
+or SteamVR. See `docs/CURRENT-STATE.md`.
 
 The separate x64 OpenXR calibration host now builds and reaches the installed Meta
 Quest 3 runtime. Build it with `.\scripts\build-openxr-host.ps1`, then follow
