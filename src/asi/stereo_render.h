@@ -15,6 +15,9 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
 // True while same-frame L/R dual pass is running (projection inject gate).
 bool StereoInDualPass();
 
+// Mode193: true while DrawScene is paused after a door/interior AV.
+bool StereoMode193SkipDrawActive();
+
 // Broader than dual: Left natural PhaseA..Draw + Right dual (mode 7/8).
 bool StereoProjWindowActive();
 
@@ -35,8 +38,11 @@ bool StereoMode33WantsDiscover();
 void StereoMode33CollectVsParents(void* retAddr, void* hookSpWords);
 bool StereoMode34WantsDiscover();
 void StereoMode34CollectVsRetCallers(void* retAddr, void* hookSpWords);
-// Mode 41: read-only replay-thread chain map. No game-function hooks.
+// Mode 41: read-only replay-thread chain map. Mode 196: same + owner resolve on 191.
 bool StereoMode41WantsTrace();
 void StereoMode41CollectVsRetChain(void* retAddr, void* hookSpWords);
+// Mode 198: at most one VsRet stack sample per EndScene (parent hunt).
+bool StereoMode198WantsSample();
+void StereoMode198CollectVsRet(void* retAddr, void* hookSpWords);
 
 }  // namespace asi

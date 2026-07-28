@@ -1,4 +1,5 @@
 #include "stereo_config.h"
+#include "game_timer.h"
 #include "hud_layout.h"
 #include "log.h"
 #include "vr_display.h"
@@ -248,7 +249,8 @@ void ReloadWorldScale() {
     return;
   SetWorldScalePercent(pct);
   if (!g_loggedScale.exchange(true))
-    Log("WorldScale6DoF: %.2f (file gtaiv_dxvk_vr.scale) — lean only; F7 = visual presets",
+    Log("WorldScale6DoF: %.2f (file gtaiv_dxvk_vr.scale) — lean always; Mode187+ also "
+        "×IPD (UEVR size; F11 cycle); F7 = fovadd/stereoscale presets",
         pct / 100.f);
 }
 
@@ -376,29 +378,12 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  // 180–189 phone-stereo family / 170–179 / 160–169 / 150–159 / 140–148 /
-  // 120–136 / 10–53. IMPORTANT: "170" must NOT fall through to 2-digit (→17).
-  if (n >= 3 && buf[0] == '1' && buf[1] == '8' && buf[2] >= '0' && buf[2] <= '9')
-    return 180 + (buf[2] - '0');
-  if (n >= 3 && buf[0] == '1' && buf[1] == '7' && buf[2] >= '0' && buf[2] <= '9')
-    return 170 + (buf[2] - '0');
-  if (n >= 3 && buf[0] == '1' && buf[1] == '6' && buf[2] >= '0' && buf[2] <= '9')
-    return 160 + (buf[2] - '0');
-  if (n >= 3 && buf[0] == '1' && buf[1] == '5' && buf[2] >= '0' && buf[2] <= '9')
-    return 150 + (buf[2] - '0');
-  if (n >= 3 && buf[0] == '1' && buf[1] == '4' && buf[2] >= '0' && buf[2] <= '8')
-    return 140 + (buf[2] - '0');
-  if (n >= 3 && buf[0] == '1' && buf[1] == '3' && buf[2] >= '0' && buf[2] <= '6')
-    return 130 + (buf[2] - '0');
-  if (n >= 3 && buf[0] == '1' && buf[1] == '2' && buf[2] >= '0' && buf[2] <= '9')
-    return 120 + (buf[2] - '0');
-  if (n >= 2 && buf[0] >= '1' && buf[0] <= '5' && buf[1] >= '0' && buf[1] <= '9') {
-    const int v = 10 * (buf[0] - '0') + (buf[1] - '0');
-    if (v <= 53)
-      return v;
-  }
-  if (n >= 1 && buf[0] >= '0' && buf[0] <= '9')
-    return buf[0] - '0';
+  // Full integer parse — do NOT prefer 2-digit first ("190" must not become 19).
+  // Old digit-prefix tables stopped at 189 and made Mode190 load as Mode19 (mono).
+  (void)n;
+  int v = -1;
+  if (sscanf_s(buf, "%d", &v) == 1 && v >= 0 && v < 1000)
+    return v;
   return -1;
 }
 
@@ -467,12 +452,190 @@ void ReloadStereoMode() {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadStereoScale();
-    if (v == static_cast<int>(StereoMode::OursFpPhoneStereo)) {
+    if (v == static_cast<int>(StereoMode::OursFpSameTickParentDualTry2)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      // Preserve user IPD (203 milestone proved IPD alone is not the near-double fix).
+      Log("Mode204: OURS+PARENT-DUAL-TRY2 — Mode203 pose-latch dual on Mode198 parent "
+          "fn=0x4DE020 (ret 0x4DE0DC thiscall-56); kill=203 MILESTONE");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDualPose)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode203: MILESTONE — TRUE 3D VR checkpoint (pose latch @0x4D8BF0); "
+          "snapshot prebuilt/mode203; kill=200/191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDualVs)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      SetSepCm(6);
+      SaveIpdFile(6);
+      Log("Mode202: REJECT — VS-translate fuses when still, blurs on look (not true "
+          "same-tick view); use 203; kill=200/191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDualFreeze)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode201: REJECT — cam freeze; use 202 VS dual or 200; kill=200/191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode200: PASS smooth — parent dual CCam±IPD; fusion weak → try 202; kill=191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentCount)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode199: PASS — Mode191 dual + COUNT @0x4D8BF0 avg~1/ES; next=200 parent dual; "
+          "kill=191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentProbe)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode198: OURS+SAME-TICK-PARENT-PROBE — Mode191 dual + ONE VsRet stack "
+          "sample/EndScene (hunt ~1x/frame above 0x220D0; no VQ storm); kill=191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickOwnerCount)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode197: FAILED — 0x220D0 is per-draw hot (COUNT trampoline worse FPS + "
+          "flicker vs 191); hook NOT installed; behaves as Mode191; kill=191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickOwnerObserve)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode196: DONE/DISABLED observe — use 197 COUNT or 191; prior 1FPS+crash; "
+          "kill=191");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickDrawRight)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode194: OURS+SAME-TICK-DRAW-RIGHT — Left BuildRootA + Right "
+          "DrawScene+PushLiveCam; distinct L/R angles but NO fusion; kill=191/192");
+    } else if (v == static_cast<int>(StereoMode::OursFpHeadBoneThiscall)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode193: OURS+HEAD-BONE — pair-freeze + MONO DrawScene×1 (door-safe; weak "
+          "parallax); kill=187");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickPhaseRight)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode192: OURS+SAME-TICK-PHASE-RIGHT — Mode191 Left BuildRootA + Right "
+          "PhaseTriplet only (cut dual post/sky); kill=191 MILESTONE");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickBuildDual)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode191: MILESTONE LKG — BuildRootA x2 L/R CopyMat (no CodePause; audio OK); "
+          "flicker when looking up — kill=187/185");
+    } else if (v == static_cast<int>(StereoMode::OursFpHeadBoneReturn)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode190: FAILED HEAD-BONE — ScriptHook natives from CopyMat crash after "
+          "load; bone OFF (=Mode187). Kill=187/186");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickDual)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      ResolveGameTimer();
+      Log("Mode189: OURS+SAME-TICK — Mode187 + CTimer step=0 + ms pin + CodePause "
+          "+ full cam freeze across L/R dual; kill=187/185");
+    } else if (v == static_cast<int>(StereoMode::OursFpHeadBoneWorldScale)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode188: FAILED HEAD-BONE — out-ptr path; use stereo=190 instead; kill=187");
+    } else if (v == static_cast<int>(StereoMode::OursFpTrueWorldScale)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);  // start matching Mode186; F11 raises size feel
+      SaveScaleFile(100);
+      Log("Mode187: OURS+TRUE-WORLDSCALE — Mode186 + scale×IPD (UEVR size; F11 cycle "
+          "100/125/150/175/200); kill=186/185");
+    } else if (v == static_cast<int>(StereoMode::OursFpZoomOut)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);  // one change vs Mode185 (fpfov 100→110)
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode186: OURS+ZOOM-OUT — Mode185 PhaseRight dual + fpfov=110 (near objects "
+          "smaller; not canvas zoom); kill=185/170");
+    } else if (v == static_cast<int>(StereoMode::OursFpPhaseRightDual)) {
       ApplyMode162SquareWideBase();
       EnsureVehicleCamOffDefaults();
       EnsureHudOffDefaults();
-      Log("Mode180: OURS+PHONE-STEREO — Mode179 + phone bounds uMin=0.14 vMin=0.42; "
-          "kill=179/178/170");
+      Log("Mode185: OURS+PHASE-RIGHT-DUAL — Mode170 dual+canvas + Right via "
+          "PhaseA→PhaseC→DrawScene; kill=170");
+    } else if (v == static_cast<int>(StereoMode::OursFpTimeFreeze)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode184: FAILED TIME-FREEZE — freeze armed, flicker unchanged; poke OFF "
+          "(settings crash risk); kill=170");
+    } else if (v == static_cast<int>(StereoMode::OursFpPhoneCanvasInset)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode183: OURS+PHONE-CANVAS-INSET — Mode170 dual+canvas + soft BB crop "
+          "right12%%/bottom18%% (phone up+left; no Submit UV / no SET_MOBILE); kill=170/175");
+    } else if (v == static_cast<int>(StereoMode::OursFpPhoneStereo)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode180: FAILED Submit-UV-on-canvas — prefer 183 / 175; kill=170");
     } else if (v == static_cast<int>(StereoMode::OursFpNoColorFill)) {
       ApplyMode162SquareWideBase();
       EnsureVehicleCamOffDefaults();
@@ -1107,7 +1270,14 @@ static bool IsOursFpPost162(StereoMode mode) {
          mode == StereoMode::OursFpSameLPhone || mode == StereoMode::OursFpBbPhone ||
          mode == StereoMode::OursFpBbPhoneNudge || mode == StereoMode::OursFpStereoSimple ||
          mode == StereoMode::OursFpAer || mode == StereoMode::OursFpSameFrameFreeze ||
-         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo;
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo ||
+         mode == StereoMode::OursFpPhoneCanvasInset || mode == StereoMode::OursFpTimeFreeze ||
+         mode == StereoMode::OursFpPhaseRightDual || mode == StereoMode::OursFpZoomOut ||
+         mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
 }
 
 bool IsHeadHideNativeOurs(StereoMode mode) {
@@ -1202,7 +1372,14 @@ bool IsOursFpFreshDual(StereoMode mode) {
   return mode == StereoMode::OursFpFreshDual || mode == StereoMode::OursFpPairFreeze ||
          mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone ||
          mode == StereoMode::OursFpStereoSimple || mode == StereoMode::OursFpSameFrameFreeze ||
-         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo;
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo ||
+         mode == StereoMode::OursFpPhoneCanvasInset || mode == StereoMode::OursFpTimeFreeze ||
+         mode == StereoMode::OursFpPhaseRightDual || mode == StereoMode::OursFpZoomOut ||
+         mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
 }
 
 bool IsOursFpPairFreeze(StereoMode mode) {
@@ -1219,11 +1396,19 @@ bool IsOursFpNoColorFill(StereoMode mode) {
 }
 
 bool IsOursFpDualCamFreeze(StereoMode mode) {
-  return IsOursFpPairFreeze(mode) || IsOursFpSameFrameFreeze(mode);
+  // Mode193: freeze one HEAD-bone eye for the whole L+R pair (stops stereo image jump).
+  // Mode201: freeze full pre-IPD basis for parent dual (look-ghost / fusion).
+  return IsOursFpPairFreeze(mode) || IsOursFpSameFrameFreeze(mode) ||
+         IsOursFpSameTickDual(mode) || IsOursFpHeadBoneCam(mode) ||
+         IsOursFpSameTickParentDualFreeze(mode);
 }
 
 bool IsOursFpMonoPair(StereoMode mode) {
-  return mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone;
+  // Mode193: ONE DrawScene only. Dual×2 AVs hard at interior doors (Roman apt);
+  // SEH catches it but process still dies after. Keep bone attach + IPD; weaker
+  // parallax (same BB → both eyes with eye-canvas crop).
+  return mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone ||
+         IsOursFpHeadBoneCam(mode);
 }
 
 bool IsOursFpSameLPhone(StereoMode mode) {
@@ -1247,8 +1432,103 @@ bool IsOursFpAer(StereoMode mode) {
 }
 
 bool IsOursFpPhoneBounds(StereoMode mode) {
+  // BB-mono / AER / failed-180 only — NEVER Mode183 (soft canvas inset instead).
   return mode == StereoMode::OursFpBbPhoneNudge || mode == StereoMode::OursFpStereoSimple ||
          mode == StereoMode::OursFpAer || mode == StereoMode::OursFpPhoneStereo;
+}
+
+bool IsOursFpPhoneCanvasInset(StereoMode mode) {
+  return mode == StereoMode::OursFpPhoneCanvasInset;
+}
+
+bool IsOursFpTimeFreeze(StereoMode mode) {
+  // Mode184 poke stays off; Mode189 uses the stronger same-tick path.
+  return mode == StereoMode::OursFpTimeFreeze;
+}
+
+bool IsOursFpSameTickDual(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickDual;
+}
+
+bool IsOursFpSameTickBuildDual(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickBuildDual ||
+         mode == StereoMode::OursFpSameTickPhaseRight ||
+         mode == StereoMode::OursFpSameTickDrawRight ||
+         mode == StereoMode::OursFpSameTickOwnerObserve ||
+         mode == StereoMode::OursFpSameTickOwnerCount ||
+         mode == StereoMode::OursFpSameTickParentProbe ||
+         mode == StereoMode::OursFpSameTickParentCount ||
+         mode == StereoMode::OursFpSameTickParentDual ||
+         mode == StereoMode::OursFpSameTickParentDualFreeze ||
+         mode == StereoMode::OursFpSameTickParentDualVs ||
+         mode == StereoMode::OursFpSameTickParentDualPose ||
+         mode == StereoMode::OursFpSameTickParentDualTry2;
+}
+
+bool IsOursFpSameTickPhaseRight(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickPhaseRight;
+}
+
+bool IsOursFpSameTickDrawRight(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickDrawRight;
+}
+
+bool IsOursFpSameTickOwnerObserve(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickOwnerObserve;
+}
+
+bool IsOursFpSameTickOwnerCount(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickOwnerCount;
+}
+
+bool IsOursFpSameTickParentProbe(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentProbe;
+}
+
+bool IsOursFpSameTickParentCount(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentCount;
+}
+
+bool IsOursFpSameTickParentDual(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDual ||
+         mode == StereoMode::OursFpSameTickParentDualFreeze ||
+         mode == StereoMode::OursFpSameTickParentDualVs ||
+         mode == StereoMode::OursFpSameTickParentDualPose ||
+         mode == StereoMode::OursFpSameTickParentDualTry2;
+}
+
+bool IsOursFpSameTickParentDualFreeze(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDualFreeze;
+}
+
+bool IsOursFpSameTickParentDualVs(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDualVs;
+}
+
+bool IsOursFpSameTickParentDualPose(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDualPose ||
+         mode == StereoMode::OursFpSameTickParentDualTry2;
+}
+
+bool IsOursFpSameTickParentDualTry2(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDualTry2;
+}
+
+bool IsOursFpHeadBoneCam(StereoMode mode) {
+  return mode == StereoMode::OursFpHeadBoneThiscall;
+}
+
+bool IsOursFpTrueWorldScale(StereoMode mode) {
+  return mode == StereoMode::OursFpTrueWorldScale || IsOursFpHeadBoneCam(mode) ||
+         IsOursFpSameTickDual(mode) || IsOursFpSameTickBuildDual(mode);
+}
+
+bool IsOursFpZoomOut(StereoMode mode) {
+  return mode == StereoMode::OursFpZoomOut || IsOursFpTrueWorldScale(mode);
+}
+
+bool IsOursFpPhaseRightDual(StereoMode mode) {
+  return mode == StereoMode::OursFpPhaseRightDual || IsOursFpZoomOut(mode);
 }
 
 bool IsOursFpUiLift(StereoMode mode) {
@@ -1260,7 +1540,14 @@ bool IsOursFpAtomicEyePair(StereoMode mode) {
          mode == StereoMode::OursFpFreshDual || mode == StereoMode::OursFpPairFreeze ||
          mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone ||
          mode == StereoMode::OursFpStereoSimple || mode == StereoMode::OursFpSameFrameFreeze ||
-         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo;
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo ||
+         mode == StereoMode::OursFpPhoneCanvasInset || mode == StereoMode::OursFpTimeFreeze ||
+         mode == StereoMode::OursFpPhaseRightDual || mode == StereoMode::OursFpZoomOut ||
+         mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
 }
 
 bool IsOursFpAlwaysBbCapture(StereoMode mode) {
@@ -1268,7 +1555,14 @@ bool IsOursFpAlwaysBbCapture(StereoMode mode) {
          mode == StereoMode::OursFpFreshDual || mode == StereoMode::OursFpPairFreeze ||
          mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone ||
          mode == StereoMode::OursFpStereoSimple || mode == StereoMode::OursFpSameFrameFreeze ||
-         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo;
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo ||
+         mode == StereoMode::OursFpPhoneCanvasInset || mode == StereoMode::OursFpTimeFreeze ||
+         mode == StereoMode::OursFpPhaseRightDual || mode == StereoMode::OursFpZoomOut ||
+         mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
 }
 
 bool IsOursFpInCarHead(StereoMode mode) {
@@ -1279,7 +1573,14 @@ bool IsOursFpInCarHead(StereoMode mode) {
          mode == StereoMode::OursFpSameLPhone || mode == StereoMode::OursFpBbPhone ||
          mode == StereoMode::OursFpBbPhoneNudge || mode == StereoMode::OursFpStereoSimple ||
          mode == StereoMode::OursFpAer || mode == StereoMode::OursFpSameFrameFreeze ||
-         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo;
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo ||
+         mode == StereoMode::OursFpPhoneCanvasInset || mode == StereoMode::OursFpTimeFreeze ||
+         mode == StereoMode::OursFpPhaseRightDual || mode == StereoMode::OursFpZoomOut ||
+         mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
 }
 
 bool IsOursFpEnterCarFp(StereoMode mode) {
@@ -1290,7 +1591,13 @@ bool IsOursFpEnterCarFp(StereoMode mode) {
          mode == StereoMode::OursFpBbPhone || mode == StereoMode::OursFpBbPhoneNudge ||
          mode == StereoMode::OursFpStereoSimple || mode == StereoMode::OursFpAer ||
          mode == StereoMode::OursFpSameFrameFreeze || mode == StereoMode::OursFpNoColorFill ||
-         mode == StereoMode::OursFpPhoneStereo;
+         mode == StereoMode::OursFpPhoneStereo || mode == StereoMode::OursFpPhoneCanvasInset ||
+         mode == StereoMode::OursFpTimeFreeze || mode == StereoMode::OursFpPhaseRightDual ||
+         mode == StereoMode::OursFpZoomOut || mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
 }
 
 bool IsOursFpHudLayout(StereoMode mode) {
@@ -1301,7 +1608,13 @@ bool IsOursFpHudLayout(StereoMode mode) {
          mode == StereoMode::OursFpBbPhone || mode == StereoMode::OursFpBbPhoneNudge ||
          mode == StereoMode::OursFpStereoSimple || mode == StereoMode::OursFpAer ||
          mode == StereoMode::OursFpSameFrameFreeze || mode == StereoMode::OursFpNoColorFill ||
-         mode == StereoMode::OursFpPhoneStereo;
+         mode == StereoMode::OursFpPhoneStereo || mode == StereoMode::OursFpPhoneCanvasInset ||
+         mode == StereoMode::OursFpTimeFreeze || mode == StereoMode::OursFpPhaseRightDual ||
+         mode == StereoMode::OursFpZoomOut || mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
 }
 
 bool IsOursFpCarHud(StereoMode mode) {
@@ -1311,7 +1624,14 @@ bool IsOursFpCarHud(StereoMode mode) {
          mode == StereoMode::OursFpSameLPhone || mode == StereoMode::OursFpBbPhone ||
          mode == StereoMode::OursFpBbPhoneNudge || mode == StereoMode::OursFpStereoSimple ||
          mode == StereoMode::OursFpAer || mode == StereoMode::OursFpSameFrameFreeze ||
-         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo;
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo ||
+         mode == StereoMode::OursFpPhoneCanvasInset || mode == StereoMode::OursFpTimeFreeze ||
+         mode == StereoMode::OursFpPhaseRightDual || mode == StereoMode::OursFpZoomOut ||
+         mode == StereoMode::OursFpTrueWorldScale ||
+         (mode == StereoMode::OursFpHeadBoneWorldScale || mode == StereoMode::OursFpSameTickDual ||
+          mode == StereoMode::OursFpHeadBoneReturn ||
+          mode == StereoMode::OursFpHeadBoneThiscall ||
+          IsOursFpSameTickBuildDual(mode));
 }
 
 bool IsOursFpStableCarHud(StereoMode mode) {
@@ -1895,6 +2215,34 @@ void PollWorldScaleHotkey() {
     idx = kWorldScaleDefaultIdx;
   idx = (idx + 1) % kWorldScalePresetN;
   ApplyWorldScalePreset(idx, true);
+}
+
+void PollTrueWorldScaleHotkey() {
+  if (!IsOursFpTrueWorldScale(GetStereoMode()))
+    return;
+  static bool wasF11 = false;
+  if (!KeyPressedEdge(VK_F11, &wasF11))
+    return;
+
+  static const int kPresets[] = {100, 125, 150, 175, 200};
+  constexpr int kN = 5;
+  const int curPct = static_cast<int>(g_worldScale.load() * 100.f + 0.5f);
+  int idx = 0;
+  int best = 999;
+  for (int i = 0; i < kN; ++i) {
+    const int d = kPresets[i] > curPct ? kPresets[i] - curPct : curPct - kPresets[i];
+    if (d < best) {
+      best = d;
+      idx = i;
+    }
+  }
+  idx = (idx + 1) % kN;
+  const int pct = kPresets[idx];
+  SetWorldScalePercent(pct);
+  SaveScaleFile(pct);
+  Log("TrueWorldScale: %d%% (F11) — HIGHER = smaller world (scale×IPD uncapped; "
+      "fusion may break above ~150%%); kill=.scale=100 or stereo=186",
+      pct);
 }
 
 void PollStereoScaleHotkey() {

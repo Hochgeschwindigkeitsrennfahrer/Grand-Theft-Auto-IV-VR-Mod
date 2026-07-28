@@ -40,6 +40,7 @@ $src = @(
   "src\asi\stereo_render.cpp",
   "src\asi\stereo_proj.cpp",
   "src\asi\hud_layout.cpp",
+  "src\asi\game_timer.cpp",
   "thirdparty\minhook\src\buffer.c",
   "thirdparty\minhook\src\hook.c",
   "thirdparty\minhook\src\trampoline.c",

@@ -45,6 +45,9 @@ bool GetStereoEyeRightDeltaWorld(float* dx, float* dy, float* dz);
 // Push live Rage cam → D3DTS_VIEW (and log once). Safe no-op if no cam/device.
 void PushLiveCamToD3D(IDirect3DDevice9* device);
 
+// Mode193: after a DrawScene dual AV (door/interior), pause GetBonePos briefly.
+void NotifyHeadBoneSoftSkip(unsigned ms, const char* why);
+
 // Row-major 4x4 D3D LH view from live Rage cam. Returns false if no cam.
 bool BuildLiveViewMatrix16(float* out16);
 

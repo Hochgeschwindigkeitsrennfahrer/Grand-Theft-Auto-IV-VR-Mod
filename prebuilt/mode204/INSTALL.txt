@@ -1,0 +1,74 @@
+gtaiv-dxvk-vr — Mode 204 friend install (GTA IV Complete Edition)
+=================================================================
+
+This pack is the fused stereo milestone (Mode 204). It includes:
+  - Stock DXVK 3.0.2 (d3d9.dll)
+  - gtaiv_dxvk_vr.asi + openvr_api.dll (SteamVR / OpenVR)
+  - FusionFix (dinput8.dll + plugins + update assets / shaders)
+  - DXVK shader cache (GTAIV.dxvk-cache) to reduce first-run stutter
+  - Mode 204 knobs (fused 3D VR)
+
+See THIRDPARTY.txt for credits. Do not redistribute Rockstar game files.
+
+
+BEFORE YOU COPY
+---------------
+1. Own GTA IV Complete Edition (Steam).
+2. Install SteamVR. Headset must work in SteamVR (e.g. Reverb G2).
+3. Close GTA IV completely.
+
+
+INSTALL (drag and drop)
+-----------------------
+1. Open your game folder (contains GTAIV.exe), typically:
+
+   C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV
+
+2. OPTIONAL but recommended: back up d3d9.dll, dinput8.dll, plugins\,
+   update\, and any existing gtaiv_dxvk_vr.* files.
+
+3. Copy EVERYTHING from this zip's "drop-into-GTAIV" folder into that
+   GTAIV folder. Merge folders when Windows asks. Overwrite is OK.
+
+4. Start SteamVR, put the headset on, then start GTA IV
+   (singleplayer / offline).
+
+5. In FusionFix graphics options: use DirectX 9 (NOT FusionFix Vulkan).
+
+6. Wait until you are in-game. Headset should show fused stereo.
+   Log next to GTAIV.exe: gtaiv_dxvk_vr.log
+   Expect stereo mode 204 in the log.
+
+
+UNINSTALL / KILL
+----------------
+- Quick kill VR: edit gtaiv_dxvk_vr.stereo -> 0 -> restart (flat via DXVK).
+- Safer stereo fallback: stereo = 203 (weaker near fusion) or 200.
+- Remove VR only: delete gtaiv_dxvk_vr.asi and openvr_api.dll.
+
+
+HOTKEYS (in-game)
+-----------------
+  F5  Cycle VR eye-canvas resolution (lower if slow)
+  F6  Stereo scale (higher = stronger 3D / smaller feel)
+  F7  Visual world-scale presets
+  F8  IPD / separation
+  F9  Recenter look
+  F10 Recenter seated lean baseline
+  F11 TrueWorldScale (higher = smaller world) — use this if world feels huge
+
+
+DEFAULT KNOBS IN THIS PACK
+--------------------------
+  stereo=204  ipd=2  stereoscale=130  scale=100  fpfov=110
+  vres=2048 (safer for friends; raise with F5 if your PC can take it)
+  World may feel large at scale=100 — press F11 a few times.
+
+
+IMPORTANT
+---------
+- FirstPerson.asi should stay OFF (rename to FirstPerson.asi.off if present).
+- Win32 / x86 only. Offline / singleplayer for this WIP.
+- Vehicle z-fighting can appear; ignore for now.
+
+See CONFIG-GUIDE.txt for config files.

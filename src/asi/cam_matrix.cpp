@@ -5,6 +5,7 @@
 #include "ped_hide.h"
 #include "stereo_config.h"
 #include "stereo_eye.h"
+#include "stereo_render.h"
 #include "vr_display.h"
 #include "vr_move.h"
 
@@ -352,6 +353,172 @@ bool SaneWorldPos(const Vec4& p) {
   return true;
 }
 
+// Rage bone tag HEAD.
+constexpr int kBoneHead = 0x4B5;
+
+// CE ~rva 0x5E7320: void __thiscall (Vec3* out, unsigned boneId) — writes ~16 bytes.
+// Mode193 FAILED first try: AOB matched 0x5E70B0 (bone *matrix* copy past float[3] →
+// stack smash / crash after load). Validation looked like "fallback" but stack was toast.
+using PedGetBonePos_t = void(__thiscall*)(void* ped, float* outXyz, uint32_t boneId);
+
+PedGetBonePos_t g_pedGetBonePos = nullptr;
+bool g_boneThiscallResolved = false;
+bool g_boneThiscallDead = false;
+bool g_boneThiscallLoggedOk = false;
+bool g_boneThiscallLoggedFail = false;
+uint32_t g_boneThiscallOk = 0;
+
+bool ResolvePedGetBonePos() {
+  if (g_boneThiscallDead)
+    return false;
+  if (g_boneThiscallResolved)
+    return g_pedGetBonePos != nullptr;
+  g_boneThiscallResolved = true;
+
+  // CE ~rva 0x5E7320: writes Vec3 into caller buffer (ret 8).
+  // First jz is 74 16 on this CE; 74 4A is later in-body (unique vs sibling 0x5E72C0).
+  uintptr_t p = FindPattern(
+      nullptr,
+      "56 8B F1 8B 06 FF 90 A0 00 00 00 85 C0 74 16 8B 06 8B CE FF 90 A0 00 00 00 "
+      "8B 10 8B C8 FF 92 E0 00 00 00 EB 06 8B 86 00 01 00 00 85 C0 74 4A FF 74 24 0C");
+  const char* how = "AOB";
+  if (!p) {
+    auto* base = reinterpret_cast<uint8_t*>(GetModuleHandleA(nullptr));
+    if (base) {
+      auto* cand = base + 0x5E7320;
+      if (cand[0] == 0x56 && cand[1] == 0x8B && cand[2] == 0xF1 && cand[0x0E] == 0x74) {
+        p = reinterpret_cast<uintptr_t>(cand);
+        how = "RVA+0x5E7320";
+      }
+    }
+  }
+  if (!p) {
+    g_boneThiscallDead = true;
+    Log("CamMatrix: PedGetBonePos(Vec3) AOB+RVA MISS — Mode193 falls back to root+height");
+    return false;
+  }
+  g_pedGetBonePos = reinterpret_cast<PedGetBonePos_t>(p);
+  Log("CamMatrix: PedGetBonePos Vec3 thiscall @ %p via %s (not matrix; Mode193)",
+      reinterpret_cast<void*>(p), how);
+  return true;
+}
+
+// Eye pivot from ped HEAD bone via CE Vec3 thiscall.
+// Dual L/R must share one sample — Mode193 enables dual cam freeze (pairFreeze).
+Vec4 g_stickyBoneEye{};
+Vec4 g_stickyBoneRoot{};
+bool g_haveStickyBoneEye = false;
+
+bool TryGetPedHeadBoneEye(Vec4* outEye) {
+  if (!outEye || !g_FindPlayerPed || g_boneThiscallDead)
+    return false;
+  if (!ResolvePedGetBonePos() || !g_pedGetBonePos)
+    return false;
+
+  void* ped = g_FindPlayerPed(0);
+  if (!ped)
+    return false;
+
+  Vec4 root{};
+  auto* pMat = *reinterpret_cast<Matrix44**>(reinterpret_cast<uint8_t*>(ped) + 0x20);
+  if (pMat) {
+    root = pMat->pos;
+  } else {
+    const float* t = reinterpret_cast<const float*>(reinterpret_cast<uint8_t*>(ped) + 0x10);
+    root.x = t[0];
+    root.y = t[1];
+    root.z = t[2];
+  }
+  if (!SaneWorldPos(root))
+    return false;
+
+  // After a door AV we skip DrawScene — also avoid GetBonePos (can finish the crash).
+  if (StereoMode193SkipDrawActive()) {
+    if (g_haveStickyBoneEye) {
+      const float dx = root.x - g_stickyBoneRoot.x;
+      const float dy = root.y - g_stickyBoneRoot.y;
+      const float dz = root.z - g_stickyBoneRoot.z;
+      if (dx * dx + dy * dy + dz * dz < 4.f) {
+        *outEye = g_stickyBoneEye;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  alignas(16) float xyz[8] = {};
+  __try {
+    g_pedGetBonePos(ped, xyz, static_cast<uint32_t>(kBoneHead));
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    if (g_haveStickyBoneEye) {
+      *outEye = g_stickyBoneEye;
+      return true;
+    }
+    return false;
+  }
+
+  if (!std::isfinite(xyz[0]) || !std::isfinite(xyz[1]) || !std::isfinite(xyz[2])) {
+    if (g_haveStickyBoneEye) {
+      *outEye = g_stickyBoneEye;
+      return true;
+    }
+    return false;
+  }
+  if (std::fabs(xyz[0]) < 1.f && std::fabs(xyz[1]) < 1.f && std::fabs(xyz[2]) < 1.f) {
+    if (g_haveStickyBoneEye) {
+      *outEye = g_stickyBoneEye;
+      return true;
+    }
+    return false;
+  }
+
+  const float dx = xyz[0] - root.x;
+  const float dy = xyz[1] - root.y;
+  const float dz = xyz[2] - root.z;
+  const float d2 = dx * dx + dy * dy + dz * dz;
+  if (d2 < 0.01f || d2 > (2.2f * 2.2f)) {
+    if (g_haveStickyBoneEye) {
+      *outEye = g_stickyBoneEye;
+      return true;
+    }
+    return false;
+  }
+  if (xyz[2] < root.z - 0.5f) {
+    if (g_haveStickyBoneEye) {
+      *outEye = g_stickyBoneEye;
+      return true;
+    }
+    return false;
+  }
+
+  outEye->x = xyz[0];
+  outEye->y = xyz[1];
+  outEye->z = xyz[2];
+  outEye->w = 1.f;
+  if (!SaneWorldPos(*outEye)) {
+    if (g_haveStickyBoneEye) {
+      *outEye = g_stickyBoneEye;
+      return true;
+    }
+    return false;
+  }
+
+  g_stickyBoneEye = *outEye;
+  g_stickyBoneRoot = root;
+  g_haveStickyBoneEye = true;
+
+  const uint32_t n = ++g_boneThiscallOk;
+  if (!g_boneThiscallLoggedOk) {
+    g_boneThiscallLoggedOk = true;
+    Log("CamMatrix: HEAD Vec3 eye OK pos=(%.3f,%.3f,%.3f) d=%.2f", outEye->x, outEye->y,
+        outEye->z, std::sqrt(d2));
+  } else if (n <= 5 || (n % 300) == 0) {
+    Log("CamMatrix: HEAD Vec3 eye #%u pos=(%.3f,%.3f,%.3f) d=%.2f", n, outEye->x, outEye->y,
+        outEye->z, std::sqrt(d2));
+  }
+  return true;
+}
+
 // Ped-fixed eye-center (Mode 155+) BEFORE 6DoF / camoff / IPD.
 bool TryGetPedEyeCenterBase(Vec4* outEye) {
   if (!g_FindPlayerPed || !outEye)
@@ -360,8 +527,19 @@ bool TryGetPedEyeCenterBase(Vec4* outEye) {
   if (!ped)
     return false;
   const StereoMode sm = GetStereoMode();
-  const float kEyeH = IsOursFpEyeCenterLow(sm) ? 0.65f : 0.78f;
   const bool inVeh = IsPlayerInVehicleSticky();
+
+  // Mode 193: stick to HEAD bone via CE thiscall (crouch/sprint).
+  if (IsOursFpHeadBoneCam(sm) && !inVeh) {
+    if (TryGetPedHeadBoneEye(outEye))
+      return true;
+    if (!g_boneThiscallLoggedFail) {
+      g_boneThiscallLoggedFail = true;
+      Log("CamMatrix: HEAD thiscall eye FAILED — fallback root+height");
+    }
+  }
+
+  const float kEyeH = IsOursFpEyeCenterLow(sm) ? 0.65f : 0.78f;
   const bool carHead = IsOursFpInCarHead(sm) && inVeh;
   const float kPedFwd = carHead ? 0.02f : 0.08f;
   auto* pMat = *reinterpret_cast<Matrix44**>(reinterpret_cast<uint8_t*>(ped) + 0x20);
@@ -676,12 +854,13 @@ void ApplyHmdToCam(Matrix44* mat) {
       eyeZ = e2h.m[2][3];
     }
 
-    // WorldScale (F7) = 6DoF only. StereoScale (F6, default 1.15, cap 1.30) =
-    // soft disparity for size-without-fusion-break. Raw WorldScale×IPD at 1.5
-    // made ~9 cm sep → fusion gone + violent jump (headset 2026-07-24).
-    const float half = 0.5f * GetStereoSepMeters() * GetStereoScale();
+    // WorldScale: 6DoF lean always. Mode187+: also × stereo baseline (UEVR size).
+    // Do NOT clamp half-sep — old ≤4cm made F11 100→200% identical at stereoscale~130%.
+    const float ws =
+        IsOursFpTrueWorldScale(GetStereoMode()) ? GetWorldScale() : 1.f;
+    const float half = 0.5f * GetStereoSepMeters() * GetStereoScale() * ws;
     const float s = rightEye ? half : -half;
-    const float fzOff = -eyeZ;
+    const float fzOff = -eyeZ * ws;
     ipdX = hrx * s + fx * fzOff;
     ipdY = hry * s + fy * fzOff;
     ipdZ = hrz * s + fz * fzOff;
@@ -890,6 +1069,13 @@ bool HookOneCall(const char* name, const char* pattern) {
 
 }  // namespace
 
+void NotifyHeadBoneSoftSkip(unsigned ms, const char* why) {
+  // Kept for dual-AV path; bone no longer uses timed soft-skip (jumped cam).
+  (void)ms;
+  if (why)
+    Log("CamMatrix: Mode193 dual-AV note (%s) — HOLD stereo, skip DrawScene", why);
+}
+
 bool InstallCamMatrixHooks() {
   if (g_hooksOk.load())
     return true;
@@ -1019,13 +1205,20 @@ void BeginStereoDualCamFreeze() {
   }
   g_frozenPedEye = eye;
   g_haveFrozenPedEye = true;
-  g_freezeFullBasis = IsOursFpSameFrameFreeze(sm);
+  g_freezeFullBasis = IsOursFpSameFrameFreeze(sm) || IsOursFpSameTickDual(sm) ||
+                      IsOursFpSameTickParentDualFreeze(sm);
   g_haveFrozenCenter = false;  // first ApplyHmdToCam captures full pre-IPD cam
   g_dualCamFreeze.store(true);
   static uint32_t s_n = 0;
   const uint32_t n = ++s_n;
   if (n <= 6 || (n % 600) == 0) {
-    if (g_freezeFullBasis)
+    if (IsOursFpSameTickParentDualFreeze(sm))
+      Log("Mode201: dual cam freeze begin #%u pedEye=(%.3f,%.3f,%.3f) fullBasis=1", n, eye.x,
+          eye.y, eye.z);
+    else if (IsOursFpSameTickDual(sm))
+      Log("Mode189: dual cam freeze begin #%u pedEye=(%.3f,%.3f,%.3f) fullBasis=1", n, eye.x,
+          eye.y, eye.z);
+    else if (g_freezeFullBasis)
       Log("Mode178: dual cam freeze begin #%u pedEye=(%.3f,%.3f,%.3f) fullBasis=1", n, eye.x,
           eye.y, eye.z);
     else

@@ -1,6 +1,7 @@
 #include "stereo_render.h"
 #include "aob.h"
 #include "cam_matrix.h"
+#include "game_timer.h"
 #include "hmd_pose.h"
 #include "log.h"
 #include "perf_debug.h"
@@ -26,6 +27,32 @@
 #include <intrin.h>  // _ReturnAddress for mode 18 render-root probe
 
 #include <openvr.h>
+
+// Mode 197 COUNT-only: file-scope for naked asm (stack-arg target 0x220D0 — not thiscall).
+static void* g_asi_mode197_tramp = nullptr;
+static volatile LONG g_asi_mode197_entries = 0;
+static volatile LONG g_asi_mode197_frame = 0;
+
+extern "C" __declspec(naked) void AsiHookMode197Count() {
+  __asm {
+    lock inc dword ptr [g_asi_mode197_entries]
+    lock inc dword ptr [g_asi_mode197_frame]
+    jmp dword ptr [g_asi_mode197_tramp]
+  }
+}
+
+// Mode 199 COUNT-only: fn-start 0x4D8BF0 (thiscall-56). Naked = ABI-safe count.
+static void* g_asi_mode199_tramp = nullptr;
+static volatile LONG g_asi_mode199_entries = 0;
+static volatile LONG g_asi_mode199_frame = 0;
+
+extern "C" __declspec(naked) void AsiHookMode199Count() {
+  __asm {
+    lock inc dword ptr [g_asi_mode199_entries]
+    lock inc dword ptr [g_asi_mode199_frame]
+    jmp dword ptr [g_asi_mode199_tramp]
+  }
+}
 
 namespace asi {
 namespace {
@@ -206,6 +233,8 @@ std::atomic<uint32_t> g_mode53FullMono{0};
 // Mode 120: DrawScene×2 + HOLD state (see stereo_dual.cpp for cadence helpers).
 std::atomic<bool> g_mode120DualDead{false};
 std::atomic<uint32_t> g_mode120DualN{0};
+// Mode193: after dual AV (door), skip DrawScene entirely — mono rebuild also AVs.
+std::atomic<DWORD> g_mode193SkipDrawUntilMs{0};
 
 // ---- Mode 31: discover ~1×/frame VsRet walker → same-frame dual + VS patch ----
 enum class Mode31Phase : int {
@@ -382,6 +411,249 @@ std::atomic<uint32_t> g_mode41VsRetHits{0};
 std::atomic<uint32_t> g_mode41Es{0};
 uint32_t g_mode41VsTid = 0;
 
+// Mode 196: read-only resolve of Mode42 OWNER-EDGE call [eax+disp32] without
+// invoking the target. Stack-scan for object candidates whose vtable+disp lands
+// in executable GTAIV.exe code.
+struct Mode196OwnerHit {
+  uintptr_t obj;
+  uintptr_t vtable;
+  uint32_t targetRva;
+  uint32_t hits;
+};
+Mode196OwnerHit g_mode196Owners[16]{};
+int g_mode196OwnerN = 0;
+std::atomic<uint32_t> g_mode196EdgeHits{0};
+uint32_t g_mode196Disp = 0;
+bool g_mode196HaveDisp = false;
+uint8_t g_mode196Modrm = 0;
+uint8_t g_mode196CallLen = 0;
+uint32_t g_mode196CallRva = 0;
+
+// Mode 197: COUNT-only naked hook on Mode196-proven target 0x220D0.
+constexpr uint32_t kMode197TargetRva = 0x220D0;
+void* g_mode197Target = nullptr;
+std::atomic<uint32_t> g_mode197Es{0};
+std::atomic<bool> g_mode197HookOk{false};
+
+bool Mode41ForbiddenRva(uint32_t rva);
+bool Mode34ForbiddenRva(uint32_t rva);
+
+bool InstallMode197CountHook() {
+  // Headset 2026-07-28: COUNT on 0x220D0 made FPS worse than 191 and amplified
+  // flicker. Target is a per-draw leaf (Mode196 saw 10k–80k hits), not a frame
+  // walker. Do not install — Mode197 render stays pure Mode191 dual.
+  static bool s_once = false;
+  if (!s_once) {
+    s_once = true;
+    Log("Mode197: COUNT hook REFUSED @0x%X (too hot for live play; use Mode191)",
+        kMode197TargetRva);
+  }
+  g_mode197HookOk.store(false);
+  return true;  // still "ok" so dual arms; no hook
+}
+
+void Mode197OnEndScene() {
+  if (!g_mode197HookOk.load())
+    return;
+  const uint32_t es = ++g_mode197Es;
+  const LONG frame = InterlockedExchange(&g_asi_mode197_frame, 0);
+  const LONG total = g_asi_mode197_entries;
+  if (es <= 8 || (es % 90) == 0)
+    Log("Mode197: COUNT es#%u entriesThisFrame=%ld total=%ld target=0x%X hook=COUNT-ONLY "
+        "dual=Mode191",
+        es, frame, total, kMode197TargetRva);
+}
+
+// Mode 199: COUNT-only on Mode198 RARE parent fn-start 0x4D8BF0 (thiscall-56).
+constexpr uint32_t kMode199TargetRva = 0x4D8BF0;
+void* g_mode199Target = nullptr;
+std::atomic<uint32_t> g_mode199Es{0};
+std::atomic<bool> g_mode199HookOk{false};
+std::atomic<bool> g_mode199TooHot{false};
+
+bool InstallMode199CountHook() {
+  if (g_mode199HookOk.load() || g_mode199TooHot.load())
+    return g_mode199HookOk.load();
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  const uintptr_t addr = base + kMode199TargetRva;
+  const auto* b = reinterpret_cast<const uint8_t*>(addr);
+  // Expect classic thiscall-56: 56 8B F1
+  if (b[0] != 0x56 || b[1] != 0x8B || b[2] != 0xF1) {
+    Log("Mode199: FAIL unexpected prologue @0x%X bytes=%02X %02X %02X — wrote stereo=191",
+        kMode199TargetRva, b[0], b[1], b[2]);
+    WriteStereoModeFile(191);
+    return false;
+  }
+  if (Mode41ForbiddenRva(kMode199TargetRva) || Mode34ForbiddenRva(kMode199TargetRva)) {
+    Log("Mode199: FAIL target 0x%X forbidden — wrote stereo=191", kMode199TargetRva);
+    WriteStereoModeFile(191);
+    return false;
+  }
+  g_asi_mode199_entries = 0;
+  g_asi_mode199_frame = 0;
+  g_asi_mode199_tramp = nullptr;
+  if (MH_CreateHook(reinterpret_cast<void*>(addr), reinterpret_cast<void*>(&AsiHookMode199Count),
+                    &g_asi_mode199_tramp) != MH_OK ||
+      MH_EnableHook(reinterpret_cast<void*>(addr)) != MH_OK) {
+    Log("Mode199: MH_CreateHook FAIL @0x%X — wrote stereo=191", kMode199TargetRva);
+    WriteStereoModeFile(191);
+    return false;
+  }
+  g_mode199Target = reinterpret_cast<void*>(addr);
+  g_mode199HookOk.store(true);
+  g_mode199Es.store(0);
+  Log("Mode199: COUNT naked hook OK @0x%X prologue=568BF1 thiscall-56 tramp=%p "
+      "(Mode198 RARE parent; soft avg>8/ES → 191)",
+      kMode199TargetRva, g_asi_mode199_tramp);
+  return true;
+}
+
+void Mode199DisableTooHot(const char* why) {
+  if (g_mode199TooHot.exchange(true))
+    return;
+  if (g_mode199Target) {
+    MH_DisableHook(g_mode199Target);
+    MH_RemoveHook(g_mode199Target);
+    g_mode199Target = nullptr;
+  }
+  g_mode199HookOk.store(false);
+  Log("Mode199: TOO HOT — %s — disabled COUNT hook; wrote stereo=191", why);
+  WriteStereoModeFile(191);
+}
+
+void Mode199OnEndScene() {
+  if (!g_mode199HookOk.load())
+    return;
+  const uint32_t es = ++g_mode199Es;
+  const LONG frame = InterlockedExchange(&g_asi_mode199_frame, 0);
+  const LONG total = g_asi_mode199_entries;
+  if (es <= 8 || (es % 90) == 0)
+    Log("Mode199: COUNT es#%u entriesThisFrame=%ld total=%ld target=0x%X "
+        "want~1/ES dual=Mode191",
+        es, frame, total, kMode199TargetRva);
+  // Soft gate: after warm-up, refuse hot walkers (Mode197 lesson).
+  if (es == 90) {
+    const float avg = total / 90.f;
+    if (avg > 8.f) {
+      char buf[96];
+      sprintf_s(buf, "avg=%.1f entries/ES over first 90 (cap 8)", avg);
+      Mode199DisableTooHot(buf);
+    } else {
+      Log("Mode199: warm OK avg=%.2f entries/ES over 90 — keep COUNT", avg);
+    }
+  }
+}
+
+// Mode 200: HookDrawWalk dual on same parent as Mode199 (0x4D8BF0). Single BuildRootA.
+// Mode 200–204: parent dual target. 203=MILESTONE @0x4D8BF0; 204=next Mode198 @0x4DE020.
+constexpr uint32_t kMode200TargetRva = 0x4D8BF0;
+constexpr uint32_t kMode204TargetRva = 0x4DE020;  // Mode198 ret 0x4DE0DC → thiscall-56
+uint32_t ParentDualTargetRva() {
+  return IsOursFpSameTickParentDualTry2(GetStereoMode()) ? kMode204TargetRva : kMode200TargetRva;
+}
+std::atomic<uint32_t> g_mode200Es{0};
+std::atomic<uint32_t> g_mode200DualN{0};
+std::atomic<bool> g_mode200HookOk{false};
+std::atomic<bool> g_mode200TooHot{false};
+std::atomic<LONG> g_mode200EntrySum{0};
+bool InstallMode200ParentDualHook();
+void Mode200OnEndScene();
+void Mode200Kill(const char* why);
+bool RunMode200ParentDualGuarded(void* self, void* edx);
+bool RunMode202ParentDualVsGuarded(void* self, void* edx);
+
+// Mode 198: at most ONE VsRet stack sample per EndScene — find rare parents above
+// hot leaf 0x220D0 without VirtualQuery storms (Mode196 1FPS lesson).
+constexpr uint32_t kMode198HotLeafRva = 0x220D0;
+struct Mode198AggNode {
+  uint32_t retRva;
+  uint32_t frames;
+  uint32_t hits;
+};
+Mode198AggNode g_mode198Agg[64]{};
+int g_mode198AggN = 0;
+uint32_t g_mode198FrameRva[48]{};
+int g_mode198FrameN = 0;
+std::atomic<bool> g_mode198ArmSample{false};
+std::atomic<uint32_t> g_mode198Es{0};
+std::atomic<uint32_t> g_mode198Samples{0};
+
+bool Mode198IsKnownHotOrForbidden(uint32_t rva) {
+  return rva == 0x2C73E || rva == kMode198HotLeafRva || rva == 0x30D13 ||
+         rva == 0x309D0 || rva == 0x22187 || rva == 0x2C6A0 || rva == 0x2C6AC ||
+         rva == 0x37BD0 || rva == 0x37C01 || rva == 0x1BF010 || rva == 0x4DDAD0 ||
+         Mode41ForbiddenRva(rva);
+}
+
+void Mode198ResetProbe() {
+  g_mode198AggN = 0;
+  g_mode198FrameN = 0;
+  g_mode198Es.store(0);
+  g_mode198Samples.store(0);
+  g_mode198ArmSample.store(true);
+}
+
+void Mode198OnEndScene() {
+  // Merge this EndScene's single sample into aggregates.
+  for (int i = 0; i < g_mode198FrameN; ++i) {
+    const uint32_t rva = g_mode198FrameRva[i];
+    bool found = false;
+    for (int j = 0; j < g_mode198AggN; ++j) {
+      if (g_mode198Agg[j].retRva == rva) {
+        ++g_mode198Agg[j].frames;
+        ++g_mode198Agg[j].hits;
+        found = true;
+        break;
+      }
+    }
+    if (!found && g_mode198AggN < 64)
+      g_mode198Agg[g_mode198AggN++] = {rva, 1, 1};
+  }
+  g_mode198FrameN = 0;
+  const uint32_t es = ++g_mode198Es;
+  g_mode198ArmSample.store(true);  // allow next ES one sample
+
+  if (es <= 8 || (es % 90) == 0) {
+    Log("Mode198: parent-probe epoch=%u samples=%u nodes=%d (1 stack/ES; no VQ) "
+        "hotLeaf=0x%X SameFrame=0",
+        es, g_mode198Samples.load(), g_mode198AggN, kMode198HotLeafRva);
+    int order[64]{};
+    const int n = g_mode198AggN;
+    for (int i = 0; i < n; ++i)
+      order[i] = i;
+    for (int i = 0; i < n; ++i) {
+      for (int j = i + 1; j < n; ++j) {
+        const float ai = g_mode198Agg[order[i]].frames
+                             ? (float)g_mode198Agg[order[i]].hits / g_mode198Agg[order[i]].frames
+                             : 0.f;
+        const float aj = g_mode198Agg[order[j]].frames
+                             ? (float)g_mode198Agg[order[j]].hits / g_mode198Agg[order[j]].frames
+                             : 0.f;
+        // Prefer rarer avg hits/frame, then more frames seen.
+        if (aj < ai || (aj == ai && g_mode198Agg[order[j]].frames > g_mode198Agg[order[i]].frames)) {
+          const int t = order[i];
+          order[i] = order[j];
+          order[j] = t;
+        }
+      }
+    }
+    int logged = 0;
+    for (int i = 0; i < n && logged < 12; ++i) {
+      const Mode198AggNode& node = g_mode198Agg[order[i]];
+      const float avg =
+          node.frames ? (float)node.hits / (float)node.frames : 0.f;
+      const bool hot = Mode198IsKnownHotOrForbidden(node.retRva);
+      const bool rare = !hot && avg >= 0.5f && avg <= 4.0f && node.frames >= 3;
+      if (!rare && !(!hot && logged < 4))
+        continue;
+      Log("Mode198: CAND %s ret=0x%X frames=%u hits=%u avg/ES=%.2f hook=NO%s",
+          rare ? "RARE" : "other", node.retRva, node.frames, node.hits, avg,
+          hot ? " HOT/FORBIDDEN" : "");
+      ++logged;
+    }
+  }
+}
+
 enum class Mode32Abi : int {
   Reject = 0,
   Thiscall = 1,   // safe HookDrawWalk dual
@@ -400,6 +672,8 @@ IDirect3DSurface9* g_diffSmall[2] = {};
 IDirect3DSurface9* g_diffSys[2] = {};
 
 void ReleaseEyeRts() {
+  // Video settings / device recreate: never leave CTimer timestep stuck at 0.
+  EndDualTimeFreeze();
   if (g_texL) {
     g_texL->Release();
     g_texL = nullptr;
@@ -869,13 +1143,30 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
   clampRect(&src, static_cast<LONG>(sd.Width), static_cast<LONG>(sd.Height));
   clampRect(&rc, static_cast<LONG>(dd.Width), static_cast<LONG>(dd.Height));
 
-  // Mode 172/173: pan published view UP by cropping source top — same amount as
-  // HUD_RADAR inset (kInB=0.16). Dest-shift+clamp was squashing instead of lifting.
+  // Mode 172/173: pan published view UP by cropping source top.
   if (IsOursFpUiLift(GetStereoMode())) {
     const float liftFrac = IsOursFpSameLPhone(GetStereoMode()) ? 0.16f : 0.10f;
     const LONG cropTop = static_cast<LONG>(SH * liftFrac + 0.5f);
     src.top += cropTop;
     clampRect(&src, static_cast<LONG>(sd.Width), static_cast<LONG>(sd.Height));
+  }
+
+  // Mode 183: soft BB inset from right+bottom → phone moves up+left (Mode175 idea,
+  // without Submit TextureBounds on the eye-canvas — that warped).
+  if (IsOursFpPhoneCanvasInset(GetStereoMode())) {
+    constexpr float kCropR = 0.12f;
+    constexpr float kCropB = 0.18f;
+    const LONG cutR = static_cast<LONG>(SW * kCropR + 0.5f);
+    const LONG cutB = static_cast<LONG>(SH * kCropB + 0.5f);
+    src.right -= cutR;
+    src.bottom -= cutB;
+    clampRect(&src, static_cast<LONG>(sd.Width), static_cast<LONG>(sd.Height));
+    static bool s_once = false;
+    if (!s_once) {
+      s_once = true;
+      Log("Mode183: canvas BB inset cropR=%.0f%% cropB=%.0f%% (phone up+left; dual kept)",
+          kCropR * 100.f, kCropB * 100.f);
+    }
   }
 
   bool ok = false;
@@ -1305,6 +1596,72 @@ bool RunBuildDualViewShiftGuarded(void* self, void* edx) {
   }
 }
 
+// Mode 191/192: same-tick dual (no timer freeze).
+bool HavePhasePtrs();
+void RunPhaseTriplet(void* drawSelf, void* edx);
+
+// Mode 191: BuildRootA×2. Mode 192: PhaseTriplet Right. Mode 194: DrawScene Right.
+bool RunSameTickBuildDualGuarded(void* self, void* edx) {
+  __try {
+    const StereoMode sm = GetStereoMode();
+    g_execViewStage = 1;
+    SetStereoEye(StereoEye::Left);
+    RefreshLiveCamForStereoEye();
+    g_execViewStage = 2;
+    g_origRoot[1](self, edx);
+    g_execViewStage = 3;
+    const bool okL = CopyBbToEyeCanvasGated(g_device, g_texL, vr::Eye_Left);
+    g_execViewStage = 4;
+    SetStereoEye(StereoEye::Right);
+    RefreshLiveCamForStereoEye();
+    if (g_device)
+      PushLiveCamToD3D(g_device);
+    g_execViewStage = 5;
+    // 191: full Right BuildRootA (fuses). 192/194: lighter Right — distinct L/R
+    // possible but no reliable fusion yet (headset: 194 has angle shift per eye).
+    if (IsOursFpSameTickDrawRight(sm) && g_origBuild && g_lastThisDraw) {
+      static bool s_once = false;
+      if (!s_once) {
+        s_once = true;
+        Log("Mode194: Right via DrawScene+PushLiveCam (Left was full BuildRootA)");
+      }
+      g_origBuild(g_lastThisDraw, edx);
+    } else if (IsOursFpSameTickPhaseRight(sm) && HavePhasePtrs() && g_lastThisDraw) {
+      static bool s_once = false;
+      if (!s_once) {
+        s_once = true;
+        Log("Mode192: Right via PhaseTriplet (Left was full BuildRootA)");
+      }
+      RunPhaseTriplet(g_lastThisDraw, edx);
+    } else {
+      static bool s_once = false;
+      if (!s_once) {
+        s_once = true;
+        Log("Mode%d: Right via full BuildRootA (fusion path)", static_cast<int>(sm));
+      }
+      g_origRoot[1](self, edx);
+    }
+    g_execViewStage = 6;
+    const bool okR = CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Right);
+    g_execViewStage = 7;
+    if (IsOursFpAtomicEyePair(GetStereoMode())) {
+      if (okL && okR)
+        g_haveL = g_haveR = true;
+    } else {
+      if (okL)
+        g_haveL = true;
+      if (okR)
+        g_haveR = true;
+    }
+    SetStereoEye(StereoEye::Left);
+    RefreshLiveCamForStereoEye();
+    return true;
+  } __except (ExecViewFilter(GetExceptionInformation())) {
+    SetStereoEye(StereoEye::Left);
+    return false;
+  }
+}
+
 void __fastcall HookRoot1(void* self, void* edx) {
   const StereoMode mode = GetStereoMode();
   if (mode == StereoMode::RootDispatchProbe) {
@@ -1367,6 +1724,72 @@ void __fastcall HookRoot1(void* self, void* edx) {
       CompareEyeCanvases(g_device);
     if (n == 600 || n == 3000)
       StereoVsDumpRets();
+    return;
+  }
+
+  // Mode 191/192: real same-tick family — BuildRootA owns L; 191 also R via BuildRootA,
+  // 192 R via PhaseTriplet. No CodePause.
+  // Mode 200: parent dual owns L/R — BuildRootA stays single (one world build).
+  if (IsOursFpSameTickBuildDual(mode) && !IsOursFpSameTickParentDual(mode) &&
+      !g_rootDualDead.load() && !g_inDual.load() && IsCamMatrixOverrideEnabled() && g_device) {
+    static bool s_armed = false;
+    if (!s_armed) {
+      s_armed = true;
+      Log("Mode%d: BuildRootA same-tick dual armed (phaseRight=%d; no timer freeze)",
+          static_cast<int>(mode), IsOursFpSameTickPhaseRight(mode) ? 1 : 0);
+    }
+    // Soft-wait until EndScene has created eye RTs (first frames).
+    if (!g_texL || !g_texR) {
+      IDirect3DSurface9* bb = nullptr;
+      if (SUCCEEDED(g_device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
+        D3DSURFACE_DESC desc{};
+        bb->GetDesc(&desc);
+        bb->Release();
+        uint32_t rtW = desc.Width, rtH = desc.Height;
+        ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
+        EnsureEyeRts(g_device, rtW, rtH);
+      }
+    }
+    if (!g_texL || !g_texR) {
+      g_origRoot[1](self, edx);
+      return;
+    }
+    g_inDual.store(true);
+    const bool ok = RunSameTickBuildDualGuarded(self, edx);
+    g_inDual.store(false);
+    if (!ok) {
+      g_rootDualDead.store(true);
+      g_haveL = g_haveR = false;
+      const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+      const int kill = IsOursFpSameTickDrawRight(mode)      ? 191
+                       : IsOursFpSameTickPhaseRight(mode)   ? 191
+                       : IsOursFpSameTickOwnerObserve(mode) ? 191
+                       : IsOursFpSameTickOwnerCount(mode)   ? 191
+                       : IsOursFpSameTickParentProbe(mode)  ? 191
+                       : IsOursFpSameTickParentCount(mode)  ? 191
+                       : IsOursFpSameTickParentDualTry2(mode)   ? 203
+                       : IsOursFpSameTickParentDualFreeze(mode) ? 200
+                       : IsOursFpSameTickParentDualVs(mode)     ? 200
+                       : IsOursFpSameTickParentDualPose(mode)   ? 200
+                       : IsOursFpSameTickParentDual(mode)   ? 191
+                                                            : 187;
+      Log("Mode%d: EXCEPTION stage=%ld code=0x%08X addr=%p (exeRva 0x%X) — "
+          "PERMANENT disable; wrote stereo=%d",
+          static_cast<int>(mode), g_execViewStage, g_execViewExcCode,
+          reinterpret_cast<void*>(g_execViewExcAddr),
+          static_cast<unsigned>(g_execViewExcAddr - base), kill);
+      WriteStereoModeFile(kill);
+      SetStereoEye(StereoEye::Left);
+      RefreshLiveCamForStereoEye();
+      g_origRoot[1](self, edx);
+      return;
+    }
+    const uint32_t n = ++g_rootDualCount;
+    if (n <= 6 || (n % 300) == 0)
+      Log("Mode%d: same-tick dual #%u haveL=%d haveR=%d sep=%.0fcm", static_cast<int>(mode),
+          n, g_haveL ? 1 : 0, g_haveR ? 1 : 0, GetStereoSepMeters() * 100.f);
+    if (g_haveL && g_haveR && (n == 5 || (n % 300) == 0))
+      CompareEyeCanvases(g_device);
     return;
   }
 
@@ -1784,6 +2207,69 @@ void __fastcall HookDrawWalk(void* self, void* edx) {
     return;
   ++g_drawWalkEntries;
 
+  // Mode 200/201: dual Mode199 RARE parent @0x4D8BF0 (single BuildRootA owns world once).
+  // Mode 201: full pre-IPD cam freeze for the L/R pair (fusion / look-ghost).
+  if (IsOursFpSameTickParentDual(GetStereoMode())) {
+    if (g_drawWalkDead.load() || g_mode200TooHot.load()) {
+      CallDrawWalkOnceGuarded(self, edx);
+      return;
+    }
+    if (!g_device || !IsCamMatrixOverrideEnabled()) {
+      CallDrawWalkOnceGuarded(self, edx);
+      return;
+    }
+    if (!g_texL || !g_texR) {
+      IDirect3DSurface9* bb = nullptr;
+      if (SUCCEEDED(g_device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
+        D3DSURFACE_DESC desc{};
+        bb->GetDesc(&desc);
+        bb->Release();
+        uint32_t rtW = desc.Width, rtH = desc.Height;
+        ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
+        EnsureEyeRts(g_device, rtW, rtH);
+      }
+    }
+    if (!g_texL || !g_texR || g_inDrawWalkDual.load()) {
+      CallDrawWalkOnceGuarded(self, edx);
+      return;
+    }
+    const bool freeze = IsOursFpSameTickParentDualFreeze(GetStereoMode());
+    const bool vsDual = IsOursFpSameTickParentDualVs(GetStereoMode());
+    const bool poseLatch = IsOursFpSameTickParentDualPose(GetStereoMode());
+    if (freeze)
+      BeginStereoDualCamFreeze();
+    if (poseLatch)
+      BeginDualHmdPoseLatch();
+    g_inDrawWalkDual.store(true);
+    // 202 = VS-translate (REJECT). 200/201/203 = full CCam±IPD L/R.
+    const bool ok =
+        vsDual ? RunMode202ParentDualVsGuarded(self, edx) : RunMode200ParentDualGuarded(self, edx);
+    g_inDrawWalkDual.store(false);
+    if (poseLatch)
+      EndDualHmdPoseLatch();
+    if (freeze)
+      EndStereoDualCamFreeze();
+    if (!ok) {
+      const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+      char buf[160];
+      sprintf_s(buf, "SEH dual stage=%ld code=0x%08X exeRva=0x%X", g_execViewStage,
+                g_execViewExcCode, static_cast<unsigned>(g_execViewExcAddr - base));
+      Mode200Kill(buf);
+      CallDrawWalkOnceGuarded(self, edx);
+      return;
+    }
+    const uint32_t n = ++g_mode200DualN;
+    if (n <= 6 || (n % 300) == 0)
+      Log("Mode%d: parent dual #%u haveL=%d haveR=%d sep=%.0fcm freeze=%d poseLatch=%d "
+          "vsPatch=%u vsCallsR=%u target=0x%X",
+          static_cast<int>(GetStereoMode()), n, g_haveL ? 1 : 0, g_haveR ? 1 : 0,
+          GetStereoSepMeters() * 100.f, freeze ? 1 : 0, poseLatch ? 1 : 0,
+          StereoVsTranslateCount(), StereoVsRightPassCalls(), ParentDualTargetRva());
+    if (g_haveL && g_haveR && (n == 5 || (n % 300) == 0))
+      CompareEyeCanvases(g_device);
+    return;
+  }
+
   // Mode 34: VsRet-caller walker (same dual body as Mode 32/33).
   if (GetStereoMode() == StereoMode::SameFrameVsRetCallerDual) {
     const int ph = g_mode34Phase.load();
@@ -2007,6 +2493,192 @@ bool InstallDrawWalkAt(uintptr_t start) {
   g_drawWalkAddr = reinterpret_cast<void*>(start);
   g_drawWalkEntries.store(0);
   return true;
+}
+
+bool RunMode200ParentDualGuarded(void* self, void* edx) {
+  __try {
+    g_execViewStage = 1;
+    SetStereoEye(StereoEye::Left);
+    RefreshLiveCamForStereoEye();
+    if (g_device)
+      PushLiveCamToD3D(g_device);
+    g_execViewStage = 2;
+    g_origDrawWalk(self, edx);
+    g_execViewStage = 3;
+    const bool okL = CopyBbToEyeCanvasGated(g_device, g_texL, vr::Eye_Left);
+    g_execViewStage = 4;
+    SetStereoEye(StereoEye::Right);
+    RefreshLiveCamForStereoEye();
+    if (g_device)
+      PushLiveCamToD3D(g_device);
+    g_execViewStage = 5;
+    g_origDrawWalk(self, edx);
+    g_execViewStage = 6;
+    const bool okR = CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Right);
+    g_execViewStage = 7;
+    if (IsOursFpAtomicEyePair(GetStereoMode())) {
+      if (okL && okR)
+        g_haveL = g_haveR = true;
+    } else {
+      if (okL)
+        g_haveL = true;
+      if (okR)
+        g_haveR = true;
+    }
+    SetStereoEye(StereoEye::Left);
+    RefreshLiveCamForStereoEye();
+    return true;
+  } __except (ExecViewFilter(GetExceptionInformation())) {
+    SetStereoEye(StereoEye::Left);
+    return false;
+  }
+}
+
+// Mode 202: CCam stays Left both walks; Right enables SetVSConstF view-translate.
+bool RunMode202ParentDualVsGuarded(void* self, void* edx) {
+  __try {
+    g_execViewStage = 1;
+    float dx = 0.f, dy = 0.f, dz = 0.f;
+    float cx = 0.f, cy = 0.f, cz = 0.f;
+    g_vsPatchOn.store(false);
+    SetStereoEye(StereoEye::Left);
+    RefreshLiveCamForStereoEye();
+    if (g_device)
+      PushLiveCamToD3D(g_device);
+    g_execViewStage = 2;
+    g_origDrawWalk(self, edx);
+    g_execViewStage = 3;
+    const bool okL = CopyBbToEyeCanvasGated(g_device, g_texL, vr::Eye_Left);
+    const bool sane = GetStereoEyeRightDeltaWorld(&dx, &dy, &dz) &&
+                      GetLastStereoCamPos(&cx, &cy, &cz);
+    if (!sane) {
+      if (okL)
+        g_haveL = true;
+      SetStereoEye(StereoEye::Left);
+      RefreshLiveCamForStereoEye();
+      return true;
+    }
+    g_vsPatchCam[0] = cx;
+    g_vsPatchCam[1] = cy;
+    g_vsPatchCam[2] = cz;
+    g_vsPatchDelta[0] = dx;
+    g_vsPatchDelta[1] = dy;
+    g_vsPatchDelta[2] = dz;
+    // CCam stays Left — VS translate only (no CCam+VS stack / double IPD).
+    g_vsPatchOn.store(true);
+    g_execViewStage = 5;
+    g_origDrawWalk(self, edx);
+    g_vsPatchOn.store(false);
+    g_execViewStage = 6;
+    const bool okR = CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Right);
+    g_execViewStage = 7;
+    if (IsOursFpAtomicEyePair(GetStereoMode())) {
+      if (okL && okR)
+        g_haveL = g_haveR = true;
+    } else {
+      if (okL)
+        g_haveL = true;
+      if (okR)
+        g_haveR = true;
+    }
+    SetStereoEye(StereoEye::Left);
+    RefreshLiveCamForStereoEye();
+    return true;
+  } __except (ExecViewFilter(GetExceptionInformation())) {
+    g_vsPatchOn.store(false);
+    SetStereoEye(StereoEye::Left);
+    return false;
+  }
+}
+
+bool InstallMode200ParentDualHook() {
+  if (g_mode200HookOk.load() || g_mode200TooHot.load())
+    return g_mode200HookOk.load();
+  const uint32_t targetRva = ParentDualTargetRva();
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  const uintptr_t addr = base + targetRva;
+  const auto* b = reinterpret_cast<const uint8_t*>(addr);
+  const int kill = IsOursFpSameTickParentDualTry2(GetStereoMode())     ? 203
+                   : IsOursFpSameTickParentDualPose(GetStereoMode())   ? 200
+                                                                        : 191;
+  if (b[0] != 0x56 || b[1] != 0x8B || b[2] != 0xF1) {
+    Log("Mode%d: FAIL unexpected prologue @0x%X bytes=%02X %02X %02X — wrote stereo=%d",
+        static_cast<int>(GetStereoMode()), targetRva, b[0], b[1], b[2], kill);
+    WriteStereoModeFile(kill);
+    return false;
+  }
+  if (Mode41ForbiddenRva(targetRva) || Mode34ForbiddenRva(targetRva)) {
+    Log("Mode%d: FAIL target 0x%X forbidden — wrote stereo=%d",
+        static_cast<int>(GetStereoMode()), targetRva, kill);
+    WriteStereoModeFile(kill);
+    return false;
+  }
+  g_drawWalkDead.store(false);
+  g_drawWalkEntries.store(0);
+  g_mode200Es.store(0);
+  g_mode200DualN.store(0);
+  g_mode200EntrySum.store(0);
+  if (!InstallDrawWalkAt(addr)) {
+    Log("Mode%d: InstallDrawWalkAt FAIL @0x%X — wrote stereo=%d",
+        static_cast<int>(GetStereoMode()), targetRva, kill);
+    WriteStereoModeFile(kill);
+    return false;
+  }
+  g_mode200HookOk.store(true);
+  Log("Mode%d: PARENT DUAL DrawWalk OK @0x%X prologue=568BF1 thiscall-56 "
+      "(single BuildRootA; poseLatch=%d; soft avg>8/ES → kill %d)",
+      static_cast<int>(GetStereoMode()), targetRva,
+      IsOursFpSameTickParentDualPose(GetStereoMode()) ? 1 : 0, kill);
+  return true;
+}
+
+void Mode200Kill(const char* why) {
+  if (g_mode200TooHot.exchange(true))
+    return;
+  EndStereoDualCamFreeze();
+  EndDualHmdPoseLatch();
+  g_drawWalkDead.store(true);
+  if (g_drawWalkAddr) {
+    MH_DisableHook(g_drawWalkAddr);
+    MH_RemoveHook(g_drawWalkAddr);
+    g_origDrawWalk = nullptr;
+    g_drawWalkAddr = nullptr;
+  }
+  g_mode200HookOk.store(false);
+  SetStereoEye(StereoEye::Left);
+  RefreshLiveCamForStereoEye();
+  const int kill = IsOursFpSameTickParentDualTry2(GetStereoMode())     ? 203
+                   : IsOursFpSameTickParentDualPose(GetStereoMode())   ? 200
+                   : IsOursFpSameTickParentDualFreeze(GetStereoMode()) ? 200
+                   : IsOursFpSameTickParentDualVs(GetStereoMode())     ? 200
+                                                                        : 191;
+  Log("Mode%d: KILL — %s — wrote stereo=%d", static_cast<int>(GetStereoMode()), why, kill);
+  WriteStereoModeFile(kill);
+}
+
+void Mode200OnEndScene() {
+  if (!g_mode200HookOk.load())
+    return;
+  const uint32_t es = ++g_mode200Es;
+  const LONG frame = static_cast<LONG>(g_drawWalkEntries.exchange(0));
+  g_mode200EntrySum.fetch_add(frame);
+  const LONG total = g_mode200EntrySum.load();
+  if (es <= 8 || (es % 90) == 0)
+    Log("Mode%d: dual-walk es#%u entriesThisFrame=%ld total=%ld dualN=%u target=0x%X "
+        "want~1/ES (single BuildRootA)",
+        static_cast<int>(GetStereoMode()), es, frame, total, g_mode200DualN.load(),
+        ParentDualTargetRva());
+  if (es == 90) {
+    const float avg = total / 90.f;
+    if (avg > 8.f) {
+      char buf[96];
+      sprintf_s(buf, "avg=%.1f entries/ES over first 90 (cap 8)", avg);
+      Mode200Kill(buf);
+    } else {
+      Log("Mode%d: warm OK avg=%.2f entries/ES over 90 — keep parent dual",
+          static_cast<int>(GetStereoMode()), avg);
+    }
+  }
 }
 
 void BuildWrapTryList() {
@@ -4147,6 +4819,125 @@ bool Mode41ForbiddenRva(uint32_t rva) {
   return rva == 0x2C6AC || rva == 0x37BD0 || rva == 0x1BF010 || rva == 0x4DDAD0;
 }
 
+const char* Mode41CallBeforeReturn(uintptr_t base, uint32_t retRva, uint32_t* outCallRva,
+                                   uint32_t* outTargetRva, uint8_t* outModrm,
+                                   uint8_t* outLength);
+
+bool Mode196SafeReadPtr(uintptr_t addr, uintptr_t* out) {
+  if (!out)
+    return false;
+  __try {
+    *out = *reinterpret_cast<const uintptr_t*>(addr);
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
+bool Mode196DecodeOwnerDisp(uintptr_t base, uint32_t* outDisp, uint32_t* outCallRva,
+                            uint8_t* outModrm, uint8_t* outLen) {
+  uint32_t callRva = 0, targetRva = 0;
+  uint8_t modrm = 0, callLen = 0;
+  const char* call =
+      Mode41CallBeforeReturn(base, 0x30D13, &callRva, &targetRva, &modrm, &callLen);
+  if (std::strcmp(call, "FF/2") != 0 || callLen < 6)
+    return false;
+  const auto* p = reinterpret_cast<const uint8_t*>(base + callRva);
+  if (p[0] != 0xFF)
+    return false;
+  const uint8_t mod = static_cast<uint8_t>(p[1] >> 6);
+  const uint8_t rm = static_cast<uint8_t>(p[1] & 7);
+  // Mode42: FF 90 disp32 = call [eax+disp32] (mod=2, /2, rm=eax).
+  if (mod != 2 || rm != 0)
+    return false;
+  if (outDisp)
+    *outDisp = *reinterpret_cast<const uint32_t*>(p + 2);
+  if (outCallRva)
+    *outCallRva = callRva;
+  if (outModrm)
+    *outModrm = modrm;
+  if (outLen)
+    *outLen = callLen;
+  return true;
+}
+
+void Mode196NoteOwnerFromStack(uintptr_t* sp, int nSlots, uintptr_t base) {
+  if (!sp || nSlots < 2)
+    return;
+  bool haveEdge = false;
+  for (int i = 1; i < nSlots; ++i) {
+    if (sp[i] == base + 0x30D13) {
+      haveEdge = true;
+      break;
+    }
+  }
+  if (!haveEdge)
+    return;
+  ++g_mode196EdgeHits;
+
+  uint32_t disp = 0, callRva = 0;
+  uint8_t modrm = 0, callLen = 0;
+  if (!Mode196DecodeOwnerDisp(base, &disp, &callRva, &modrm, &callLen))
+    return;
+  g_mode196HaveDisp = true;
+  g_mode196Disp = disp;
+  g_mode196CallRva = callRva;
+  g_mode196Modrm = modrm;
+  g_mode196CallLen = callLen;
+
+  for (int i = 1; i < nSlots; ++i) {
+    const uintptr_t obj = sp[i];
+    if (obj < 0x10000 || (obj & 3u) != 0)
+      continue;
+    // Skip code/return addresses inside the exe image.
+    if (obj >= base + 0x1000 && obj <= base + 0xC00000)
+      continue;
+    MEMORY_BASIC_INFORMATION mbi{};
+    if (!VirtualQuery(reinterpret_cast<const void*>(obj), &mbi, sizeof(mbi)))
+      continue;
+    if (mbi.State != MEM_COMMIT)
+      continue;
+    const DWORD prot = mbi.Protect & 0xFFu;
+    if (prot != PAGE_READONLY && prot != PAGE_READWRITE && prot != PAGE_WRITECOPY &&
+        prot != PAGE_EXECUTE_READ && prot != PAGE_EXECUTE_READWRITE &&
+        prot != PAGE_EXECUTE_WRITECOPY)
+      continue;
+
+    uintptr_t vtable = 0;
+    if (!Mode196SafeReadPtr(obj, &vtable))
+      continue;
+    if (vtable < base + 0x1000 || vtable > base + 0xC00000)
+      continue;
+    uintptr_t target = 0;
+    if (!Mode196SafeReadPtr(vtable + disp, &target))
+      continue;
+    if (target < base + 0x1000 || target > base + 0xC00000)
+      continue;
+    MEMORY_BASIC_INFORMATION mbiT{};
+    if (!VirtualQuery(reinterpret_cast<const void*>(target), &mbiT, sizeof(mbiT)))
+      continue;
+    const DWORD tprot = mbiT.Protect & 0xFFu;
+    if (tprot != PAGE_EXECUTE && tprot != PAGE_EXECUTE_READ &&
+        tprot != PAGE_EXECUTE_READWRITE && tprot != PAGE_EXECUTE_WRITECOPY)
+      continue;
+    const uint32_t targetRva = static_cast<uint32_t>(target - base);
+    if (Mode41ForbiddenRva(targetRva))
+      continue;
+
+    bool found = false;
+    for (int j = 0; j < g_mode196OwnerN; ++j) {
+      if (g_mode196Owners[j].obj == obj && g_mode196Owners[j].targetRva == targetRva) {
+        ++g_mode196Owners[j].hits;
+        found = true;
+        break;
+      }
+    }
+    if (!found && g_mode196OwnerN < 16) {
+      g_mode196Owners[g_mode196OwnerN++] = {obj, vtable, targetRva, 1};
+    }
+  }
+}
+
 void Mode41NoteFrameNode(uint32_t retRva, uint8_t slot) {
   if (retRva == kMode34VsRetRva || Mode41ForbiddenRva(retRva))
     return;
@@ -4256,9 +5047,37 @@ void Mode41FinishFrame() {
   if (es > 8 && (es % 90) != 0)
     return;
   const bool mode42 = GetStereoMode() == StereoMode::ReplayOwnerCountProbe;
-  const char* label = mode42 ? "Mode42" : "Mode41";
+  const bool mode196 = IsOursFpSameTickOwnerObserve(GetStereoMode());
+  const char* label = mode196 ? "Mode196" : mode42 ? "Mode42" : "Mode41";
   Log("%s: replay-chain epoch=%u VsRetHits=%u nodes=%d tid=%u SameFrame=0 distinctEyes=0",
       label, es, g_mode41VsRetHits.load(), g_mode41AggN, g_mode41VsTid);
+  if (mode196) {
+    Log("Mode196: OWNER-EDGE cadence edgeHits=%u owners=%d haveDisp=%d disp=0x%X "
+        "call@0x%X modrm=0x%02X len=%u hook=NO replay=NO",
+        g_mode196EdgeHits.load(), g_mode196OwnerN, g_mode196HaveDisp ? 1 : 0, g_mode196Disp,
+        g_mode196CallRva, g_mode196Modrm, g_mode196CallLen);
+    int ord[16]{};
+    const int oc = g_mode196OwnerN;
+    for (int i = 0; i < oc; ++i)
+      ord[i] = i;
+    for (int i = 0; i < oc; ++i) {
+      for (int j = i + 1; j < oc; ++j) {
+        if (g_mode196Owners[ord[j]].hits > g_mode196Owners[ord[i]].hits) {
+          const int t = ord[i];
+          ord[i] = ord[j];
+          ord[j] = t;
+        }
+      }
+    }
+    const int lim = (std::min)(oc, 8);
+    for (int i = 0; i < lim; ++i) {
+      const Mode196OwnerHit& o = g_mode196Owners[ord[i]];
+      Log("Mode196: OWNER-CAND #%d eaxObj=%p vtable=%p targetRva=0x%X hits=%u "
+          "hook=NO replay=NO",
+          i, reinterpret_cast<void*>(o.obj), reinterpret_cast<void*>(o.vtable), o.targetRva,
+          o.hits);
+    }
+  }
   int order[96]{};
   int count = g_mode41AggN;
   for (int i = 0; i < count; ++i)
@@ -4293,10 +5112,10 @@ void Mode41FinishFrame() {
         "modrm=0x%02X len=%u frames=%u hits=%u hook=NO",
         label, node.slot, node.retRva, fnRva, abi, call, callRva, targetRva, modrm, callLen,
         node.frames, node.hits);
-    if (mode42 && node.retRva == 0x30D13) {
-      Log("Mode42: OWNER-EDGE ret=0x30D13 enclosing=0x%X abi=%s call=%s@0x%X "
+    if ((mode42 || mode196) && node.retRva == 0x30D13) {
+      Log("%s: OWNER-EDGE ret=0x30D13 enclosing=0x%X abi=%s call=%s@0x%X "
           "modrm=0x%02X len=%u cadenceFrames=%u hits=%u hook=NO replay=NO",
-          fnRva, abi, call, callRva, modrm, callLen, node.frames, node.hits);
+          label, fnRva, abi, call, callRva, modrm, callLen, node.frames, node.hits);
     }
   }
 }
@@ -4729,9 +5548,15 @@ bool RunMode120DrawSceneDualGuarded(void* drawSelf, void* edx) {
   const bool atomicPair = IsOursFpAtomicEyePair(GetStereoMode());
   const bool pairFreeze = IsOursFpDualCamFreeze(GetStereoMode());
   const bool monoPair = IsOursFpMonoPair(GetStereoMode());
+  // Mode189: freeze sim for the WHOLE L+R pair (not only between eyes like Mode184).
+  // Mode184 (legacy): step-only between L and R — poke disabled; leave path for A/B.
+  const bool sameTick = IsOursFpSameTickDual(GetStereoMode());
+  const bool timeFreezeMid = IsOursFpTimeFreeze(GetStereoMode());
   __try {
     if (pairFreeze)
       BeginStereoDualCamFreeze();
+    if (sameTick)
+      BeginDualTimeFreeze();
 
     if (monoPair) {
       // ONE center draw (IPD off in ApplyHmdToCam); same BB → L+R with SAME eye crop.
@@ -4743,6 +5568,8 @@ bool RunMode120DrawSceneDualGuarded(void* drawSelf, void* edx) {
       const bool okL = CopyBbToEyeCanvasGated(g_device, g_texL, vr::Eye_Left);
       // Force Left eye projection for Right texture too → pixel-identical pair.
       const bool okR = CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Left);
+      if (sameTick)
+        EndDualTimeFreeze();
       if (pairFreeze)
         EndStereoDualCamFreeze();
       if (atomicPair) {
@@ -4771,14 +5598,33 @@ bool RunMode120DrawSceneDualGuarded(void* drawSelf, void* edx) {
                          ? CopyBbToEye(g_device, g_texL)
                          : CopyBbToEyeCanvasGated(g_device, g_texL, vr::Eye_Left);
 
+    if (timeFreezeMid)
+      BeginDualTimeFreeze();
+    if (sameTick)
+      RepinDualTimeMs();
+
     SetStereoEye(StereoEye::Right);
     RefreshLiveCamForStereoEye();
     if (fpHost)
       PushLiveCamToD3D(g_device);
-    g_origBuild(drawSelf, edx);
+    // Mode 185: fuller same-tick Right = PhaseA→PhaseC→DrawScene (not bare DrawScene×2).
+    if (IsOursFpPhaseRightDual(GetStereoMode())) {
+      static bool s_once = false;
+      if (!s_once) {
+        s_once = true;
+        Log("Mode185: Right via PhaseTriplet havePhase=%d sameTick=%d",
+            HavePhasePtrs() ? 1 : 0, sameTick ? 1 : 0);
+      }
+      RunPhaseTriplet(drawSelf, edx);
+    } else {
+      g_origBuild(drawSelf, edx);
+    }
     const bool okR = IsOursFpStereoSimple(GetStereoMode())
                          ? CopyBbToEye(g_device, g_texR)
                          : CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Right);
+
+    if (timeFreezeMid || sameTick)
+      EndDualTimeFreeze();
 
     if (pairFreeze)
       EndStereoDualCamFreeze();
@@ -4808,6 +5654,7 @@ bool RunMode120DrawSceneDualGuarded(void* drawSelf, void* edx) {
       PushLiveCamToD3D(g_device);
     return true;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
+    EndDualTimeFreeze();
     EndStereoDualCamFreeze();
     return false;
   }
@@ -4835,6 +5682,12 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
   // 135=ALWAYS-FRESH: everyN=1 dual; look/pose→BB×2; never bare HOLD.
   // Mode 140: same DrawScene dual; IPD-only on FirstPerson cam.
   if (UsesDrawSceneDualPath(mode)) {
+    // Mode 191: BuildRootA owns L/R dual — DrawScene is a single native draw per walk.
+    if (IsOursFpSameTickBuildDual(mode)) {
+      g_origBuild(self, edx);
+      PerfDebugNoteDrawScene(false, g_haveL && g_haveR, 0);
+      return;
+    }
     // Mode 174/175: single stock DrawScene only — no dual, no eye-canvas (Mode0 BB Submit).
     if (IsOursFpBbPhone(mode)) {
       g_origBuild(self, edx);
@@ -4891,6 +5744,17 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
             g_submitPoseLValid ? 1 : 0, g_submitPoseRValid ? 1 : 0);
       PerfDebugNoteDrawScene(true, g_haveL && g_haveR, 0);
       return;
+    }
+    // Mode193 door/interior: DrawScene itself AVs — skip calling it; HOLD last stereo.
+    if (IsOursFpHeadBoneCam(mode)) {
+      const DWORD skipUntil = g_mode193SkipDrawUntilMs.load();
+      if (skipUntil != 0 && GetTickCount() < skipUntil) {
+        if (g_haveL && g_haveR)
+          StereoDualMarkHold();
+        else
+          StereoDualMarkLiveLook();
+        return;
+      }
     }
     if (g_mode120DualDead.load() || g_inDual.load() || !IsStereoRenderArmed() ||
         !g_device || !g_texL || !g_texR) {
@@ -4990,11 +5854,32 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
     const bool ok = RunMode120DrawSceneDualGuarded(self, edx);
     g_inDual.store(false);
     if (!ok) {
+      // Mode193: door/interior AVs often surface here (bone thiscall mid-stream).
+      // Soft-fail one frame — do NOT permanent-kill dual / write 120.
+      if (IsOursFpHeadBoneCam(mode)) {
+        static uint32_t s_softN = 0;
+        ++s_softN;
+        const DWORD pauseMs = 8000;
+        g_mode193SkipDrawUntilMs.store(GetTickCount() + pauseMs);
+        NotifyHeadBoneSoftSkip(pauseMs, "DrawScene dual AV");
+        if (s_softN <= 8 || (s_softN % 30) == 0)
+          Log("Mode193: DrawScene dual AV soft #%u — SKIP DrawScene %ums; HOLD last stereo "
+              "(mono rebuild also AVs at doors)",
+              s_softN, pauseMs);
+        // Keep g_haveL/R — submit last good stereo pair. Do NOT call DrawScene.
+        if (g_haveL && g_haveR)
+          StereoDualMarkHold();
+        PerfDebugNoteDrawScene(false, g_haveL && g_haveR, gap);
+        return;
+      }
       g_mode120DualDead.store(true);
       g_haveL = g_haveR = false;
       // Experiments (121+) fall back to LKG 120; Mode 120 keeps kill=51; Mode140 → 0.
-      const int killMode = IsExternalFpHost(mode) ? 0
-          : (mode == StereoMode::CleanDualLookMove) ? 51 : 120;
+      // Mode193 head-bone: keep Mode187 (WorldScale) — not bare 120 (door AV kill).
+      const int killMode = IsExternalFpHost(mode)                 ? 0
+                           : (mode == StereoMode::CleanDualLookMove) ? 51
+                           : IsOursFpHeadBoneCam(mode)               ? 187
+                                                                     : 120;
       Log("Mode%d: EXCEPTION in DrawScene dual — permanently disabled; wrote stereo=%d",
           static_cast<int>(mode), killMode);
       WriteStereoModeFile(killMode);
@@ -5557,6 +6442,27 @@ bool InstallStereoRenderHooks() {
     const bool fovOk =
         IsExternalFpHost(mode) ? false : InstallFovRecomputeSiteHook();
     g_ok = InstallAllThreePhases();
+    if (IsOursFpSameTickBuildDual(mode)) {
+      g_rootDualDead.store(false);
+      g_rootDualCount.store(0);
+      // BuildRootA (root[1]) owns L/R dual; ExecRoot passthrough.
+      const bool rootOk = InstallRootProbeHooks(2);
+      g_ok = g_ok.load() && rootOk;
+      if (IsOursFpSameTickOwnerCount(mode)) {
+        if (!InstallMode197CountHook())
+          g_ok = false;
+      }
+      if (IsOursFpSameTickParentProbe(mode))
+        Mode198ResetProbe();
+      if (IsOursFpSameTickParentCount(mode)) {
+        if (!InstallMode199CountHook())
+          g_ok = false;
+      }
+      if (IsOursFpSameTickParentDual(mode)) {
+        if (!InstallMode200ParentDualHook())
+          g_ok = false;
+      }
+    }
     const int mid = static_cast<int>(mode);
     if (IsExternalFpHost(mode)) {
       Log("StereoRender: mode %d EXTERNAL-FP DUAL (FirstPerson cam/hide/FOV; "
@@ -5565,7 +6471,32 @@ bool InstallStereoRenderHooks() {
           mid, g_ok.load() ? 1 : 0);
       Log("StereoRender: kill-switch - 147 soft-move / 150 native-hide+FP / 151 ours+hide");
     } else if (IsHeadHideNativeOurs(mode)) {
-      const char* tag = mode == StereoMode::OursFpPhoneStereo       ? "+PHONE-STEREO"
+      const char* tag = mode == StereoMode::OursFpSameTickParentDualTry2
+                            ? "+SAME-TICK-PARENT-DUAL-TRY2"
+                        : mode == StereoMode::OursFpSameTickParentDualPose
+                            ? "+SAME-TICK-PARENT-DUAL-POSE"
+                        : mode == StereoMode::OursFpSameTickParentDualVs
+                            ? "+SAME-TICK-PARENT-DUAL-VS"
+                        : mode == StereoMode::OursFpSameTickParentDualFreeze
+                            ? "+SAME-TICK-PARENT-DUAL-FZ"
+                        : mode == StereoMode::OursFpSameTickParentDual ? "+SAME-TICK-PARENT-DUAL"
+                        : mode == StereoMode::OursFpSameTickParentCount ? "+SAME-TICK-PARENT-COUNT"
+                        : mode == StereoMode::OursFpSameTickParentProbe ? "+SAME-TICK-PARENT"
+                        : mode == StereoMode::OursFpSameTickOwnerCount ? "+SAME-TICK-OWNER-COUNT"
+                        : mode == StereoMode::OursFpSameTickOwnerObserve ? "+SAME-TICK-OWNER-OBS"
+                        : mode == StereoMode::OursFpSameTickDrawRight ? "+SAME-TICK-DRAW-R"
+                        : mode == StereoMode::OursFpHeadBoneThiscall ? "+HEAD-BONE-TC"
+                        : mode == StereoMode::OursFpSameTickPhaseRight ? "+SAME-TICK-PHASE-R"
+                        : mode == StereoMode::OursFpSameTickBuildDual ? "+SAME-TICK-BUILD"
+                        : mode == StereoMode::OursFpHeadBoneReturn ? "+HEAD-BONE-RET"
+                        : mode == StereoMode::OursFpSameTickDual ? "+SAME-TICK"
+                        : mode == StereoMode::OursFpHeadBoneWorldScale ? "+HEAD-BONE+WS"
+                        : mode == StereoMode::OursFpTrueWorldScale ? "+TRUE-WORLDSCALE"
+                        : mode == StereoMode::OursFpZoomOut ? "+ZOOM-OUT"
+                        : mode == StereoMode::OursFpPhaseRightDual ? "+PHASE-RIGHT-DUAL"
+                        : mode == StereoMode::OursFpTimeFreeze ? "+TIME-FREEZE"
+                        : mode == StereoMode::OursFpPhoneCanvasInset ? "+PHONE-CANVAS-INSET"
+                        : mode == StereoMode::OursFpPhoneStereo       ? "+PHONE-STEREO"
                         : mode == StereoMode::OursFpNoColorFill     ? "+NO-COLORFILL"
                         : mode == StereoMode::OursFpSameFrameFreeze ? "+SAME-FRAME-FREEZE"
                         : IsOursFpAer(mode)             ? "+AER"
@@ -5597,8 +6528,50 @@ bool InstallStereoRenderHooks() {
                         : IsOursFpFovProfile(mode)       ? "+FP-PRESENCE"
                                                          : "";
       const char* detail =
-          mode == StereoMode::OursFpPhoneStereo
-              ? "; Mode179 + phone bounds uMin=0.14 vMin=0.42 on stereo Submit"
+          mode == StereoMode::OursFpSameTickParentDualTry2
+              ? "; Mode203 path on next Mode198 parent @0x4DE020 (kill=203 MILESTONE)"
+          : mode == StereoMode::OursFpSameTickParentDualPose
+              ? "; MILESTONE Mode200 full CCam±IPD + ONE HMD pose latch @0x4D8BF0"
+          : mode == StereoMode::OursFpSameTickParentDualVs
+              ? "; REJECT VS-translate — blurs on look; use 203"
+          : mode == StereoMode::OursFpSameTickParentDualFreeze
+              ? "; REJECT freeze — use 203/200"
+          : mode == StereoMode::OursFpSameTickParentDual
+              ? "; SINGLE BuildRootA + parent dual @0x4D8BF0 RefreshLiveCam L/R"
+          : mode == StereoMode::OursFpSameTickParentCount
+              ? "; Mode191 dual + COUNT @0x4D8BF0 (Mode198 RARE thiscall-56)"
+          : mode == StereoMode::OursFpSameTickParentProbe
+              ? "; Mode191 dual + 1 VsRet stack/ES parent hunt above 0x220D0"
+          : mode == StereoMode::OursFpSameTickOwnerCount
+              ? "; Mode191 dual + COUNT-ONLY @0x220D0 (stack-arg naked; no VirtualQuery)"
+          : mode == StereoMode::OursFpSameTickOwnerObserve
+              ? "; DONE — observe disabled (was 1FPS); use 197 or 191"
+          : mode == StereoMode::OursFpSameTickDrawRight
+              ? "; distinct L/R angles via DrawScene Right, but NO fusion; prefer 191"
+          : mode == StereoMode::OursFpHeadBoneThiscall
+              ? "; Mode187 + CE CPed GetBonePosition thiscall HEAD (crouch/sprint)"
+          : mode == StereoMode::OursFpSameTickPhaseRight
+              ? "; PhaseTriplet Right — smooth, no fusion; prefer 191"
+          : mode == StereoMode::OursFpSameTickBuildDual
+              ? "; MILESTONE BuildRootA x2 L/R CopyMat (no CodePause; audio OK)"
+          : mode == StereoMode::OursFpHeadBoneReturn
+              ? "; FAILED ScriptHook natives from CopyMat — bone OFF"
+          : mode == StereoMode::OursFpSameTickDual
+              ? "; FAILED audio hitch — CTimer/CodePause freeze; prefer 191"
+          : mode == StereoMode::OursFpHeadBoneWorldScale
+              ? "; FAILED under-map out-ptr bone — use 187"
+          : mode == StereoMode::OursFpTrueWorldScale
+              ? "; Mode186 + scale×IPD (UEVR size; F11 100→200%; uncapped half-sep)"
+          : mode == StereoMode::OursFpZoomOut
+              ? "; Mode185 PhaseRight dual + fpfov=110 zoom-out (cupboard/near size)"
+          : mode == StereoMode::OursFpPhaseRightDual
+              ? "; CHECKPOINT Mode170 dual+canvas + Right PhaseA→PhaseC→DrawScene"
+          : mode == StereoMode::OursFpTimeFreeze
+              ? "; FAILED CTimer freeze — flicker unchanged; poke disabled"
+          : mode == StereoMode::OursFpPhoneCanvasInset
+              ? "; FAILED soft BB crop — prefer 185 / 170"
+          : mode == StereoMode::OursFpPhoneStereo
+              ? "; FAILED Submit-UV-on-canvas — prefer 185 / 175"
           : mode == StereoMode::OursFpNoColorFill
               ? "; Mode178 full cam freeze + no canvas ColorFill (keep cover crop)"
           : mode == StereoMode::OursFpSameFrameFreeze
@@ -5655,10 +6628,49 @@ bool InstallStereoRenderHooks() {
               ? "; CCam=fpfov under-publish gameTan=COVER"
           : IsOursFpFovProfile(mode) ? "; eyefwd=0+Window0 look-down jacket; F7 live"
                                      : "";
-      Log("StereoRender: mode %d OURS+HIDE%s (Mode120 DrawScene dual + our HMD cam + "
+      Log("StereoRender: mode %d OURS+HIDE%s (%s + our HMD cam + "
           "native SET_DRAW%s; FirstPerson.asi OFF) ok=%d fovSite=%d",
-          mid, tag, detail, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
-      Log("StereoRender: kill-switch - stereo=162 / 161 / 158 or 0");
+          mid, tag,
+          IsOursFpSameTickParentDualTry2(mode) ? "single BuildRootA + parent dual TRY2@4DE020"
+              : IsOursFpSameTickParentDualPose(mode) ? "single BuildRootA + parent dual+poseLatch"
+              : IsOursFpSameTickParentDualVs(mode) ? "single BuildRootA + parent dual VS"
+              : IsOursFpSameTickParentDualFreeze(mode) ? "single BuildRootA + parent dual+freeze"
+              : IsOursFpSameTickParentDual(mode) ? "single BuildRootA + parent dual"
+              : IsOursFpSameTickParentCount(mode) ? "BuildRootA x2 + parent COUNT"
+              : IsOursFpSameTickParentProbe(mode) ? "BuildRootA x2 + parent probe"
+              : IsOursFpSameTickOwnerCount(mode) ? "BuildRootA x2 + owner COUNT"
+              : IsOursFpSameTickOwnerObserve(mode) ? "BuildRootA x2 + owner OBS(off)"
+              : IsOursFpSameTickDrawRight(mode)    ? "BuildRootA+DrawR same-tick"
+              : IsOursFpSameTickPhaseRight(mode) ? "BuildRootA+PhaseR same-tick"
+              : IsOursFpSameTickBuildDual(mode)  ? "BuildRootA x2 same-tick"
+                                                 : "Mode120 DrawScene dual",
+          detail, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      if (IsOursFpSameTickParentDualTry2(mode))
+        Log("StereoRender: kill-switch - stereo=203 (MILESTONE 3D VR) / 0");
+      else if (IsOursFpSameTickParentDualPose(mode))
+        Log("StereoRender: kill-switch - stereo=200 / 191 / 0");
+      else if (IsOursFpSameTickParentDualVs(mode))
+        Log("StereoRender: kill-switch - stereo=200 / 191 / 0 — watch vsPatch>0");
+      else if (IsOursFpSameTickParentDualFreeze(mode))
+        Log("StereoRender: kill-switch - stereo=200 (smooth parent dual) / 191 / 0");
+      else if (IsOursFpSameTickParentDual(mode))
+        Log("StereoRender: kill-switch - stereo=191 (MILESTONE) / 0");
+      else if (IsOursFpSameTickParentCount(mode))
+        Log("StereoRender: kill-switch - stereo=191 (MILESTONE) / 0");
+      else if (IsOursFpSameTickParentProbe(mode))
+        Log("StereoRender: kill-switch - stereo=191 (MILESTONE) / 0");
+      else if (IsOursFpSameTickOwnerCount(mode))
+        Log("StereoRender: kill-switch - stereo=191 (MILESTONE) / 0");
+      else if (IsOursFpSameTickOwnerObserve(mode))
+        Log("StereoRender: kill-switch - stereo=191 (MILESTONE) / 0");
+      else if (IsOursFpSameTickDrawRight(mode))
+        Log("StereoRender: kill-switch - stereo=191 (MILESTONE) / 192 / 0");
+      else if (IsOursFpSameTickPhaseRight(mode))
+        Log("StereoRender: kill-switch - stereo=191 (MILESTONE) / 187 / 0");
+      else if (IsOursFpSameTickBuildDual(mode))
+        Log("StereoRender: kill-switch - stereo=187 / 185 / 0 (191=MILESTONE LKG)");
+      else
+        Log("StereoRender: kill-switch - stereo=162 / 161 / 158 or 0");
     } else if (mode == StereoMode::CleanDualAlwaysFresh) {
       Log("StereoRender: mode %d CLEAN ALWAYS-FRESH (everyN=1 dual; look→BB→L+R EVERY; "
           "POSEHOLD→fresh monolook; hitch→LIVELOOK; NEVER bare HOLD; NOT same-tex; "
@@ -6269,6 +7281,27 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
     // StretchRect live BB (Mode131 only: every 3rd mono frame; Mode133: BB→L once FAILED).
     // Mode 135: liveLook always BB→L AND BB→R (132 style); never same-tex.
     if (UsesDrawSceneDualPath(mode)) {
+      // Mode 191: BuildRootA already captured L/R this tick — do not StretchRect over them.
+      if (IsOursFpSameTickBuildDual(mode)) {
+        IDirect3DSurface9* bb = nullptr;
+        if (SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
+          D3DSURFACE_DESC desc{};
+          bb->GetDesc(&desc);
+          bb->Release();
+          uint32_t rtW = desc.Width, rtH = desc.Height;
+          ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
+          EnsureEyeRts(device, rtW, rtH);
+        }
+        if (IsOursFpSameTickParentDual(mode))
+          Mode200OnEndScene();
+        else if (IsOursFpSameTickParentCount(mode))
+          Mode199OnEndScene();
+        else if (IsOursFpSameTickParentProbe(mode))
+          Mode198OnEndScene();
+        else if (IsOursFpSameTickOwnerCount(mode))
+          Mode197OnEndScene();
+        return;
+      }
       // Mode 174/175: never StretchRect to eye canvases — BB Submit owns the HMD image.
       // Mode 177: DrawScene AER owns capture — skip EndScene StretchRect/HOLD.
       if (IsOursFpBbPhone(mode) || IsOursFpAer(mode))
@@ -6551,6 +7584,11 @@ bool StereoInDualPass() {
   return g_inDual.load();
 }
 
+bool StereoMode193SkipDrawActive() {
+  const DWORD until = g_mode193SkipDrawUntilMs.load();
+  return until != 0 && GetTickCount() < until;
+}
+
 bool StereoProjWindowActive() {
   return g_projWindow.load() || g_inDual.load();
 }
@@ -6802,6 +7840,8 @@ void StereoMode34CollectVsRetCallers(void* retAddr, void* hookSpWords) {
 
 bool StereoMode41WantsTrace() {
   const StereoMode mode = GetStereoMode();
+  // Mode 196 observe DISABLED — VirtualQuery-per-VsRet caused ~1 FPS + look crashes.
+  // Evidence already captured (target 0x220D0). Mode 41/42 temporal probes still OK.
   return mode == StereoMode::ReplayCallChainProbe || mode == StereoMode::ReplayOwnerCountProbe;
 }
 
@@ -6832,7 +7872,49 @@ void StereoMode41CollectVsRetChain(void* retAddr, void* hookSpWords) {
   if (s_sample < 8) {
     ++s_sample;
     Log("%s: VsRet sample#%d tid=%u (stack slots retained; no hook/dual)",
-        GetStereoMode() == StereoMode::ReplayOwnerCountProbe ? "Mode42" : "Mode41", s_sample, tid);
+        GetStereoMode() == StereoMode::ReplayOwnerCountProbe ? "Mode42" : "Mode41", s_sample,
+        tid);
+  }
+}
+
+bool StereoMode198WantsSample() {
+  return IsOursFpSameTickParentProbe(GetStereoMode()) && g_mode198ArmSample.load();
+}
+
+void StereoMode198CollectVsRet(void* retAddr, void* hookSpWords) {
+  if (!StereoMode198WantsSample() || !hookSpWords || !retAddr)
+    return;
+  const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+  const uint32_t retRva =
+      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(retAddr) - base);
+  if (retRva != 0x2C73E)
+    return;
+  // Claim the once-per-EndScene sample slot immediately (no VQ, no loops beyond stack).
+  if (!g_mode198ArmSample.exchange(false))
+    return;
+  ++g_mode198Samples;
+  auto* sp = reinterpret_cast<uintptr_t*>(hookSpWords);
+  g_mode198FrameN = 0;
+  for (int i = 1; i < 48 && g_mode198FrameN < 48; ++i) {
+    const uintptr_t v = sp[i];
+    if (v < base + 0x1000 || v > base + 0xC00000)
+      continue;
+    const uint32_t rva = static_cast<uint32_t>(v - base);
+    bool dup = false;
+    for (int j = 0; j < g_mode198FrameN; ++j) {
+      if (g_mode198FrameRva[j] == rva) {
+        dup = true;
+        break;
+      }
+    }
+    if (!dup)
+      g_mode198FrameRva[g_mode198FrameN++] = rva;
+  }
+  static int s_n = 0;
+  if (s_n < 6) {
+    ++s_n;
+    Log("Mode198: took 1 stack sample #%d nodes=%d tid=%u (armed next ES)", s_n,
+        g_mode198FrameN, GetCurrentThreadId());
   }
 }
 

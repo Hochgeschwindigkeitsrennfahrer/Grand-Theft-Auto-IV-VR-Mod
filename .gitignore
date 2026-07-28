@@ -26,6 +26,14 @@
 !prebuilt/mode170/drop-into-GTAIV/*.asi
 !prebuilt/mode170/drop-into-GTAIV/d3d9.dll.stock-302
 
+# Mode 191/203/204 milestone binaries (ASI + OpenVR; no FusionFix/Rockstar in git)
+!prebuilt/mode191/*.dll
+!prebuilt/mode191/*.asi
+!prebuilt/mode203/*.dll
+!prebuilt/mode203/*.asi
+!prebuilt/mode204/*.dll
+!prebuilt/mode204/*.asi
+
 # Local game config overrides (keep examples)
 /config/dxvk.conf.gpl-off
 /config/dxvk.conf.hide-nvidia-off

@@ -2,6 +2,8 @@
 #include "aob.h"
 #include "log.h"
 
+#include <windows.h>
+
 namespace asi {
 namespace {
 
@@ -35,6 +37,10 @@ class NativeContext {
   }
 
   uint32_t GetResultU32() const { return *reinterpret_cast<const uint32_t*>(m_TempStack); }
+
+  float GetResultF32(uint32_t index) const {
+    return *reinterpret_cast<const float*>(m_TempStack + ArgSize * index);
+  }
 };
 
 using NativeFn = void (*)(NativeContext*);
@@ -156,6 +162,71 @@ bool IsNativeInvokeReady() {
   return g_ready;
 }
 
+void* GetNativeHandlerPtr(uint32_t hash) {
+  if (!g_ready && !InitNativeInvoke())
+    return nullptr;
+  return reinterpret_cast<void*>(GetNativeHandler(hash));
+}
+
+void* GetNativeHandlerByName(const char* name) {
+  if (!name || !name[0])
+    return nullptr;
+  HMODULE sh = GetModuleHandleA("ScriptHook.dll");
+  if (!sh)
+    return nullptr;
+  using GetByName_t = void*(__cdecl*)(const char*);
+  static GetByName_t s_getByName = nullptr;
+  static bool s_logged = false;
+  if (!s_getByName) {
+    s_getByName = reinterpret_cast<GetByName_t>(
+        GetProcAddress(sh, "?GetNativeAddress@Game@@SAPAXPBD@Z"));
+    if (!s_logged) {
+      s_logged = true;
+      if (s_getByName)
+        Log("NativeInvoke: ScriptHook GetNativeAddress(name) @ %p",
+            reinterpret_cast<void*>(s_getByName));
+      else
+        Log("NativeInvoke: ScriptHook.dll present but GetNativeAddress export MISS");
+    }
+    if (!s_getByName)
+      return nullptr;
+  }
+  __try {
+    return s_getByName(name);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return nullptr;
+  }
+}
+
+bool InvokeNativeFn(void* handler, const uint32_t* args, uint32_t argCount, uint32_t* outResult) {
+  if (!handler)
+    return false;
+  NativeFn fn = reinterpret_cast<NativeFn>(handler);
+  NativeContext cxt;
+  for (uint32_t i = 0; i < argCount && i < 16; ++i)
+    cxt.PushU32(args[i]);
+  fn(&cxt);
+  if (outResult)
+    *outResult = cxt.GetResultU32();
+  return true;
+}
+
+bool InvokeNativeFnResultFloats(void* handler, const uint32_t* args, uint32_t argCount,
+                                float* outFloats, uint32_t outFloatCount) {
+  if (!handler)
+    return false;
+  NativeFn fn = reinterpret_cast<NativeFn>(handler);
+  NativeContext cxt;
+  for (uint32_t i = 0; i < argCount && i < 16; ++i)
+    cxt.PushU32(args[i]);
+  fn(&cxt);
+  if (outFloats) {
+    for (uint32_t i = 0; i < outFloatCount && i < 16; ++i)
+      outFloats[i] = cxt.GetResultF32(i);
+  }
+  return true;
+}
+
 bool InvokeNativeRaw(uint32_t hash, const uint32_t* args, uint32_t argCount, uint32_t* outResult) {
   if (!g_ready && !InitNativeInvoke())
     return false;
@@ -164,14 +235,7 @@ bool InvokeNativeRaw(uint32_t hash, const uint32_t* args, uint32_t argCount, uin
   if (!fn)
     return false;
 
-  NativeContext cxt;
-  for (uint32_t i = 0; i < argCount && i < 16; ++i)
-    cxt.PushU32(args[i]);
-
-  fn(&cxt);
-  if (outResult)
-    *outResult = cxt.GetResultU32();
-  return true;
+  return InvokeNativeFn(reinterpret_cast<void*>(fn), args, argCount, outResult);
 }
 
 }  // namespace asi

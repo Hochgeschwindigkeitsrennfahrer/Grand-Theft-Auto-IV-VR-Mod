@@ -299,6 +299,7 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   PollCamHotkeys();
   PollIpdScaleHotkey();
   PollWorldScaleHotkey();
+  PollTrueWorldScaleHotkey();
   PollStereoScaleHotkey();
   PollVrResHotkey();
 
