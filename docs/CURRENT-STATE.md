@@ -52,10 +52,11 @@ Offline gates now pass:
   and world-stereo -> stationary-UI switching:
   `protocol=v6 worldStrict=1 wvpProof=1 drawSceneProof=1 immersiveMono=1 cpuMailbox=1 cpuMailboxStereo=1 cpuMailboxWorldUi=1 stationaryUiQuad=1 uiAspect=1 routeSwitch=1 srgbDecode=1 runtimeUntouched=1`.
 
-Current integrated build artifacts (not deployed): x86 ASI SHA-256
-`EFD88A6499A317DD41CD15CF05BDEE1E8A690776959F51E6DCD57566702B4B31`;
+Post-merge artifacts built from integration commit `4eb195f` (not deployed):
+x86 ASI SHA-256
+`2BB6B7FC6B3369366354EBE37CDFBED83E75BAF1EC5C7C5D63AE6A04995FF912`;
 x64 host SHA-256
-`C26F8B7EFA31D088540E36F2B6640452DC3EFE3A78C58F81A6F9E0096EC20D2C`.
+`94ACC4CDEA7B83236F5B1850F5B1EAA2AF3C006E12E112BF0249EA0968EB4777`.
 No GTA, OpenXR session, Steam, or SteamVR process was started for these builds.
 
 The merged setup scripts now verify vendored Git dependencies without changing
