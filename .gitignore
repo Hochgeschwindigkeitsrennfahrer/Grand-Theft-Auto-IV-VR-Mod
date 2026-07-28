@@ -8,6 +8,9 @@
 /backups/
 /vendor/
 /inspiration/
+/inspo/scripthook_dl/
+/thirdparty/dxvk-gplasync/
+/dist/*.zip
 *.user
 *.suo
 *.obj
@@ -17,6 +20,11 @@
 *.asi
 *.log
 .DS_Store
+
+# Mode 170 runnable drop (stock DXVK + ASI + OpenVR only; no Rockstar assets)
+!prebuilt/mode170/drop-into-GTAIV/*.dll
+!prebuilt/mode170/drop-into-GTAIV/*.asi
+!prebuilt/mode170/drop-into-GTAIV/d3d9.dll.stock-302
 
 # Local game config overrides (keep examples)
 /config/dxvk.conf.gpl-off

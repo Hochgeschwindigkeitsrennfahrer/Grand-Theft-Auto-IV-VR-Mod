@@ -1,0 +1,11 @@
+Third-party components in this Mode 170 pack
+===========================================
+- DXVK 3.0.2 (d3d9.dll) - https://github.com/doitsujin/dxvk
+- OpenVR (openvr_api.dll) - https://github.com/ValveSoftware/openvr
+- gtaiv_dxvk_vr.asi - this project (MIT scaffolding)
+
+NOT included (install yourself):
+- FusionFix - https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix
+- Any Rockstar game assets
+
+See CREDITS.md in the repo root for full credits and sources.

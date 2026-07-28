@@ -1,90 +1,59 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-## 2026-07-28 — Mode **169** + gplasync A/B (ready to headset-test)
+## 2026-07-28 — Mode **178** lab (same-frame full cam freeze)
 
-### Live setup (after AFK prep)
-- **stereo=`169`** / buildid `20260728-mode169+gplasync-ab`
-- **d3d9.dll** = Ph42oN weekly **`v3.0-gplasync`** x32 (interop + `enableAsync`)
-- Stock **3.0.2** saved as `d3d9.dll.stock-302` + `backups/dxvk-stock-302/`
-- `dxvk.conf`: `dxvk.enableAsync = true`
-- FusionFix cache: `GTAIV.dxvk-cache` next to EXE
-- GitHub backup: branch `backup/pre-gplasync-20260728` (+ follow-up Mode169 commit)
+### Live
+- Stereo file: **`178`** (kill: **`170`**)
+- Stack: Mode170 dual + eye-canvas + **freeze FULL pre-IPD cam** (basis+pos); only ±IPD differs between L/R DrawScene
 
-### Mode 169 = safe flicker (from 168 logs)
-| Keep from 168 | Drop (caused DEVICE_LOST / flash) |
-|---------------|-------------------------------------|
-| atomic L+R pair | everyN=1 (back to dualn=2) |
-| no tiny-RT skip-gate | FlushRenderingCommands per eye |
-| Mode167 car + HUD | hitch → LIVELOOK mono (hitch → HOLD last stereo) |
+### Also in ASI (not live; switch sidecar to test)
+| stereo | Change vs previous |
+|--------|-------------------|
+| **179** | 178 + skip canvas `ColorFill` (keep cover crop) |
+| **180** | 179 + phone Submit bounds `uMin=0.14` `vMin=0.42` |
 
-Kill: **`167`** / `162`. Do **not** re-enable 168.
+### Deploy proof (buildId `20260728-155849`)
+Log confirmed: `StereoMode: 178`, `Mode178: dual cam freeze begin … fullBasis=1`, `full cam freeze capture`, `DRAWSCENE dual … everyN=1`, `StereoSubmit L=1 R=1 mode=178`. Inter-eye cam delta before overwrite often `dpos≈0` (origin freeze already pins ped eye).
 
-### Rollback (one click)
-```text
-powershell -ExecutionPolicy Bypass -File scripts\restore-stock-dxvk.ps1
-```
-Re-install gplasync later:
-```text
-powershell -ExecutionPolicy Bypass -File scripts\install-gplasync-ab.ps1
-```
-Docs: `docs/GPLASYNC_AB.md`
+### Headset test (you)
+1. SteamVR on → play until in-world (game may already be running).
+2. Compare to 170: depth still fused? flicker better on foot / driving?
+3. Bad → put `170` in `gtaiv_dxvk_vr.stereo` next to `GTAIV.exe` and report.
+4. Still flickers hard → try `179` (no ColorFill). Phone next → `180`.
 
-### Test order when back
-1. SteamVR on, headset awake
-2. Launch GTA IV — flat window ~1 min (watch for crash / black)
-3. Enter world, look for `Mode169` / `SAFE` in `gtaiv_dxvk_vr.log`
-4. Check `GTAIV_d3d9.log` starts with gplasync / no DEVICE_LOST
-5. Drive near water — compare flicker vs 167
-6. If freeze/black → restore stock, set stereo=`167`, report log lines
+### Locked (do not re-try as “stable”)
+| Path | Result |
+|------|--------|
+| BB mono both eyes (174/175) | Smooth, **no fusion / warp** on G2 |
+| Dual without eye-canvas (176) | Flicker, **no 3D** |
+| AER (177) | Flicker, no fusion, head warp |
+| Mono-pair / sameL (172/173) | Still flickered |
+| Ped **origin** freeze only (171) | Still flickered on foot |
+
+### Not claimed until headset confirms
+- Flicker-free stereo
+- Perfect same-moment world (sim may still advance between DrawScenes outside cam)
 
 ---
 
-## 2026-07-28 afternoon — Mode **168** freeze (DEVICE_LOST)
+## Prior: Mode **170** on `clean/mode-170`
 
-### Log verdict
-- Session: **stereo=168** / `20260728-mode168-flicker`
-- ASI stayed “healthy” to the end (`errL=0 errR=0`, dual `haveL=1 haveR=1`, ~14 min, `present≈10138`)
-- **`GTAIV_d3d9.log`:** hundreds of `VK_ERROR_DEVICE_LOST` → GPU/driver reset = hard freeze
-- Cause: Mode168 **everyN=1** (DrawScene×2 every frame) + **FlushRenderingCommands per eye** overloaded the GPU
-- LIVELOOK hit ×2 near end = hitch → mono BB flash (extra flicker symptom)
+### Headset truth (Mode 170)
+- Strong FPS, clear **3D** via dual+canvas
+- **Driving can still flicker**
+- Kill: stereo **`167`** or **`0`**
 
-### Immediate kill
-Set `gtaiv_dxvk_vr.stereo` → **`167`** (or `162`). Do **not** keep testing 168 until Flush/everyN redesigned.
-
-### GPLAsync / Nexus / shader cache
-See investigation notes below (we do **not** ship gplasync today).
-
----
-
-## Investigation — GPLAsync + FusionFix shader cache
-
-### Do we have GPLAsync?
-**No.** Live `d3d9.dll` is stock DXVK with `ID3D9VkInterop` (no `enableAsync` / `gplasync` strings). Project rule: async = stutter tool, not VR image path (`docs/CONSTRAINTS.md` §7).
-
-### Nexus mod (DXVK 2.6.2 + GPLAsync)
-- Older than our **3.0.2** base
-- Helps **shader stutter**, not stereo flash / dual-eye capture bugs
-- Swapping to 2.6.2 risks flat/VR regressions we already escaped
-
-### Ph42oN [dxvk-gplasync](https://gitlab.com/Ph42oN/dxvk-gplasync)
-- Packaged releases through **v2.7.1-1** (includes x32)
-- Master **patch** updated toward DXVK 3.0 — **no ready 3.0.2 binary drop** in releases folder
-- Useful later only if we **build** patched 3.0.2 ourselves (Win32) and A/B flat+VR
-
-### Digger1955 dxvk-gplall
-- Caps ~**2.6.8** — reject for our 3.0.2 interop stack
-
-### `inspo/dxvk cache/GTAIV.dxvk-cache` (~100 KB)
-- FusionFix 5.0 multi-vendor prewarm — **worth a careful A/B for stutter**
-- Cache is **DXVK-version sensitive**; may be ignored or partial on 3.0.2
-- Does **not** fix Mode168 DEVICE_LOST or dual-eye flicker
-- Install: copy next to `GTAIV.exe` / `d3d9.dll` (backup first); first launch may still compile
-
-### What actually flickered / froze
-| Symptom | Source |
-|---------|--------|
-| Hard freeze | `VK_ERROR_DEVICE_LOST` under Mode168 load |
-| Hardcore flicker | Dual-eye capture / LIVELOOK mono swaps (ASI), not missing async |
-| Shader hitch (separate) | Cache / async can help **that** class only |
+### Fallbacks
+| stereo | Role |
+|--------|------|
+| **170** | Fresh dual everyN=1 (3D + flicker) |
+| **167** | Safer car/HUD family |
+| **120** | Clean LKG dual everyN=2 |
+| **0** | Mono / flat |
 
 ---
+
+## Wins locked (context)
+- Mono-Submit milestone done (stock DXVK 3.0.2 + interop)
+- Mode **120** clean DrawScene dual was the smooth LKG before FP experiments
+- Mode **170** = fresh dual every frame (performance-oriented dual, known flicker)

@@ -29,6 +29,9 @@ constexpr float kInWantedT = 0.30f;
 constexpr float kInAreaB = 0.20f;
 constexpr float kInStreetB = 0.218f;
 constexpr float kInVehicleNameB = 0.20f;  // keep above area stack
+// Phone message toast — pin to same Y as inset HUD_RADAR (stock 0.745 − kInB).
+constexpr float kRadarInsetY = 0.745f - kInB;  // 0.585
+constexpr float kRadarInsetYCrt = 0.720f - kInB;
 
 void InsetXY(bool left, bool right, bool top, bool bottom, float* x, float* y) {
   if (left)
@@ -72,6 +75,17 @@ void ApplyNamedHudInset(const char* name, float stockX, float stockY, bool left,
   if (std::strcmp(name, "HUD_VEHICLE_NAME") == 0) {
     *nx = stockX - kInR;
     *ny = stockY - kInVehicleNameB;
+    return;
+  }
+  if (std::strcmp(name, "HUD_PHONE_MESSAGE_ICON") == 0 ||
+      std::strcmp(name, "HUD_PHONE_MESSAGE_NUMBER") == 0 ||
+      std::strcmp(name, "HUD_PHONE_MESSAGE_BOX") == 0) {
+    // Same vertical band as minimap (HUD_RADAR after kInB inset).
+    *nx = stockX + kInL;
+    *ny = (std::fabs(stockY - 0.685f) < 0.05f || std::fabs(stockY - 0.689f) < 0.05f ||
+           std::fabs(stockY - 0.682f) < 0.05f)
+              ? kRadarInsetYCrt
+              : kRadarInsetY;
     return;
   }
   InsetXY(left, right, top, bottom, nx, ny);
@@ -275,6 +289,9 @@ void ApplyInsetToStockText(std::string& text) {
       {"HUD_AREA_NAME", 0.905f, 0.835f, false, true, false, true},
       {"HUD_STREET_NAME", 0.905f, 0.875f, false, true, false, true},
       {"HUD_VEHICLE_NAME", 0.905f, 0.795f, false, true, false, true},
+      {"HUD_PHONE_MESSAGE_ICON", 0.129f, 0.685f, true, false, false, true},
+      {"HUD_PHONE_MESSAGE_NUMBER", 0.127f, 0.689f, true, false, false, true},
+      {"HUD_PHONE_MESSAGE_BOX", 0.092f, 0.682f, true, false, false, true},
       {"HUD_LOWERRIGHT_MESSAGE", 0.629f, 0.672f, false, true, false, true},
       {"HUD_SUBITILES", 0.505f, 0.9165f, false, false, false, true},
   };

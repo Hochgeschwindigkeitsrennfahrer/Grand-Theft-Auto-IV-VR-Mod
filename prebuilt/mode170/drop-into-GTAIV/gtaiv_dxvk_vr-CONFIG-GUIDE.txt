@@ -1,0 +1,49 @@
+gtaiv-dxvk-vr — Mode 170 config guide
+=====================================
+
+All files sit next to GTAIV.exe. Edit with Notepad. Restart after changes.
+
+
+1) STEREO MODE
+--------------
+File: gtaiv_dxvk_vr.stereo
+
+  170  — This pack (fresh DrawScene dual every frame)
+  167  — Safer car/HUD family fallback
+  120  — Clean LKG dual (everyN=2 + HOLD)
+  0    — Off (flat DXVK / mono)
+
+
+2) DUAL CADENCE
+---------------
+File: gtaiv_dxvk_vr.dualn
+
+  Mode 170 forces everyN=1 (file mostly ignored for cadence).
+  For Mode 120 / 167, typical value is 2.
+
+
+3) IPD / 3D STRENGTH
+--------------------
+  gtaiv_dxvk_vr.ipd          — separation cm (F8 cycles). Pack default: 3
+  gtaiv_dxvk_vr.stereoscale  — soft disparity (F6). Pack default: 130
+
+
+4) RESOLUTION / FOV
+-------------------
+  gtaiv_dxvk_vr.vres     — eye canvas long edge (F5 cycles). Pack: 2048
+  gtaiv_dxvk_vr.fpfov    — Forward Rear Foot degrees. Pack: 100 100 100
+  gtaiv_dxvk_vr.fovadd   — extra engine FOV. Pack: 0
+
+
+5) CAMERA
+---------
+  gtaiv_dxvk_vr.eyefwd      — look-forward cm
+  gtaiv_dxvk_vr.camoff      — right forward up (cm)
+  gtaiv_dxvk_vr.vehcamoff   — in-vehicle offset (pack: 0 -12 0)
+  gtaiv_dxvk_vr.pedhide     — 1 = hide head mesh
+
+
+6) LOG / BUILD
+--------------
+  gtaiv_dxvk_vr.log      — runtime log (send when reporting bugs)
+  gtaiv_dxvk_vr.buildid  — which pack you installed

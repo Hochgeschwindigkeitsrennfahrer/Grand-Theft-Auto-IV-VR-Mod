@@ -31,6 +31,11 @@ void CamMatrixOnSixDofReset();
 // Re-apply HMD+IPD to all tracked CopyMat matrices (stereo pass switch).
 void RefreshLiveCamForStereoEye();
 
+// Mode 171: snapshot ped/vehicle eye ORIGIN once for a DrawScene L→R pair.
+// Mode 178+: also freeze pre-IPD basis+center pos (only ±IPD differs).
+void BeginStereoDualCamFreeze();
+void EndStereoDualCamFreeze();
+
 // Last position written by ApplyHmdToCam (for L/R delta logs).
 bool GetLastStereoCamPos(float* x, float* y, float* z);
 

@@ -44,6 +44,17 @@ std::atomic<bool> g_hooksOk{false};
 std::atomic<bool> g_gameplayActive{false};  // false until past title (avoids blackscreen)
 std::atomic<uint32_t> g_applyCount{0};
 
+// Mode 171: freeze ped eye ORIGIN for one DrawScene L→R pair (driving flicker).
+std::atomic<bool> g_dualCamFreeze{false};
+Vec4 g_frozenPedEye{};
+bool g_haveFrozenPedEye = false;
+bool g_freezeFullBasis = false;  // Mode 178+: also freeze pre-IPD basis+center
+bool g_haveFrozenCenter = false;
+Vec4 g_frozenCenterEye{};
+float g_frozenFx = 0.f, g_frozenFy = 0.f, g_frozenFz = 0.f;
+float g_frozenRx = 0.f, g_frozenRy = 0.f, g_frozenRz = 0.f;
+float g_frozenUx = 0.f, g_frozenUy = 0.f, g_frozenUz = 0.f;
+
 // Eye placement. Inspiration FP uses ScriptHook SET_DRAW + FPX/FPY/FPZ (often 0).
 // We: PedHide via CE SetDraw helper (no natives) + eyefwd/camoff knobs.
 constexpr float kEyeHeight = 0.70f;  // along ped "at" (world up) — skull center
@@ -341,6 +352,34 @@ bool SaneWorldPos(const Vec4& p) {
   return true;
 }
 
+// Ped-fixed eye-center (Mode 155+) BEFORE 6DoF / camoff / IPD.
+bool TryGetPedEyeCenterBase(Vec4* outEye) {
+  if (!g_FindPlayerPed || !outEye)
+    return false;
+  void* ped = g_FindPlayerPed(0);
+  if (!ped)
+    return false;
+  const StereoMode sm = GetStereoMode();
+  const float kEyeH = IsOursFpEyeCenterLow(sm) ? 0.65f : 0.78f;
+  const bool inVeh = IsPlayerInVehicleSticky();
+  const bool carHead = IsOursFpInCarHead(sm) && inVeh;
+  const float kPedFwd = carHead ? 0.02f : 0.08f;
+  auto* pMat = *reinterpret_cast<Matrix44**>(reinterpret_cast<uint8_t*>(ped) + 0x20);
+  if (!pMat) {
+    const float* t = reinterpret_cast<const float*>(reinterpret_cast<uint8_t*>(ped) + 0x10);
+    outEye->x = t[0];
+    outEye->y = t[1];
+    outEye->z = t[2] + kEyeH;
+    outEye->w = 1.f;
+  } else {
+    outEye->x = pMat->pos.x + pMat->at.x * kEyeH + pMat->up.x * kPedFwd;
+    outEye->y = pMat->pos.y + pMat->at.y * kEyeH + pMat->up.y * kPedFwd;
+    outEye->z = pMat->pos.z + pMat->at.z * kEyeH + pMat->up.z * kPedFwd;
+    outEye->w = 1.f;
+  }
+  return SaneWorldPos(*outEye);
+}
+
 void ApplyHmdToCam(Matrix44* mat) {
   if (!g_gameplayActive.load())
     return;
@@ -364,35 +403,12 @@ void ApplyHmdToCam(Matrix44* mat) {
   const bool eyeCenter = IsOursFpEyeCenterCam(sm);
 
   Vec4 eye{};
-  if (eyeCenter) {
+  // Mode 171: while freezing a dual pair, reuse the ped origin snapped at Begin.
+  if (g_dualCamFreeze.load() && g_haveFrozenPedEye) {
+    eye = g_frozenPedEye;
+  } else if (eyeCenter) {
     // Mode 155/156: ped-fixed eye-center pivot (between eyes), not skull+6DoF.
-    if (!g_FindPlayerPed)
-      return;
-    void* ped = g_FindPlayerPed(0);
-    if (!ped)
-      return;
-    auto* pMat = *reinterpret_cast<Matrix44**>(reinterpret_cast<uint8_t*>(ped) + 0x20);
-    // 155: 78cm (between eyes). 156+: 65cm (lower than Mode154 skull 70cm).
-    const float kEyeH = IsOursFpEyeCenterLow(sm) ? 0.65f : 0.78f;
-    // Default: +8cm along ped forward. Mode164/165 in-car: slight seat nudge (vehcamoff
-    // does most of the rearward shift — keep this mild for trucks).
-    const bool inVeh = IsPlayerInVehicleSticky();
-    const bool carHead = IsOursFpInCarHead(sm) && inVeh;
-    float kPedFwd = carHead ? 0.02f : 0.08f;
-    if (!pMat) {
-      const float* t = reinterpret_cast<const float*>(reinterpret_cast<uint8_t*>(ped) + 0x10);
-      eye.x = t[0];
-      eye.y = t[1];
-      eye.z = t[2] + kEyeH;
-      eye.w = 1.f;
-    } else {
-      // RAGE: at = world up, up = ped forward.
-      eye.x = pMat->pos.x + pMat->at.x * kEyeH + pMat->up.x * kPedFwd;
-      eye.y = pMat->pos.y + pMat->at.y * kEyeH + pMat->up.y * kPedFwd;
-      eye.z = pMat->pos.z + pMat->at.z * kEyeH + pMat->up.z * kPedFwd;
-      eye.w = 1.f;
-    }
-    if (!SaneWorldPos(eye))
+    if (!TryGetPedEyeCenterBase(&eye))
       return;
   } else if (!TryGetPedEyePos(&eye) || !SaneWorldPos(eye)) {
     // No real ped yet — never reuse stale eye (menu → freeze risk)
@@ -579,12 +595,60 @@ void ApplyHmdToCam(Matrix44* mat) {
   // Inspiration-style head/hair hide (CE SetDraw helper — not EndScene natives).
   UpdatePedHeadHide();
 
+  // Mode 178+: freeze FULL pre-IPD cam (basis+center) across L→R; only ±IPD differs.
+  if (g_dualCamFreeze.load() && g_freezeFullBasis) {
+    if (!g_haveFrozenCenter) {
+      g_frozenCenterEye = eye;
+      g_frozenFx = fx;
+      g_frozenFy = fy;
+      g_frozenFz = fz;
+      g_frozenRx = rx;
+      g_frozenRy = ry;
+      g_frozenRz = rz;
+      g_frozenUx = ux;
+      g_frozenUy = uy;
+      g_frozenUz = uz;
+      g_haveFrozenCenter = true;
+      static uint32_t s_capN = 0;
+      const uint32_t cn = ++s_capN;
+      if (cn <= 6 || (cn % 600) == 0)
+        Log("Mode178: full cam freeze capture #%u center=(%.3f,%.3f,%.3f)", cn, eye.x, eye.y,
+            eye.z);
+    } else {
+      const float dpx = eye.x - g_frozenCenterEye.x;
+      const float dpy = eye.y - g_frozenCenterEye.y;
+      const float dpz = eye.z - g_frozenCenterEye.z;
+      const float dpos =
+          std::sqrt(dpx * dpx + dpy * dpy + dpz * dpz);
+      const float dbasis = std::fabs(fx - g_frozenFx) + std::fabs(fy - g_frozenFy) +
+                           std::fabs(fz - g_frozenFz) + std::fabs(rx - g_frozenRx) +
+                           std::fabs(ry - g_frozenRy) + std::fabs(rz - g_frozenRz);
+      static uint32_t s_deltaN = 0;
+      const uint32_t dn = ++s_deltaN;
+      if (dn <= 8 || (dn % 600) == 0)
+        Log("Mode178: inter-eye cam delta #%u beforeFreeze dpos=%.4fm dbasis=%.5f "
+            "(expect ~0 after)",
+            dn, dpos, dbasis);
+      eye = g_frozenCenterEye;
+      fx = g_frozenFx;
+      fy = g_frozenFy;
+      fz = g_frozenFz;
+      rx = g_frozenRx;
+      ry = g_frozenRy;
+      rz = g_frozenRz;
+      ux = g_frozenUx;
+      uy = g_frozenUy;
+      uz = g_frozenUz;
+    }
+  }
+
   // Stereo eye origin — L4D2VR GetViewOriginLeft/Right:
   //   origin + forward*(-eyeZ*scale) + right*(±IPD*ipdScale*scale/2)
   // Cover FOV + TextureBounds (Submit) handle fusion; IPD alone is not enough.
   float ipdX = 0.f, ipdY = 0.f, ipdZ = 0.f;
   const bool rightEye = (GetStereoEye() == StereoEye::Right);
-  if (GetStereoMode() >= StereoMode::DualIpd) {
+  // Mode 172 mono-pair: center cam only (no ±IPD) — one DrawScene feeds both eyes.
+  if (GetStereoMode() >= StereoMode::DualIpd && !IsOursFpMonoPair(GetStereoMode())) {
     float hrx, hry, hrz;
     OvrToGta(h.m[0][0], h.m[1][0], h.m[2][0], &hrx, &hry, &hrz);
     float hrlen = std::sqrt(hrx * hrx + hry * hry + hrz * hrz);
@@ -593,6 +657,12 @@ void ApplyHmdToCam(Matrix44* mat) {
       hry /= hrlen;
       hrz /= hrlen;
     } else {
+      hrx = rx;
+      hry = ry;
+      hrz = rz;
+    }
+    // Same-frame full freeze: IPD uses frozen right axis (not a later HMD sample).
+    if (g_dualCamFreeze.load() && g_freezeFullBasis && g_haveFrozenCenter) {
       hrx = rx;
       hry = ry;
       hrz = rz;
@@ -930,6 +1000,44 @@ void RefreshLiveCamForStereoEye() {
     else
       ApplyHmdToCam(g_liveCamMat);
   }
+}
+
+void BeginStereoDualCamFreeze() {
+  const StereoMode sm = GetStereoMode();
+  if (!IsOursFpDualCamFreeze(sm))
+    return;
+  Vec4 eye{};
+  const bool eyeCenter = IsOursFpEyeCenterCam(sm);
+  const bool ok = eyeCenter ? TryGetPedEyeCenterBase(&eye)
+                            : (TryGetPedEyePos(&eye) && SaneWorldPos(eye));
+  if (!ok) {
+    g_dualCamFreeze.store(false);
+    g_haveFrozenPedEye = false;
+    g_freezeFullBasis = false;
+    g_haveFrozenCenter = false;
+    return;
+  }
+  g_frozenPedEye = eye;
+  g_haveFrozenPedEye = true;
+  g_freezeFullBasis = IsOursFpSameFrameFreeze(sm);
+  g_haveFrozenCenter = false;  // first ApplyHmdToCam captures full pre-IPD cam
+  g_dualCamFreeze.store(true);
+  static uint32_t s_n = 0;
+  const uint32_t n = ++s_n;
+  if (n <= 6 || (n % 600) == 0) {
+    if (g_freezeFullBasis)
+      Log("Mode178: dual cam freeze begin #%u pedEye=(%.3f,%.3f,%.3f) fullBasis=1", n, eye.x,
+          eye.y, eye.z);
+    else
+      Log("Mode171: dual cam freeze #%u pedEye=(%.3f,%.3f,%.3f)", n, eye.x, eye.y, eye.z);
+  }
+}
+
+void EndStereoDualCamFreeze() {
+  g_dualCamFreeze.store(false);
+  g_haveFrozenPedEye = false;
+  g_freezeFullBasis = false;
+  g_haveFrozenCenter = false;
 }
 
 // Mode 22: world-space delta from LEFT eye to RIGHT eye = hmdRight * sep * scale

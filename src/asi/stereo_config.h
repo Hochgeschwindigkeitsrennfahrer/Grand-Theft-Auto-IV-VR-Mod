@@ -448,8 +448,56 @@ enum class StereoMode : int {
   //   - always capture BB (no tiny-RT skip gate)
   //   - atomic L+R pair update
   //   - hitch → HOLD last stereo (NOT LIVELOOK mono flash)
-  // Kill: 167 / 162.
+  // Headset test 2026-07-28: no freeze, but HMD stutter/flicker (desktop smooth)
+  //   — dualn=2 HOLD re-submits stale L/R every other frame. Kill: 167 / 162.
   OursFpSafeFlicker = 169,
+  // Mode 170: Mode169 + everyN=1 (fresh dual every DrawScene) — STILL no Flush,
+  // hitch→HOLD. Isolates whether 168 DEVICE_LOST was Flush (not everyN=1 alone).
+  // Headset: superb FPS, but driving still flickers. Kill: 169 / 167.
+  OursFpFreshDual = 170,
+  // Mode 171: Mode170 + FREEZE ped/vehicle eye ORIGIN across the L→R dual pair.
+  // Driving flicker: ped matrix moves between Left DrawScene and Right DrawScene,
+  // so each eye sees a different world position (binocular rivalry). Snapshot the
+  // eye-center once before L; both eyes only differ by ±IPD from that freeze.
+  // Headset: still flickers on foot — dual DrawScene content differs even frozen.
+  // Kill: 170 / 167.
+  OursFpPairFreeze = 171,
+  // Mode 172: MONO-PAIR flicker A/B + UI lift for phone.
+  //   - ONE DrawScene (no IPD) → same BB copied to L and R with SAME eye crop
+  //   - Headset: STILL flickers — Left-crop submitted as Right eye → rivalry
+  //   - Canvas dest±clamp lift ~10% was too weak / squashy for phone
+  // Kill: 171 / 170 / 167. Stereo depth temporarily flat.
+  OursFpMonoPair = 172,
+  // Mode 173: true mono Submit (same Vulkan tex both eyes) + phone lift = minimap.
+  //   - Headset: STILL flickers with sameL=1 → not L/R content; canvas/Submit path suspect
+  //   - Phone still cut off at 16% crop
+  // Kill: 172 / 170 / 167.
+  OursFpSameLPhone = 173,
+  // Mode 174: BB-MONO + PHONE — flicker A/B vs canvas path.
+  //   - Headset: FLICKER GONE. Confirms eye-canvas/dual Submit was the cause.
+  //   - Phone still too low/right in HMD (desktop screenshot: cut off bottom-right)
+  // Kill: 173 / 170 / 167.
+  OursFpBbPhone = 174,
+  // Mode 175: Mode174 (no-flicker BB mono) + phone framing nudge.
+  //   TextureBounds: vMin 0.30→0.42 (up), uMin 0→0.14 (right content → left/center).
+  // Headset: phone GOOD. Kill: 174 / 170 / 167.
+  OursFpBbPhoneNudge = 175,
+  // Mode 176: STEREO back — dual DrawScene + simple BB copy. FAILED: flicker back, no 3D feel.
+  // Kill: 175 / 170 / 167.
+  OursFpStereoSimple = 176,
+  // Mode 177: AER — one DrawScene/frame alt L/R. FAILED: flicker, no fusion, head warp.
+  // Kill: 175 / 170 / 167.
+  OursFpAer = 177,
+  // Mode 178: SAME-FRAME FREEZE — Mode170 dual + eye-canvas + freeze FULL pre-IPD
+  // cam (basis+pos) across L→R; only ±IPD differs (stronger than Mode171 origin-only).
+  // Kill: 170 / 167.
+  OursFpSameFrameFreeze = 178,
+  // Mode 179: Mode178 + no ColorFill on eye-canvas (keep cover crop for fusion).
+  // Kill: 178 / 170.
+  OursFpNoColorFill = 179,
+  // Mode 180: Mode179 + Mode175 phone Submit bounds (uMin=0.14 vMin=0.42).
+  // Kill: 179 / 178 / 170.
+  OursFpPhoneStereo = 180,
 };
 
 // Mode 40–49: rapid HMD delta → temporary mono pair. Mode 50+ never flattens.
@@ -492,29 +540,42 @@ bool IsExternalFpHostLookMoveYaw(StereoMode mode); // 146
 bool IsExternalFpHostSoftMove(StereoMode mode);    // 147
 bool IsExternalFpHostSoftMoveStick(StereoMode mode); // 148
 bool IsHeadHideNativeWithFp(StereoMode mode);      // 150
-bool IsHeadHideNativeOurs(StereoMode mode);        // 151–169
+bool IsHeadHideNativeOurs(StereoMode mode);        // 151–180
 bool IsOursFpFovProfile(StereoMode mode);          // 152 only
 bool IsOursFpWideUnderPublish(StereoMode mode);    // 153 only (cover-lock)
-bool IsOursFpWideAspectFit(StereoMode mode);       // 154–169 (aspect-fit under-publish)
-bool IsOursFpEyeCenterCam(StereoMode mode);        // 155–169
-bool IsOursFpEyeCenterLow(StereoMode mode);        // 156–169 (lower pivot + F5 VR res)
-bool IsOursFpMildOverscan(StereoMode mode);        // 157–169 (family; 161+ uses 1.0)
-bool IsOursFpSquareRes(StereoMode mode);           // 158–169
+bool IsOursFpWideAspectFit(StereoMode mode);       // 154–180 (aspect-fit under-publish)
+bool IsOursFpEyeCenterCam(StereoMode mode);        // 155–180
+bool IsOursFpEyeCenterLow(StereoMode mode);        // 156–180 (lower pivot + F5 VR res)
+bool IsOursFpMildOverscan(StereoMode mode);        // 157–180 (family; 161+ uses 1.0)
+bool IsOursFpSquareRes(StereoMode mode);           // 158–180
 bool IsOursFpStrongOverscan(StereoMode mode);      // 159 only
 bool IsOursFpSquareLowOverscan(StereoMode mode);   // 160 only
-bool IsOursFpSquareZeroOverscan(StereoMode mode);  // 161–169 (0% overscan family)
-bool IsOursFpSquareWideFov(StereoMode mode);       // 162–169 (fpfov 100 family)
-bool IsOursFpFlashGate(StereoMode mode);           // 163–167 (tiny-RT skip; not 168/169)
+bool IsOursFpSquareZeroOverscan(StereoMode mode);  // 161–180 (0% overscan family)
+bool IsOursFpSquareWideFov(StereoMode mode);       // 162–180 (fpfov 100 family)
+bool IsOursFpFlashGate(StereoMode mode);           // 163–167 (tiny-RT skip; not 168+)
 bool IsOursFpFlashStable(StereoMode mode);         // 168 only (FAILED DEVICE_LOST)
-bool IsOursFpSafeFlicker(StereoMode mode);         // 169 only (safe flicker redesign)
-bool IsOursFpAtomicEyePair(StereoMode mode);       // 168–169 (never mix old L + new R)
-bool IsOursFpAlwaysBbCapture(StereoMode mode);     // 168–169 (no tiny-RT skip gate)
-bool IsOursFpInCarHead(StereoMode mode);           // 164–165, 167–169
-bool IsOursFpEnterCarFp(StereoMode mode);          // 165, 167–169
-bool IsOursFpHudLayout(StereoMode mode);           // 166–169
-bool IsOursFpCarHud(StereoMode mode);              // 167–169
+bool IsOursFpSafeFlicker(StereoMode mode);         // 169 only (dualn=2; HMD stutter)
+bool IsOursFpFreshDual(StereoMode mode);           // 170–173, 176, 178–180 (everyN=1)
+bool IsOursFpPairFreeze(StereoMode mode);          // 171 only (origin freeze)
+bool IsOursFpMonoPair(StereoMode mode);            // 172–173 (1 DrawScene → both eyes)
+bool IsOursFpSameLPhone(StereoMode mode);          // 173 only (sameL Submit + radar phone lift)
+bool IsOursFpBbPhone(StereoMode mode);             // 174–175 (Mode0 BB submit; no canvas)
+bool IsOursFpBbPhoneNudge(StereoMode mode);        // 175 only (phone up+left bounds)
+bool IsOursFpStereoSimple(StereoMode mode);        // 176 only (FAILED dual flicker)
+bool IsOursFpAer(StereoMode mode);                 // 177 only (FAILED AER)
+bool IsOursFpSameFrameFreeze(StereoMode mode);     // 178–180 (full pre-IPD cam freeze)
+bool IsOursFpNoColorFill(StereoMode mode);         // 179–180 (skip canvas ColorFill)
+bool IsOursFpPhoneBounds(StereoMode mode);         // 175–177, 180 Submit phone framing
+bool IsOursFpUiLift(StereoMode mode);              // 172–173 canvas phone lift (not 174+)
+bool IsOursFpAtomicEyePair(StereoMode mode);       // 168–173, 176, 178–180
+bool IsOursFpAlwaysBbCapture(StereoMode mode);     // 168–173, 176, 178–180
+bool IsOursFpInCarHead(StereoMode mode);           // 164–165, 167–180
+bool IsOursFpEnterCarFp(StereoMode mode);          // 165, 167–180
+bool IsOursFpHudLayout(StereoMode mode);           // 166–180
+bool IsOursFpCarHud(StereoMode mode);              // 167–180
 bool IsOursFpStableCarHud(StereoMode mode);        // 168 only
-// Force HMD→ped heading (walk look-dir): 145–148, 150–169, clean dual.
+bool IsOursFpDualCamFreeze(StereoMode mode);       // 171 or 178–180 (Begin/End freeze gate)
+// Force HMD→ped heading (walk look-dir): 145–148, 150–172, clean dual.
 bool WantsExternalFpLookMove(StereoMode mode);
 bool WantsSoftPedHeading(StereoMode mode);
 bool WantsFpStickInvert(StereoMode mode);

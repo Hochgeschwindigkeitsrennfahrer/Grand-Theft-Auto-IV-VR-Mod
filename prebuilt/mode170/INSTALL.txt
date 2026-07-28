@@ -1,0 +1,71 @@
+gtaiv-dxvk-vr — Mode 170 prebuilt drop (GTA IV Complete Edition)
+================================================================
+
+WIP VR glue: Stock DXVK 3.0.2 + ASI + OpenVR (SteamVR).
+Preset: Mode 170 = fresh DrawScene dual every frame (real IPD stereo).
+
+See CREDITS.md / THIRDPARTY.txt. Do not redistribute Rockstar game files.
+
+
+BEFORE YOU COPY
+---------------
+1. Own GTA IV Complete Edition (Steam).
+2. Install FusionFix for GTA IV CE from:
+   https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix
+   (ASI loader + plugins + update assets — use the official release.)
+3. Install SteamVR. Headset (e.g. Reverb G2) must work in SteamVR.
+4. Close GTA IV completely.
+
+
+INSTALL
+-------
+1. Open your game folder (contains GTAIV.exe), typically:
+
+   C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV
+
+2. OPTIONAL: back up d3d9.dll and any existing gtaiv_dxvk_vr.* files.
+
+3. Copy EVERYTHING from drop-into-GTAIV\ into that GTAIV folder.
+   Overwrite is OK for these VR files.
+
+4. In FusionFix graphics options: Graphics API = DirectX 9
+   (NOT FusionFix Vulkan).
+
+5. Start SteamVR, put the headset on, then start GTA IV
+   (singleplayer / offline for this WIP).
+
+6. Log next to GTAIV.exe: gtaiv_dxvk_vr.log
+   Expect: VR_Init OK, StereoMode: 170, StereoSubmit L=1 R=1 mode=170
+
+
+WHAT MODE 170 IS
+----------------
+- First-person style cam path + DrawScene left/right every frame (IPD).
+- Real stereo parallax (not mono theater).
+- Known issue: can still flicker while driving.
+- FirstPerson.asi should stay OFF (rename to .off if present).
+
+
+KILL / FALLBACK
+---------------
+- Flat / no VR stereo:  gtaiv_dxvk_vr.stereo = 0
+- Safer stereo family:  stereo = 167   (or 120)
+- Remove VR ASI only:   delete gtaiv_dxvk_vr.asi and openvr_api.dll
+  (keep FusionFix; restore a backup d3d9.dll if needed)
+
+
+HOTKEYS
+-------
+  F5  Cycle VR eye-canvas resolution
+  F6  Stereo scale
+  F7  World-scale / FOV presets
+  F8  IPD / separation
+  F9  Recenter look
+  F10 Seated lean / 6DoF reset
+
+
+IMPORTANT
+---------
+- Win32 / x86 only.
+- OpenVR must match SteamVR (this pack ships openvr_api for 2.12.x).
+- Stock DXVK 3.0.2 d3d9.dll is included; do not replace with a random game DLL.

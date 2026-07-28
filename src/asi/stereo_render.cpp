@@ -869,10 +869,21 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
   clampRect(&src, static_cast<LONG>(sd.Width), static_cast<LONG>(sd.Height));
   clampRect(&rc, static_cast<LONG>(dd.Width), static_cast<LONG>(dd.Height));
 
+  // Mode 172/173: pan published view UP by cropping source top — same amount as
+  // HUD_RADAR inset (kInB=0.16). Dest-shift+clamp was squashing instead of lifting.
+  if (IsOursFpUiLift(GetStereoMode())) {
+    const float liftFrac = IsOursFpSameLPhone(GetStereoMode()) ? 0.16f : 0.10f;
+    const LONG cropTop = static_cast<LONG>(SH * liftFrac + 0.5f);
+    src.top += cropTop;
+    clampRect(&src, static_cast<LONG>(sd.Width), static_cast<LONG>(sd.Height));
+  }
+
   bool ok = false;
   if (rc.right - rc.left >= 16 && rc.bottom - rc.top >= 16 && src.right - src.left >= 16 &&
       src.bottom - src.top >= 16) {
-    dev->ColorFill(dst, nullptr, D3DCOLOR_XRGB(0, 0, 0));
+    // Mode 179+: skip ColorFill flash; cover crop StretchRect still clears via overwrite.
+    if (!IsOursFpNoColorFill(GetStereoMode()))
+      dev->ColorFill(dst, nullptr, D3DCOLOR_XRGB(0, 0, 0));
     ok = SUCCEEDED(dev->StretchRect(bb, &src, dst, &rc, D3DTEXF_LINEAR));
   }
   dst->Release();
@@ -4514,7 +4525,16 @@ bool SubmitEyeTexture(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye 
     tp.mDeviceToAbsoluteTracking =
         lateLatch ? latePose
                   : ((eye == vr::Eye_Left) ? g_submitPoseL : g_submitPoseR);
-    err = vr::VRCompositor()->Submit(eye, &tp, nullptr, vr::Submit_TextureWithPose);
+    const vr::VRTextureBounds_t* bounds = nullptr;
+    vr::VRTextureBounds_t phoneLift{};
+    if (IsOursFpPhoneBounds(curMode)) {
+      phoneLift.uMin = 0.14f;
+      phoneLift.uMax = 1.f;
+      phoneLift.vMin = 0.42f;
+      phoneLift.vMax = 1.f;
+      bounds = &phoneLift;
+    }
+    err = vr::VRCompositor()->Submit(eye, &tp, bounds, vr::Submit_TextureWithPose);
     static uint32_t s_aer = 0;
     if ((++s_aer) <= 8 || (s_aer % 300) == 0) {
       if (lateLatch)
@@ -4540,7 +4560,17 @@ bool SubmitEyeTexture(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye 
             lateLatch ? "LateLatch" : "AERPose", eye == vr::Eye_Left ? "L" : "R");
     }
     // Fusion baseline: nullptr bounds + temporal IPD only.
-    err = vr::VRCompositor()->Submit(eye, &t, nullptr, vr::Submit_Default);
+    // Mode 175/176: keep phone framing (same UV both eyes).
+    const vr::VRTextureBounds_t* bounds = nullptr;
+    vr::VRTextureBounds_t phoneLift{};
+    if (IsOursFpPhoneBounds(curMode)) {
+      phoneLift.uMin = 0.14f;
+      phoneLift.uMax = 1.f;
+      phoneLift.vMin = 0.42f;
+      phoneLift.vMax = 1.f;
+      bounds = &phoneLift;
+    }
+    err = vr::VRCompositor()->Submit(eye, &t, bounds, vr::Submit_Default);
   }
   vtex->Release();
   surf->Release();
@@ -4697,20 +4727,61 @@ bool RunMode120DrawSceneDualGuarded(void* drawSelf, void* edx) {
     return false;
   const bool fpHost = IsExternalFpHost(GetStereoMode());
   const bool atomicPair = IsOursFpAtomicEyePair(GetStereoMode());
+  const bool pairFreeze = IsOursFpDualCamFreeze(GetStereoMode());
+  const bool monoPair = IsOursFpMonoPair(GetStereoMode());
   __try {
+    if (pairFreeze)
+      BeginStereoDualCamFreeze();
+
+    if (monoPair) {
+      // ONE center draw (IPD off in ApplyHmdToCam); same BB → L+R with SAME eye crop.
+      SetStereoEye(StereoEye::Left);
+      RefreshLiveCamForStereoEye();
+      if (fpHost)
+        PushLiveCamToD3D(g_device);
+      g_origBuild(drawSelf, edx);
+      const bool okL = CopyBbToEyeCanvasGated(g_device, g_texL, vr::Eye_Left);
+      // Force Left eye projection for Right texture too → pixel-identical pair.
+      const bool okR = CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Left);
+      if (pairFreeze)
+        EndStereoDualCamFreeze();
+      if (atomicPair) {
+        if (okL && okR)
+          g_haveL = g_haveR = true;
+      } else {
+        if (okL)
+          g_haveL = true;
+        if (okR)
+          g_haveR = true;
+      }
+      SetStereoEye(StereoEye::Left);
+      RefreshLiveCamForStereoEye();
+      if (fpHost)
+        PushLiveCamToD3D(g_device);
+      return true;
+    }
+
     SetStereoEye(StereoEye::Left);
     RefreshLiveCamForStereoEye();
     if (fpHost)
       PushLiveCamToD3D(g_device);
     g_origBuild(drawSelf, edx);
-    const bool okL = CopyBbToEyeCanvasGated(g_device, g_texL, vr::Eye_Left);
+    // Mode 176: plain full StretchRect (no ColorFill / cover-canvas) — flicker A/B.
+    const bool okL = IsOursFpStereoSimple(GetStereoMode())
+                         ? CopyBbToEye(g_device, g_texL)
+                         : CopyBbToEyeCanvasGated(g_device, g_texL, vr::Eye_Left);
 
     SetStereoEye(StereoEye::Right);
     RefreshLiveCamForStereoEye();
     if (fpHost)
       PushLiveCamToD3D(g_device);
     g_origBuild(drawSelf, edx);
-    const bool okR = CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Right);
+    const bool okR = IsOursFpStereoSimple(GetStereoMode())
+                         ? CopyBbToEye(g_device, g_texR)
+                         : CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Right);
+
+    if (pairFreeze)
+      EndStereoDualCamFreeze();
 
     // Mode 168/169: only publish a fresh pair when BOTH eyes captured this tick.
     // Partial update (old L + new R) looks like a full-screen flash.
@@ -4737,6 +4808,7 @@ bool RunMode120DrawSceneDualGuarded(void* drawSelf, void* edx) {
       PushLiveCamToD3D(g_device);
     return true;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
+    EndStereoDualCamFreeze();
     return false;
   }
 }
@@ -4763,6 +4835,63 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
   // 135=ALWAYS-FRESH: everyN=1 dual; look/pose→BB×2; never bare HOLD.
   // Mode 140: same DrawScene dual; IPD-only on FirstPerson cam.
   if (UsesDrawSceneDualPath(mode)) {
+    // Mode 174/175: single stock DrawScene only — no dual, no eye-canvas (Mode0 BB Submit).
+    if (IsOursFpBbPhone(mode)) {
+      g_origBuild(self, edx);
+      PerfDebugNoteDrawScene(false, false, 0);
+      return;
+    }
+    // Mode 177 AER: ONE eye per DrawScene (alternate). Other eye stays 1 frame stale.
+    if (IsOursFpAer(mode)) {
+      if (!IsStereoRenderArmed() || !g_device) {
+        g_origBuild(self, edx);
+        return;
+      }
+      IDirect3DSurface9* bb = nullptr;
+      if (FAILED(g_device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb) {
+        g_origBuild(self, edx);
+        return;
+      }
+      D3DSURFACE_DESC desc{};
+      bb->GetDesc(&desc);
+      bb->Release();
+      uint32_t rtW = desc.Width, rtH = desc.Height;
+      ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
+      EnsureEyeRts(g_device, rtW, rtH);
+      if (!g_texL || !g_texR) {
+        g_origBuild(self, edx);
+        return;
+      }
+      static bool s_right = false;
+      s_right = !s_right;
+      SetStereoEye(s_right ? StereoEye::Right : StereoEye::Left);
+      RefreshLiveCamForStereoEye();
+      g_origBuild(self, edx);
+      SnapshotHoldPose(s_right);
+      if (s_right) {
+        if (CopyBbToEye(g_device, g_texR)) {
+          g_haveR = true;
+          g_submitPoseR = g_holdPoseR;
+          g_submitPoseRValid = g_holdPoseRValid;
+        }
+      } else {
+        if (CopyBbToEye(g_device, g_texL)) {
+          g_haveL = true;
+          g_submitPoseL = g_holdPoseL;
+          g_submitPoseLValid = g_holdPoseLValid;
+        }
+      }
+      SetStereoEye(StereoEye::Left);
+      RefreshLiveCamForStereoEye();
+      static uint32_t s_aerN = 0;
+      const uint32_t n = ++s_aerN;
+      if (n <= 8 || (n % 300) == 0)
+        Log("Mode177: AER #%u eye=%s haveL=%d haveR=%d poseL=%d poseR=%d", n,
+            s_right ? "R" : "L", g_haveL ? 1 : 0, g_haveR ? 1 : 0,
+            g_submitPoseLValid ? 1 : 0, g_submitPoseRValid ? 1 : 0);
+      PerfDebugNoteDrawScene(true, g_haveL && g_haveR, 0);
+      return;
+    }
     if (g_mode120DualDead.load() || g_inDual.load() || !IsStereoRenderArmed() ||
         !g_device || !g_texL || !g_texR) {
       g_origBuild(self, edx);
@@ -4849,8 +4978,8 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
     const bool forceLookDual = StereoDualShouldForceLookDual();
     if (!forceLookDual && (s_tick % everyN) != 0u) {
       g_origBuild(self, edx);
-      // Mode 135/168 safety: never bare HOLD on off-tick (everyN should be 1).
-      if (IsCleanDualAlwaysFresh(mode) || IsOursFpFlashStable(mode))
+      // Mode 135/168/170 safety: never bare HOLD on off-tick (everyN should be 1).
+      if (IsCleanDualAlwaysFresh(mode) || IsOursFpFlashStable(mode) || IsOursFpFreshDual(mode))
         StereoDualMarkLiveLook();
       else if (g_haveL && g_haveR)
         StereoDualMarkHold();
@@ -4881,7 +5010,8 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
           "(%s; kill=167/162/120)",
           static_cast<int>(mode), n, g_haveL ? 1 : 0, g_haveR ? 1 : 0,
           GetStereoSepMeters() * 100.f, everyN,
-          IsOursFpFlashStable(mode)          ? "STABLE everyN=1"
+          IsOursFpFreshDual(mode)            ? "FRESH everyN=1"
+              : IsOursFpFlashStable(mode)    ? "STABLE everyN=1"
               : IsOursFpSafeFlicker(mode)    ? "SAFE dualn=2 atomic"
                                              : "HOLD off-tick");
     return;
@@ -5435,7 +5565,18 @@ bool InstallStereoRenderHooks() {
           mid, g_ok.load() ? 1 : 0);
       Log("StereoRender: kill-switch - 147 soft-move / 150 native-hide+FP / 151 ours+hide");
     } else if (IsHeadHideNativeOurs(mode)) {
-      const char* tag = IsOursFpSafeFlicker(mode)     ? "+SAFE-FLICKER"
+      const char* tag = mode == StereoMode::OursFpPhoneStereo       ? "+PHONE-STEREO"
+                        : mode == StereoMode::OursFpNoColorFill     ? "+NO-COLORFILL"
+                        : mode == StereoMode::OursFpSameFrameFreeze ? "+SAME-FRAME-FREEZE"
+                        : IsOursFpAer(mode)             ? "+AER"
+                        : IsOursFpStereoSimple(mode)    ? "+STEREO-SIMPLE"
+                        : IsOursFpBbPhoneNudge(mode)    ? "+BB-PHONE-NUDGE"
+                        : IsOursFpBbPhone(mode)         ? "+BB-MONO+PHONE"
+                        : IsOursFpSameLPhone(mode)      ? "+SAME-L+PHONE"
+                        : IsOursFpMonoPair(mode)        ? "+MONO-PAIR"
+                        : IsOursFpPairFreeze(mode)      ? "+PAIR-FREEZE"
+                        : IsOursFpFreshDual(mode)       ? "+FRESH-DUAL"
+                        : IsOursFpSafeFlicker(mode)     ? "+SAFE-FLICKER"
                         : IsOursFpStableCarHud(mode)  ? "+STABLE+CAR+HUD"
                         : IsOursFpCarHud(mode)        ? "+CAR+HUD"
                         : IsOursFpHudLayout(mode)       ? "+HUD-LAYOUT"
@@ -5456,10 +5597,32 @@ bool InstallStereoRenderHooks() {
                         : IsOursFpFovProfile(mode)       ? "+FP-PRESENCE"
                                                          : "";
       const char* detail =
-          IsOursFpSafeFlicker(mode)
+          mode == StereoMode::OursFpPhoneStereo
+              ? "; Mode179 + phone bounds uMin=0.14 vMin=0.42 on stereo Submit"
+          : mode == StereoMode::OursFpNoColorFill
+              ? "; Mode178 full cam freeze + no canvas ColorFill (keep cover crop)"
+          : mode == StereoMode::OursFpSameFrameFreeze
+              ? "; Mode170 dual+canvas + freeze FULL pre-IPD cam (basis+pos); only ±IPD"
+          : IsOursFpAer(mode)
+              ? "; 1 DrawScene/frame alt L/R + TextureWithPose stale eye; phone bounds"
+          : IsOursFpStereoSimple(mode)
+              ? "; dual+IPD + plain BB StretchRect (no canvas) + phone bounds"
+          : IsOursFpBbPhoneNudge(mode)
+              ? "; Mode174 BB + bounds uMin=0.14 vMin=0.42 (phone up+left)"
+          : IsOursFpBbPhone(mode)
+              ? "; Mode0 BB Submit (no dual/canvas) + bounds vMin=0.30 phone lift"
+          : IsOursFpSameLPhone(mode)
+              ? "; sameL Submit both eyes + UI lift=minimap 16% (phone); stereo flat"
+          : IsOursFpMonoPair(mode)
+              ? "; 1 DrawScene→both eyes identical + UI lift~10% (phone); stereo flat"
+          : IsOursFpPairFreeze(mode)
+              ? "; Mode170 + freeze ped eye ORIGIN across L/R (driving flicker)"
+          : IsOursFpFreshDual(mode)
+              ? "; Mode169 + everyN=1 (no HOLD); still NO Flush; hitch→HOLD"
+          : IsOursFpSafeFlicker(mode)
               ? "; Mode167 cam/HUD + dualn=2 atomic (no skip-gate; NO Flush; hitch→HOLD)"
           : IsOursFpStableCarHud(mode)
-              ? "; FAILED DEVICE_LOST — prefer 169; everyN=1+Flush killed GPU"
+              ? "; FAILED DEVICE_LOST — prefer 170; everyN=1+Flush killed GPU"
           : IsOursFpCarHud(mode)
               ? "; sit-cam + HUD inset + mission directions"
           : IsOursFpHudLayout(mode)
@@ -6106,6 +6269,10 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
     // StretchRect live BB (Mode131 only: every 3rd mono frame; Mode133: BB→L once FAILED).
     // Mode 135: liveLook always BB→L AND BB→R (132 style); never same-tex.
     if (UsesDrawSceneDualPath(mode)) {
+      // Mode 174/175: never StretchRect to eye canvases — BB Submit owns the HMD image.
+      // Mode 177: DrawScene AER owns capture — skip EndScene StretchRect/HOLD.
+      if (IsOursFpBbPhone(mode) || IsOursFpAer(mode))
+        return;
       g_dualDoneThisFrame = false;
       IDirect3DSurface9* bb = nullptr;
       if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb)
@@ -6314,6 +6481,9 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
 
 bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop) {
   const StereoMode mode = GetStereoMode();
+  // Mode 174: never submit eye canvases — TryMonoSubmit uses raw BB + phone bounds.
+  if (IsOursFpBbPhone(mode))
+    return false;
   if (!IsTemporalStereoMode(mode) && mode != StereoMode::SameFrameDual &&
       mode != StereoMode::GBufferRtDual && mode != StereoMode::FusionSwap &&
       mode != StereoMode::ExecuteDual && mode != StereoMode::BuildExecDual &&
@@ -6351,7 +6521,8 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
   interop->FlushRenderingCommands();
   interop->LockSubmissionQueue();
   bool okL = false, okR = false;
-  const bool sameL = g_submitSameLBoth;
+  // Mode 173: always same Vulkan image both eyes (true mono — no Left-layout→Right rivalry).
+  const bool sameL = g_submitSameLBoth || IsOursFpSameLPhone(mode);
   if (mode == StereoMode::FusionSwap || mode == StereoMode::HeadOwnedCamStereoSwap) {
     // Diagnostic: feed captured-Left texture to Right eye and vice versa.
     okL = SubmitEyeTexture(device, g_texR, vr::Eye_Left, interop);

@@ -376,8 +376,12 @@ bool KeyPressedEdge(int vk, bool* wasDown) {
 }
 
 int ParseModeFile(const char* buf, size_t n) {
-  // 160–169 square FOV / flash / car / HUD / car+hud / 150–159 / 140–148 / 120–136 / 10–53.
-  // IMPORTANT: "167" must NOT fall through to the 2-digit parser (that yields 16).
+  // 180–189 phone-stereo family / 170–179 / 160–169 / 150–159 / 140–148 /
+  // 120–136 / 10–53. IMPORTANT: "170" must NOT fall through to 2-digit (→17).
+  if (n >= 3 && buf[0] == '1' && buf[1] == '8' && buf[2] >= '0' && buf[2] <= '9')
+    return 180 + (buf[2] - '0');
+  if (n >= 3 && buf[0] == '1' && buf[1] == '7' && buf[2] >= '0' && buf[2] <= '9')
+    return 170 + (buf[2] - '0');
   if (n >= 3 && buf[0] == '1' && buf[1] == '6' && buf[2] >= '0' && buf[2] <= '9')
     return 160 + (buf[2] - '0');
   if (n >= 3 && buf[0] == '1' && buf[1] == '5' && buf[2] >= '0' && buf[2] <= '9')
@@ -463,13 +467,78 @@ void ReloadStereoMode() {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadStereoScale();
-    if (v == static_cast<int>(StereoMode::OursFpSafeFlicker)) {
+    if (v == static_cast<int>(StereoMode::OursFpPhoneStereo)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode180: OURS+PHONE-STEREO — Mode179 + phone bounds uMin=0.14 vMin=0.42; "
+          "kill=179/178/170");
+    } else if (v == static_cast<int>(StereoMode::OursFpNoColorFill)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode179: OURS+NO-COLORFILL — Mode178 full cam freeze + skip canvas ColorFill "
+          "(keep cover crop); kill=178/170");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameFrameFreeze)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode178: OURS+SAME-FRAME-FREEZE — Mode170 dual+canvas + freeze FULL pre-IPD "
+          "cam (basis+pos) across L/R; kill=170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpAer)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode177: OURS+AER — FAILED (flicker/warp); prefer 178; kill=175/170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpStereoSimple)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode176: OURS+STEREO-SIMPLE — FAILED (flicker back, no 3D); prefer 177 AER / 175; "
+          "kill=175/170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpBbPhoneNudge)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode175: OURS+BB-PHONE-NUDGE — phone GOOD; next=176 stereo-simple; "
+          "kill=174/170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpBbPhone)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode174: OURS+BB-MONO+PHONE — FLICKER GONE; phone still low/right → prefer 175; "
+          "kill=173/170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameLPhone)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode173: OURS+SAME-L+PHONE — still flickered sameL=1 → prefer 174 BB path; "
+          "kill=172/170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpMonoPair)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode172: OURS+MONO-PAIR — still flickered (Left-crop→Right eye); prefer 173; "
+          "kill=171/170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpPairFreeze)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode171: OURS+PAIR-FREEZE — Mode170 everyN=1 + freeze ped eye ORIGIN "
+          "across L/R DrawScene; still flickers on foot → prefer 172; kill=170/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpFreshDual)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode170: OURS+FRESH-DUAL — Mode169 + everyN=1 (no off-tick HOLD), "
+          "still NO Flush, hitch→HOLD; driving flicker → prefer 171; kill=169/167");
+    } else if (v == static_cast<int>(StereoMode::OursFpSafeFlicker)) {
       ApplyMode162SquareWideBase();
       EnsureVehicleCamOffDefaults();
       EnsureHudOffDefaults();
       Log("Mode169: OURS+SAFE-FLICKER — Mode167 cam/HUD + safe dual "
           "(dualn=2, atomic L/R, no skip-gate, NO Flush, hitch→HOLD last stereo); "
-          "kill=167/162 (168=DEVICE_LOST)");
+          "HMD stutter from HOLD — prefer 170; kill=167/162 (168=DEVICE_LOST)");
     } else if (v == static_cast<int>(StereoMode::OursFpStableCarHud)) {
       ApplyMode162SquareWideBase();
       EnsureVehicleCamOffDefaults();
@@ -846,9 +915,11 @@ bool UsesAerPoseSubmit(StereoMode mode) {
   // Mode 120: real WaitGetPoses+Submit_Default. Mode 136 uses late-latch path
   // (IsCleanDualLateLatch) separately — still Submit_TextureWithPose, but pose
   // is sampled immediately before Submit, not capture-time AER.
+  // Mode 177: capture-time pose on the stale eye so SteamVR can reproject.
   return mode == StereoMode::AerPoseSubmit ||
          mode == StereoMode::HeadOwnedCamStereoAer ||
-         mode == StereoMode::HeadOwnedCamStereoSoftGuard;
+         mode == StereoMode::HeadOwnedCamStereoSoftGuard ||
+         mode == StereoMode::OursFpAer;
 }
 
 bool UsesPedCoupledYaw(StereoMode mode) {
@@ -1031,7 +1102,12 @@ static bool IsOursFpPost162(StereoMode mode) {
   return mode == StereoMode::OursFpFlashGate || mode == StereoMode::OursFpInCarHead ||
          mode == StereoMode::OursFpEnterCarFp || mode == StereoMode::OursFpHudLayout ||
          mode == StereoMode::OursFpCarHud || mode == StereoMode::OursFpStableCarHud ||
-         mode == StereoMode::OursFpSafeFlicker;
+         mode == StereoMode::OursFpSafeFlicker || mode == StereoMode::OursFpFreshDual ||
+         mode == StereoMode::OursFpPairFreeze || mode == StereoMode::OursFpMonoPair ||
+         mode == StereoMode::OursFpSameLPhone || mode == StereoMode::OursFpBbPhone ||
+         mode == StereoMode::OursFpBbPhoneNudge || mode == StereoMode::OursFpStereoSimple ||
+         mode == StereoMode::OursFpAer || mode == StereoMode::OursFpSameFrameFreeze ||
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo;
 }
 
 bool IsHeadHideNativeOurs(StereoMode mode) {
@@ -1122,33 +1198,120 @@ bool IsOursFpSafeFlicker(StereoMode mode) {
   return mode == StereoMode::OursFpSafeFlicker;
 }
 
+bool IsOursFpFreshDual(StereoMode mode) {
+  return mode == StereoMode::OursFpFreshDual || mode == StereoMode::OursFpPairFreeze ||
+         mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone ||
+         mode == StereoMode::OursFpStereoSimple || mode == StereoMode::OursFpSameFrameFreeze ||
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo;
+}
+
+bool IsOursFpPairFreeze(StereoMode mode) {
+  return mode == StereoMode::OursFpPairFreeze;
+}
+
+bool IsOursFpSameFrameFreeze(StereoMode mode) {
+  return mode == StereoMode::OursFpSameFrameFreeze || mode == StereoMode::OursFpNoColorFill ||
+         mode == StereoMode::OursFpPhoneStereo;
+}
+
+bool IsOursFpNoColorFill(StereoMode mode) {
+  return mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo;
+}
+
+bool IsOursFpDualCamFreeze(StereoMode mode) {
+  return IsOursFpPairFreeze(mode) || IsOursFpSameFrameFreeze(mode);
+}
+
+bool IsOursFpMonoPair(StereoMode mode) {
+  return mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone;
+}
+
+bool IsOursFpSameLPhone(StereoMode mode) {
+  return mode == StereoMode::OursFpSameLPhone;
+}
+
+bool IsOursFpBbPhone(StereoMode mode) {
+  return mode == StereoMode::OursFpBbPhone || mode == StereoMode::OursFpBbPhoneNudge;
+}
+
+bool IsOursFpBbPhoneNudge(StereoMode mode) {
+  return mode == StereoMode::OursFpBbPhoneNudge;
+}
+
+bool IsOursFpStereoSimple(StereoMode mode) {
+  return mode == StereoMode::OursFpStereoSimple;
+}
+
+bool IsOursFpAer(StereoMode mode) {
+  return mode == StereoMode::OursFpAer;
+}
+
+bool IsOursFpPhoneBounds(StereoMode mode) {
+  return mode == StereoMode::OursFpBbPhoneNudge || mode == StereoMode::OursFpStereoSimple ||
+         mode == StereoMode::OursFpAer || mode == StereoMode::OursFpPhoneStereo;
+}
+
+bool IsOursFpUiLift(StereoMode mode) {
+  return mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone;
+}
+
 bool IsOursFpAtomicEyePair(StereoMode mode) {
-  return mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker;
+  return mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker ||
+         mode == StereoMode::OursFpFreshDual || mode == StereoMode::OursFpPairFreeze ||
+         mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone ||
+         mode == StereoMode::OursFpStereoSimple || mode == StereoMode::OursFpSameFrameFreeze ||
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo;
 }
 
 bool IsOursFpAlwaysBbCapture(StereoMode mode) {
-  return mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker;
+  return mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker ||
+         mode == StereoMode::OursFpFreshDual || mode == StereoMode::OursFpPairFreeze ||
+         mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone ||
+         mode == StereoMode::OursFpStereoSimple || mode == StereoMode::OursFpSameFrameFreeze ||
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo;
 }
 
 bool IsOursFpInCarHead(StereoMode mode) {
   return mode == StereoMode::OursFpInCarHead || mode == StereoMode::OursFpEnterCarFp ||
          mode == StereoMode::OursFpCarHud || mode == StereoMode::OursFpStableCarHud ||
-         mode == StereoMode::OursFpSafeFlicker;
+         mode == StereoMode::OursFpSafeFlicker || mode == StereoMode::OursFpFreshDual ||
+         mode == StereoMode::OursFpPairFreeze || mode == StereoMode::OursFpMonoPair ||
+         mode == StereoMode::OursFpSameLPhone || mode == StereoMode::OursFpBbPhone ||
+         mode == StereoMode::OursFpBbPhoneNudge || mode == StereoMode::OursFpStereoSimple ||
+         mode == StereoMode::OursFpAer || mode == StereoMode::OursFpSameFrameFreeze ||
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo;
 }
 
 bool IsOursFpEnterCarFp(StereoMode mode) {
   return mode == StereoMode::OursFpEnterCarFp || mode == StereoMode::OursFpCarHud ||
-         mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker;
+         mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker ||
+         mode == StereoMode::OursFpFreshDual || mode == StereoMode::OursFpPairFreeze ||
+         mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone ||
+         mode == StereoMode::OursFpBbPhone || mode == StereoMode::OursFpBbPhoneNudge ||
+         mode == StereoMode::OursFpStereoSimple || mode == StereoMode::OursFpAer ||
+         mode == StereoMode::OursFpSameFrameFreeze || mode == StereoMode::OursFpNoColorFill ||
+         mode == StereoMode::OursFpPhoneStereo;
 }
 
 bool IsOursFpHudLayout(StereoMode mode) {
   return mode == StereoMode::OursFpHudLayout || mode == StereoMode::OursFpCarHud ||
-         mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker;
+         mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker ||
+         mode == StereoMode::OursFpFreshDual || mode == StereoMode::OursFpPairFreeze ||
+         mode == StereoMode::OursFpMonoPair || mode == StereoMode::OursFpSameLPhone ||
+         mode == StereoMode::OursFpBbPhone || mode == StereoMode::OursFpBbPhoneNudge ||
+         mode == StereoMode::OursFpStereoSimple || mode == StereoMode::OursFpAer ||
+         mode == StereoMode::OursFpSameFrameFreeze || mode == StereoMode::OursFpNoColorFill ||
+         mode == StereoMode::OursFpPhoneStereo;
 }
 
 bool IsOursFpCarHud(StereoMode mode) {
   return mode == StereoMode::OursFpCarHud || mode == StereoMode::OursFpStableCarHud ||
-         mode == StereoMode::OursFpSafeFlicker;
+         mode == StereoMode::OursFpSafeFlicker || mode == StereoMode::OursFpFreshDual ||
+         mode == StereoMode::OursFpPairFreeze || mode == StereoMode::OursFpMonoPair ||
+         mode == StereoMode::OursFpSameLPhone || mode == StereoMode::OursFpBbPhone ||
+         mode == StereoMode::OursFpBbPhoneNudge || mode == StereoMode::OursFpStereoSimple ||
+         mode == StereoMode::OursFpAer || mode == StereoMode::OursFpSameFrameFreeze ||
+         mode == StereoMode::OursFpNoColorFill || mode == StereoMode::OursFpPhoneStereo;
 }
 
 bool IsOursFpStableCarHud(StereoMode mode) {
