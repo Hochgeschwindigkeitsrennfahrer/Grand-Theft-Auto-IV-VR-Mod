@@ -57,15 +57,27 @@ Compositor later: **OpenVR / SteamVR** — not OpenXR.
 
 ## 0. One-time: check tools
 
+**New PC shortcut:** `.\scripts\setup-dev-pc.ps1` (see `docs/NEW_PC_SETUP.md`).
+
 | Tool | Required? | Check in PowerShell |
 |------|-----------|---------------------|
 | Git for Windows | yes (submodules) | `git --version` |
-| Visual Studio 2022 + **Desktop development with C++** | recommended | VS Installer |
-| [MSYS2](https://www.msys2.org/) | yes (DXVK builds with MinGW/Meson) | Start menu → **MSYS2 UCRT64** |
-| Vulkan SDK | often needed (glslang) | `C:\VulkanSDK\...` |
+| Visual Studio 2022 + **Desktop development with C++** | **yes for ASI** | VS Installer / `vswhere` |
+| [MSYS2](https://www.msys2.org/) | yes for **DXVK source** rebuilds | Start menu → **MSYS2 MINGW32** |
+| Vulkan SDK | often needed (glslang) for DXVK source | `C:\VulkanSDK\...` |
 | Python 3 | often already with Meson | `python --version` |
+| OpenVR **v2.12.14** + MinHook | yes for ASI | `.\scripts\fetch-deps.ps1` |
 
 If `git` is not found: install [Git for Windows](https://git-scm.com/download/win), open a **new** Cursor/PowerShell tab, check again.
+
+**ASI build** (usual daily path after Mono milestone):
+
+```powershell
+.\scripts\fetch-deps.ps1   # once
+.\scripts\build-asi.ps1
+```
+
+Expected: `out-asi\gtaiv_dxvk_vr.asi` + `openvr_api.dll`.
 
 ---
 

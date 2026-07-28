@@ -5,9 +5,10 @@ Set-Location $Root
 
 & "$PSScriptRoot\fetch-minhook.ps1"
 & "$PSScriptRoot\fetch-vulkan-headers.ps1"
+& "$PSScriptRoot\fetch-openvr.ps1"
 
 if (-not (Test-Path "$Root\thirdparty\openvr\headers\openvr.h")) {
-  throw "OpenVR missing - run: git clone --depth 1 https://github.com/ValveSoftware/openvr.git thirdparty/openvr"
+  throw "OpenVR missing - run: .\scripts\fetch-openvr.ps1"
 }
 
 $openXrSource = Get-Content -LiteralPath "$Root\src\asi\openxr_bridge.cpp" -Raw
@@ -76,6 +77,7 @@ New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 $src = @(
   "src\asi\dllmain.cpp",
   "src\asi\log.cpp",
+  "src\asi\perf_debug.cpp",
   "src\asi\hooks.cpp",
   "src\asi\openxr_bridge.cpp",
   "src\asi\openxr_controller.cpp",
@@ -87,10 +89,12 @@ $src = @(
   "src\asi\cam_matrix.cpp",
   "src\asi\ped_hide.cpp",
   "src\asi\vr_move.cpp",
+  "src\asi\look_move.cpp",
   "src\asi\vr_display.cpp",
   "src\asi\stereo_eye.cpp",
   "src\asi\stereo_config.cpp",
   "src\asi\stereo_draw_patch.cpp",
+  "src\asi\stereo_dual.cpp",
   "src\asi\stereo_render.cpp",
   "src\asi\stereo_proj.cpp",
   "src\asi\ui_state.cpp",

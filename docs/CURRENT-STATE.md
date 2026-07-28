@@ -1,25 +1,28 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-27 16:31 PT
+**As of:** 2026-07-27 18:56 PT
 
 ## Current candidate: Mode 56 direct OpenXR L/R pair (offline PASS, no headset result)
 
 Upstream was fetched on 2026-07-27: `origin/master` is still `01f355b` and is
-already contained by this branch. The newer `origin/backup/clean-session-20260727`
-reference (`416427e`) is not a merge target; its useful guarded DrawScene x2 seam is
-ported below without its OpenVR compositor and stale-HOLD experiments.
+already contained by this branch. The full clean OpenVR release at
+`origin/backup/clean-session-20260727` (`416427e`), followed by the development-setup
+commit at `origin/cursor/setup-dev-requirements-d131` (`5308417`), is now integrated.
+Its Modes 120–136 and supporting camera, late-latch, performance, and setup code remain
+available as the explicit OpenVR/Reverb G2 fallback.
 
 The prior GPU bridge is not a usable gameplay route: its host release fence blocked
 the GTA/DXVK queue after a few world transactions, leaving the headset on stale
 images. The direct OpenXR route now uses the FNVVR-style CPU mailbox instead: no host
 release fence, shared Vulkan image, or GPU queue wait is placed in GTA.
 
-Mode **56** ports only the newest usable upstream rendering seam from
-`origin/backup/clean-session-20260727` (`416427e`): guarded **DrawScene ×2**. It
-renders GTA once with the left OpenXR eye pose and once with the right OpenXR eye pose,
+Mode **56** reuses the clean release's guarded **DrawScene ×2** rendering seam for
+the direct OpenXR route. It renders GTA once with the left OpenXR eye pose and once
+with the right OpenXR eye pose,
 then publishes the two completed images as one atomic transaction. It intentionally
-does **not** import upstream OpenVR submission, SteamVR calls, stale-frame HOLD, or
-mono-look experiments.
+does **not** call upstream OpenVR submission, SteamVR, stale-frame HOLD, or mono-look
+experiments while `backend=openxr`; those paths remain isolated to the explicit
+OpenVR fallback.
 
 | GTA state | Mode 56 OpenXR presentation | Required behavior |
 |---|---|---|
@@ -49,11 +52,17 @@ Offline gates now pass:
   and world-stereo -> stationary-UI switching:
   `protocol=v6 worldStrict=1 wvpProof=1 drawSceneProof=1 immersiveMono=1 cpuMailbox=1 cpuMailboxStereo=1 cpuMailboxWorldUi=1 stationaryUiQuad=1 uiAspect=1 routeSwitch=1 srgbDecode=1 runtimeUntouched=1`.
 
-Current dirty-build artifacts (not deployed): x86 ASI SHA-256
-`7BD1A12021562E7517B75101DE4C3BCEC3C37B994E80F0ECA6EC417A5354DA1A`;
+Current integrated build artifacts (not deployed): x86 ASI SHA-256
+`EFD88A6499A317DD41CD15CF05BDEE1E8A690776959F51E6DCD57566702B4B31`;
 x64 host SHA-256
-`0640E674CCBE059F1656496EE362B1241E4329A7ACDF5DEA624D95456EDE035D`.
+`C26F8B7EFA31D088540E36F2B6640452DC3EFE3A78C58F81A6F9E0096EC20D2C`.
 No GTA, OpenXR session, Steam, or SteamVR process was started for these builds.
+
+The merged setup scripts now verify vendored Git dependencies without changing
+global `safe.directory` settings. OpenVR is pinned and verified at `v2.12.14`;
+the host build also normalizes duplicate `PATH`/`Path` entries before invoking
+MSBuild. Both fixes were required to reproduce the clean upstream build on this
+workspace.
 
 The guarded launcher remains SteamVR-blocked and restores the installed game state.
 It defaults to Mode 55; the explicit Mode 56 test command is:
@@ -138,7 +147,8 @@ the existing OpenVR disable sentinel and temporarily removes/backups
 `openvr_api.dll`, restoring both after the run. The 23:11 test proved these guards:
 SteamVR never started and the original game state was restored.
 
-Upstream `origin/master` at `01f355b` (Modes 50–53) is merged into
+Upstream `origin/master` at `01f355b` (Modes 50–53), the full clean OpenVR release
+at `416427e` (through Mode 136), and its setup child `5308417` are integrated into
 `codex/openxr-sidecar-integration`. The direct path keeps all GTA-loaded code x86 and
 uses a separate x64 `gtaiv_xr_host.exe`. OpenVR/Reverb G2 remains an explicit
 fallback; `backend=off` is truly flat and initializes no compositor.
@@ -219,7 +229,569 @@ sentinel, and requires a new explicit authorization.
 **Do not put on the headset yet.** The complete Mode 55 gameplay/menu/color candidate
 has no live result.
 **Last OpenVR baseline (not running; backend is now `off`):** stereo **`51`**
-(Mode-50 always-distinct L/R + **`Submit_TextureWithPose`**
+(Mode-50 always-distinct L/R + **`Submit_TextureWithPose`** AER). The full clean
+OpenVR release history follows.
+
+---
+
+## Integrated clean OpenVR fallback history
+
+## 2026-07-27 ~16:48 — Mode **136** LATE-LATCH (deployed / live)
+
+**Tree:** `gtaiv-dxvk-vr-clean`. Guide: **`docs/SESSION_PREP_20260727.md`**.<br>
+**Buildid:** `20260727-mode136-latelatch` · OpenVR **v2.12.14**.<br>
+**Live boot:** stereo **`136`** · dualn **`2`**. ASI **218112** B · SHA256 `C0A7B977…`.<br>
+**Mode 120–135 code paths untouched.** Kill: **`120`** + dualn **`2`**.
+
+### What changed
+- Content = Mode **120** (DrawScene×2 everyN=2 + HOLD; no monolook / LIVELOOK / AlwaysFresh).
+- Submit = **`Submit_TextureWithPose`** every eye; pose from `GetDeviceToAbsoluteTrackingPose` **right before Submit** (not capture-time AER).
+- Goal: SteamVR reprojection between content frames → smoother HMD look vs 135.
+
+### Log proof (this deploy)
+- `ASI_BUILD_ID 20260727-mode136-latelatch`
+- `StereoMode: 136` · `CLEAN LATE-LATCH` · `everyN=2`
+- `LateLatch: eye=L/R TextureWithPose=1 err=0`
+- `StereoSubmit: L=1 R=1 mode=136`
+
+### Test (DE)
+1. Quick Restart (already 136/2) → headset.
+2. Still ~90? Slow/fast yaw+pitch natural vs **135**? Compare kill **120**.
+3. Bad → stereo **`120`**, dualn **`2`**.
+
+### Next (prepared only — not deployed)
+- **137** Cam/Pose EMA · **138** same-moment L/R · **139** cover FOV/zoom — blueprints in SESSION_PREP.
+
+---
+
+## 2026-07-27 ~16:00 — Mode **133** HMD-cheap monolook (deployed)
+
+**Tree:** `gtaiv-dxvk-vr-clean`. Guide: **`docs/SESSION_PREP_20260727.md`**.<br>
+**Buildid:** `20260727-mode133-hmcheap` · OpenVR **v2.12.14**.<br>
+**Live boot:** stereo **`133`** · dualn **`3`**. ASI **214528** B · SHA256 `E54D1340…`.<br>
+**Mode 120 / 130 / 131 / 132 code paths untouched.** Kill: **`120`** + dualn **`2`**.<br>
+**Backup:** `Documents\cursor\_vr_glue_backup_mode133_20260727-160043`.<br>
+**Expect log:** `ASI_BUILD_ID 20260727-mode133-hmcheap`, `StereoMode: 133`, `CLEAN MONOLOOK-HMD-CHEAP`, `MONOLOOK-CHEAP`, `EndScene LIVELOOK BB→L same-Submit`, `StereoSubmit … sameL=1`, `POSEHOLD-CALM`, `everyN=3`.
+
+### Why desktop > HMD on Mode 132 (log-proven)
+
+- **AppFPS** often ~88–90 calm (dips ~60–76 under load); **pose_ms** often ~13–21ms WaitGetPoses → POSEHOLD.
+- **Monolook frequent** on look: `MONOLOOK-HMD` + `EndScene LIVELOOK BB→both` every frame (#1…#600+).
+- Desktop Present after WaitGetPoses shows **live BB** (no copy). HMD pays **StretchRect×2** (BB→L and BB→R) + dual Submit → feels behind even when AppFPS≈90.
+
+### Mode 133 (chosen: cheapest every-frame fresh)
+
+Keep 132 pitch/hyst (**2.5°** / sustain **3** / **600ms**). During monolook: **one** StretchRect BB→L, Submit **same** texture for L+R (OpenVR allows; halves copy). Calm: dualn=**3** HOLD. No every-3rd starve (131 fail). No stale stereo HOLD on look (128 ghosting). dualn kept at 3 (AppFPS already ~90 when calm — gap was latency/copy, not dual cadence).
+
+**Test (DE):** Quick Restart → HMD näher an Desktop? · look ghost weg? · nicht einfrieren? · calm ~90? Kill: **`120`**.
+
+| stereo | Role | dualn |
+|--------|------|-------|
+| **120** | **LKG frozen** / kill | 2 |
+| **130** | monolook interim (ok) | 3 |
+| **131** | **FAILED** HMD starve | 3 |
+| **132** | HMD-every BB×2 (desktop still ahead) | 3 |
+| **133** | **HMD-cheap** BB→L + same Submit (live) | **3** |
+
+---
+
+## 2026-07-27 ~15:51 — Mode **132** HMD-every monolook (prior)
+
+**Tree:** `gtaiv-dxvk-vr-clean`. Guide: **`docs/SESSION_PREP_20260727.md`**.<br>
+**Buildid:** `20260727-mode132-hmdevery` · OpenVR **v2.12.14**.<br>
+**Was live:** stereo **`132`** · dualn **`3`**. ASI **212992** B · SHA256 `B3061A5C…`.<br>
+**Mode 120 / 130 / 131 code paths untouched.** Kill: **`120`** + dualn **`2`**.<br>
+**Backup:** `Documents\cursor\_vr_glue_backup_mode132_20260727-155128`.<br>
+**User:** better than 131, but **still not desktop performance** → superseded by **133**.
+
+### Mode 131 = FAILED (HMD starve)
+
+User: desktop **super smooth**, headset **hardcore freezing**. Cause: Mode131 EndScene BB→L+R only every **3rd** mono frame + POSEHOLD-CALM → HMD starves while Present stays ~90 (same class as Mode122 HOLD snap). Interim before 132: stereo **130** + dualn **3**.
+
+### Mode 132
+
+Monolook (identical BB both eyes) like 130/131. Keep 131 pitch-stable: pitch≥**2.5°**, sustain **3**, hyst **600ms**. StretchRect BB→L+R **EVERY** EndScene during mono (no every-3rd). Calm: dualn=**3** HOLD last stereo. Pose stall → HOLD last stereo (re-submit each Present).
+
+| stereo | Role | dualn |
+|--------|------|-------|
+| **120** | **LKG frozen** / kill | 2 |
+| **130** | monolook interim (ok) | 3 |
+| **131** | **FAILED** HMD starve | 3 |
+| **132** | HMD-every monolook (prior) | **3** |
+
+---
+
+## 2026-07-27 ~15:42 — Mode **131** pitch-stable monolook + FPS (FAILED)
+
+**Tree:** `gtaiv-dxvk-vr-clean`. Guide: **`docs/SESSION_PREP_20260727.md`**.<br>
+**Buildid:** `20260727-mode131-pitch-fps` · OpenVR **v2.12.14**.<br>
+**Live boot was:** stereo **`131`** · dualn **`3`**. ASI **211968** B · SHA256 `ED23745D…`.<br>
+**Mode 120 / 130 code paths untouched.** Kill: **`120`** + dualn **`2`**.<br>
+**Backup:** `Documents\cursor\_vr_glue_backup_mode131_20260727-154238`.<br>
+**Result:** **FAILED** — HMD freeze / starve (BB every 3rd). Superseded by **132**.
+
+### Mode 130 feedback → 131
+
+Ghosting **better** ✓. FPS **strong drops** again (live perf: avg **79** / dips&lt;75 **25/81**; BAD windows dual≈0, LIVELOOK StretchRect counter **~5100**). Looking **jumpy**, especially **pitch** (Mode130 pitch thresh **1.0°** &lt; yaw **1.25°**; 350ms hyst; pitch-only mono triggers).
+
+### Mode 131 (what it tried)
+
+Keep monolook (identical BB both eyes on look). Pitch≥**2.5°** + **3-frame sustain** before enter; ≥**600ms** hyst. EndScene BB→L+R only every **3rd** mono frame. Calm pose → **POSEHOLD-CALM** last stereo (not mono StretchRect). dualn=**3**.
+
+| stereo | Role | dualn |
+|--------|------|-------|
+| **120** | **LKG frozen** / kill | 2 |
+| 121–130 | prior (unchanged) | … |
+| **131** | **FAILED** pitch/FPS monolook | **3** |
+
+---
+
+## 2026-07-27 ~15:35 — Mode **130** monolook sync (prior)
+
+**Tree:** `gtaiv-dxvk-vr-clean`. Guide: **`docs/SESSION_PREP_20260727.md`**.<br>
+**Buildid:** `20260727-mode130-monolook-sync` · OpenVR **v2.12.14**.<br>
+**Live boot:** stereo **`130`** · dualn **`3`**. ASI **210432** B.<br>
+**Mode 120 / 129 code paths untouched.** Kill: **`120`** + dualn **`2`**.<br>
+**Backup:** `Documents\cursor\_vr_glue_backup_mode130_20260727-153000`.<br>
+**Log proof:** `ASI_BUILD_ID 20260727-mode130-monolook-sync`, `StereoMode: 130`, `CLEAN MONOLOOK`, `MONOLOOK-HYST`, `EndScene LIVELOOK BB→both`, `DRAWSCENE dual` calm, `everyN=3` — **no** `LOOK-FORCE-DUAL`. `VR_Init OK`.
+
+### Why Mode 129 failed (log-proven)
+
+LOOK-FORCE-DUAL **did fire** during look (n=1…360+). AppFPS **avg≈89.6 / med 90**, dual:hold ~1:1.8 (dualn=3).<br>
+**Root cause:** “same-tick dual” is still **sequential** `DrawScene L → DrawScene R` with camera/IPD change while **game time / streaming advances between eyes** → L/R temporally split → diplopia (“swim”) on head turn. Force-dual every look frame does not create true simultaneous L/R.<br>
+Other causes ruled out for this symptom: submit `swap=0`, sep≈7cm, canvas UV is per-eye frustum placement (expected), stereoscale 135 unchanged. No softskip/time-freeze hook in tree — skipped.
+
+### Mode 130
+
+On look (yaw/pitch Δ): **identical** BB→L and R (one capture) via EndScene LIVELOOK path; **≥350ms hysteresis** after settle before stereo returns (no frame-by-frame mono↔stereo flip). Calm: dualn=3 HOLD like 128/129 (~90). Pose stall extends mono hyst.
+
+**Expect in log:** `StereoMode: 130`, `CLEAN MONOLOOK`, `MONOLOOK-HYST` — **no** `LOOK-FORCE-DUAL`.
+
+**Test (DE):** Desktop **GTA IV Quick Restart** → look around (**no double?**) · stand still (**stereo + ~90?**). Kill: stereo **`120`**.
+
+| stereo | Role | dualn |
+|--------|------|-------|
+| **120** | **LKG frozen** / kill | 2 |
+| 121–129 | prior experiments (unchanged) | … |
+| **130** | **monolook sync** (live) | **3** |
+
+---
+
+## 2026-07-27 ~15:23 — Mode **129** L/R sync (prior)
+
+**Tree:** `gtaiv-dxvk-vr-clean`. Guide: **`docs/SESSION_PREP_20260727.md`**.<br>
+**Buildid:** `20260727-mode129-lrsync` · OpenVR **v2.12.14**.<br>
+**Live boot:** stereo **`129`** · dualn **`3`**. ASI **209408** B · SHA256 `8BF1E66B…`.<br>
+**Mode 120 / 128 code paths untouched.** Kill: **`120`** + dualn **`2`**.<br>
+**Backup:** `Documents\cursor\_vr_glue_backup_mode129_20260727-152322`.<br>
+**Log proof:** `ASI_BUILD_ID 20260727-mode129-lrsync`, `StereoMode: 129`, `CLEAN L/R SYNC`, `VR_Init OK`.
+
+### Mode 128 eval → 129
+
+**Stutter mostly fixed** (perf.csv, no FPS HUD): AppFPS **avg≈90 / med 90**, pose_ms **≈9**, pose_stall20 ≈0, dual:hold **1:2** (dualn=3).
+
+**Strong ghosting / double-image on look:** Mode128 `dualn=3` HOLD + `POSEHOLD-STEREO` submits **different-time** L vs R while head moves → classic temporal stereo desync. Not LIVELOOK (removed in 128).
+
+**Mode 129:** look → **force same-tick dual**; calm → dualn=3 HOLD; high pose → **mono BB ≥200ms hyst** (no mismatched HOLD pair).
+
+**Expect in log:** `StereoMode: 129`, `CLEAN L/R SYNC`, `LOOK-FORCE-DUAL`, `POSEMONO-HYST` — **no** `POSEHOLD-STEREO`.
+
+**Test (DE):** Desktop **GTA IV Quick Restart** → look around (less double?) · still ~90 when calm? Kill: stereo **`120`**.
+
+| stereo | Role | dualn |
+|--------|------|-------|
+| **120** | **LKG frozen** / kill | 2 |
+| 121–128 | prior experiments (unchanged) | … |
+| **129** | **L/R sync** (live) | **3** |
+
+---
+
+## 2026-07-27 ~14:55 — Mode **128** no LIVELOOK (prior)
+
+**Tree:** `gtaiv-dxvk-vr-clean`. Guide: **`docs/SESSION_PREP_20260727.md`**.<br>
+**Buildid:** `20260727-mode128-nolivelook` · OpenVR **v2.12.14**.<br>
+**Live boot:** stereo **`128`** · dualn **`3`**. ASI **207872** B · SHA256 `6FEBAD92…`.<br>
+**Mode 120 / 127 code paths untouched.** Kill: **`120`** + dualn **`2`**.<br>
+**Backup:** `Documents\cursor\_vr_glue_backup_mode128_20260727-145500`.
+
+### Mode 127 eval → 128
+
+LIVELOOK (mono BB→both eyes on yaw/pitch) caused **ghosting**. Mode **128** keeps 127 fill + tight POSEHOLD (≥12ms/5, HARD≥24ms/8) + dualn=3 + hitch 32, but:
+- **Removes** look-rate LIVELOOK
+- Pose stall → **HOLD last stereo** (skip dual only; no mono/stereo flicker)
+
+**Expect in log:** `StereoMode: 128`, `CLEAN FPS NO-LIVELOOK`, `POSEHOLD` / `POSEHOLD-STEREO`, `everyN=3` — **no** `LIVELOOK` / `BB→both eyes`.
+
+**Test (DE):** Desktop **GTA IV Quick Restart** → look around — less ghosting? FPS still ~90? Kill: stereo **`120`**.
+
+| stereo | Role | dualn |
+|--------|------|-------|
+| **120** | **LKG frozen** / kill | 2 |
+| 121–127 | prior experiments (unchanged) | … |
+| **128** | **FPS no LIVELOOK** (live) | **3** |
+
+---
+
+## 2026-07-27 ~14:38 — Mode **127** + auto log archive (deployed)
+
+**Tree:** `gtaiv-dxvk-vr-clean`.<br>
+**Buildid:** `20260727-mode127-logarch-fps` · OpenVR **v2.12.14**.<br>
+**Live boot:** stereo **`127`** · dualn **`3`**. ASI **206848** B · SHA256 `4BF05704…`.<br>
+**Mode 120 / 126 code paths untouched.** Kill: **`120`** + dualn **`2`**.<br>
+**Backup:** `Documents\cursor\_vr_glue_backup_mode127_20260727-143742`.
+
+### Log archive (infra — all modes)
+
+On ASI init (`LogInit` / `PerfDebugInit`), if a session file is **non-empty**, it is renamed before truncate:
+
+| Live file | Archive name |
+|-----------|--------------|
+| `gtaiv_dxvk_vr.log` | `….log.m{mode}.{YYYYMMDD-HHMMSS}` |
+| `gtaiv_dxvk_vr.perf.csv` | `….perf.csv.m{mode}.{…}` |
+| `gtaiv_dxvk_vr.mem.log` | `….mem.log.m{mode}.{…}` |
+| `gtaiv_dxvk_vr.vr.log` | `….vr.log.m{mode}.{…}` |
+
+Mode peeked from `gtaiv_dxvk_vr.stereo` at init. Keeps **last 20** archives per base name. No FPS HUD.
+
+### Mode 126 dip re-analysis (pre-127 session)
+
+| Evidence | Finding |
+|----------|---------|
+| `perf.csv` AppFPS avg **68.4**, min **48.7**; dips&lt;75 = **70/102** | Still strong frame-dip stutter |
+| Dips ↔ `pose_stall20` | **68/70** dips had stalls; **0/24** healthy (≥88) had stalls |
+| `.vr.log` | **652** WaitGetPoses stalls, avg **21.4ms**, max **201ms**; HARD≥40ms only **4** |
+| POSEHOLD / LIVELOOK | Soft POSEHOLD **31** (HARD **0**); LIVELOOK **61** (pose-budget 32 / look 7) |
+| Verdict (DE) | **WaitGetPoses half-lock noch primär.** Mode **126** POSEHOLD (16ms/3) reicht nicht — Duals sinken, aber Pose-Wait ~22ms blockiert weiterhin FPS. |
+
+### What Mode 127 does (vs 126)
+
+| Piece | 126 | **127** |
+|-------|-----|---------|
+| Fill / LIVELOOK / dezoom | cover-match + live BB both eyes + Window0 + ss135 | **same** |
+| POSEHOLD soft | ≥16ms → skip 3 duals | **≥12ms → skip 5** |
+| POSEHOLD HARD | ≥40ms → skip 6 | **≥24ms → skip 8** |
+| dualn | file/default 2 | **forced 3** |
+| hitchcut | 40ms | **32ms** |
+
+**Expect in log:** `StereoMode: 127`, `CLEAN FPS+LIVELOOK TIGHT`, `POSEHOLD`, `LIVELOOK`, `everyN=3`, `LogArchive: session start`, prior logs as `.m126.…` archives.
+
+**Test (DE):** Desktop **GTA IV Quick Restart** → SteamVR → headset → gleiche Explore-Strecke wie 126 → NVIDIA overlay + `gtaiv_dxvk_vr.perf.csv`. Kill: stereo **`120`**.
+
+| stereo | Role | dualn |
+|--------|------|-------|
+| **120** | **LKG frozen** / kill | 2 |
+| 121–126 | prior experiments (unchanged) | … |
+| **127** | **FPS tight + LIVELOOK** (live) | **3** |
+
+---
+
+## 2026-07-27 ~14:07 — Mode **126** FPS fix + live look (deployed)
+
+**Tree:** `gtaiv-dxvk-vr-clean`. Guide: **`docs/SESSION_PREP_20260727.md`**.<br>
+**Buildid:** `20260727-mode126-fpsfix-livelook` · OpenVR **v2.12.14** / `IVRSystem_023`.<br>
+**Live boot:** stereo **`126`** · dualn **`2`**. ASI **197632** B · SHA256 `7BBE45A7…`.<br>
+**Mode 120 code path untouched.** Kill: **`120`** + dualn **`2`**.<br>
+**Backup:** `Documents\cursor\_vr_glue_backup_mode126_20260727-140702`.
+
+### Log cause of 60–70 exploring dip (Mode 123 afternoon)
+
+| Evidence | Finding |
+|----------|---------|
+| `perf.csv` AppFPS dips **62–70** | Correlated with `pose_stall20` rising (0 → 1–3 / 1.5s) + dual rate drop |
+| Healthy windows AppFPS≥88 | `pose_stall20=0`, avg `pose_ms≈7.9` (normal 90Hz slot) |
+| `.vr.log` | **40** WaitGetPoses stall lines, avg **22.4ms**, max **45ms** |
+| Verdict | **WaitGetPoses half-lock** (~22ms ≈ 2× 11.1ms slot) during explore/stream load. Mode **123** had **no POSEHOLD**. Mode **122** POSEHOLD helped FPS but **stale stereo HOLD** snapped on look. |
+
+### What Mode 126 does
+
+| Piece | Behavior |
+|-------|----------|
+| Fill | Mode **123** cover-match (H≈100%; V bars OK; no SoftInset) |
+| FPS | **POSEHOLD**: WaitGetPoses ≥16ms → skip next duals; ≥40ms → skip 6 (HARD) |
+| Look | **LIVELOOK**: live BB → **both** eyes (fresh mono) — **not** Mode122 stale L/R HOLD |
+| Dezoom | Start **Window0** (fovadd=0); cover refine + **stereoscale 135** |
+| dualn | File/default **2** (not forced 4) |
+| Never | SoftInset / LetterboxPrefer / FPS HUD / OpenVR bump |
+
+**Expect in log:** `StereoMode: 126`, `CLEAN FPS+LIVELOOK`, `POSEHOLD`, `LIVELOOK`, `COVER-MATCH stereoscale=135`, `AppFPS` stays nearer **90** while exploring.
+
+**Test (DE):** Desktop **GTA IV Quick Restart** → SteamVR → headset → roam same explore path as 123 stutter → NVIDIA overlay + `gtaiv_dxvk_vr.perf.csv`. Kill: stereo **`120`**.
+
+| stereo | Role | dualn |
+|--------|------|-------|
+| **120** | **LKG frozen** / kill | 2 |
+| 121–125 | prior experiments (unchanged) | … |
+| **126** | **FPS+LIVELOOK** (live) | 2 |
+
+---
+
+## 2026-07-27 ~05:07 — Overnight prep Modes **122–125** (prep3 final)
+
+**Tree:** `gtaiv-dxvk-vr-clean`. Guide: **`docs/SESSION_PREP_20260727.md`** · RE: **`docs/RE_STREAM_LOOK_POPIN.md`**.<br>
+**Buildid:** `20260727-mode122-125-prep3` · OpenVR **v2.12.14** / `IVRSystem_023`.<br>
+**Live boot:** stereo **`120`** · dualn **`2`** (LKG). Experiments via stereo file only.<br>
+**FusionFix.cfg:** SkipMenu=1 SkipIntro=1 FieldOfView=0 kept.
+
+| stereo | Role | dualn |
+|--------|------|-------|
+| **120** | **LKG frozen** / kill | 2 |
+| **121** | dualn=3 experiment | **3** |
+| **122** | look+pose HOLD | **4** |
+| **123** | cover fill-match | 2 |
+| **124** | zoom MatchH6 default | 2 |
+| **125** | 122+123 combo | **4** |
+
+**Kill:** **`120`** + dualn **`2`**.<br>
+**Backup:** `Documents\cursor\_vr_glue_backup_mode122_prep_*`.
+
+---
+
+## 2026-07-27 ~03:51 — CLEAN Mode **121** redeploy (OpenVR 2.12.14 rebuild)
+
+**Live on game:** clean Mode **121** (not MAIN 88).<br>
+**Why rebuild:** prior clean ASI was OpenVR **2.15.6** (`IVRSystem_026`) → SteamVR 2.12 would hit error **105**. Pinned `thirdparty/openvr` to **v2.12.14** (`IVRSystem_023`), rebuilt, deployed ASI + matching `openvr_api.dll`.<br>
+**Sidecars:** stereo=`121` · dualn=`3` · buildid=`20260727-clean-121-redeploy`. FusionFix SkipMenu/SkipIntro kept. d3d9/dxvk.conf/dinput8 untouched.<br>
+**ASI SHA256** `9ABDE9C3…` · openvr SHA256 `FD100F4F…` (same as MAIN 2.12.14).<br>
+**Backup MAIN 88:** `Documents\cursor\_vr_glue_backup_clean121_redeploy_20260727-035100` (+ mode120-lkg / mode121 ASI copies). Mode120 LKG sidecar in `out-asi` untouched.<br>
+**Fallback:** stereo `120`+dualn `2` (same ASI) or restore MAIN ASI from backup + stereo `88`+dualn `2`.<br>
+**Test:** Desktop **GTA IV Quick Restart** → log `ASI_BUILD_ID 20260727-clean-121-redeploy`, `StereoMode: 121`, `VR_Init OK`.
+
+---
+
+## 2026-07-27 ~03:10 — Mode **121** dualn=3 experiment (120 frozen LKG)
+
+**Tree:** `gtaiv-dxvk-vr-clean` only. **Mode 120 = last good smooth — do not mutate.**<br>
+**121+ = experiments.** Buildid **`20260727-mode121-dualn3`**. Stereo **`121`**. dualn **`3`**.
+
+### What Mode 121 is
+Copy of Mode 120 path (DrawScene×2 + HOLD + look_move + F7 worldscale + perf logs, no FPS HUD) with **forced dualn=3** (lighter dual / more HOLD). Mode 120 still defaults dualn=**2**.
+
+| stereo | Role | dualn |
+|--------|------|-------|
+| **120** | **LKG / last good smooth** — frozen kill/fallback | **2** (default) |
+| **121** | Experiment (this build) | **3** (forced) |
+| 51 / 45 / 0 | Harder kills | — |
+
+### Go back to Mode 120
+1. Write `120` into `gtaiv_dxvk_vr.stereo` (next to `GTAIV.exe`).
+2. Write `2` into `gtaiv_dxvk_vr.dualn` (so leftover dualn=3 does not affect 120).
+3. Restart GTA (Desktop **GTA IV Quick Restart**).
+
+### Test (DE)
+Restart → same hitchy area as 120 → compare FPS (NVIDIA overlay + `gtaiv_dxvk_vr.perf.csv` if debug=1).
+
+**Kill:** **`120`** (good) / **`51`** / **`45`** / **`0`**.
+
+**Deploy:** ASI **192000** B · SHA256 `F86173C4…` · sidecar `gtaiv_dxvk_vr.asi.mode121` (does **not** overwrite `mode120-lkg` if present). Backup `…mode120-pre-mode121`. ntfy sent.
+
+---
+
+## 2026-07-27 ~03:00 — Mode **120** F7 WorldScale MORE (dezoom direction FIXED)
+
+**Tree:** `gtaiv-dxvk-vr-clean`. Buildid **`20260727-mode120-worldscale-more`**. Stereo **`120`**.
+
+### Which knob actually dezooms (Mode 120 true-FOV canvas)
+
+| Knob | Effect on “zoom” |
+|------|------------------|
+| **fovadd ↑** | Widens `gameTan` → StretchRect **SRC crop** when fill>100% → **zoom-IN** / giant-monitor. Live proof: fovadd=18 → fill≈**150%h**/~95%v on G2. Old Ultra28 was wrong direction. |
+| **fovadd ↓** | Less H crop → more of BB / less “sitting in cropped center” → **DEZOOM**. H-match ≈ fovadd **6** (coverTan 1.16). |
+| **stereoscale ↑** | Stronger disparity → **smaller world** feel (cap 130). |
+| SoftInset / LetterboxPrefer / CanvasZoom | **Dead** — do not use. |
+
+### F7 presets (10 steps) — persist `gtaiv_dxvk_vr.worldscale`
+
+| Step | Name | fovadd | stereoscale | Feel |
+|------|------|--------|-------------|------|
+| 1/10 | CropMax | 28 | 115% | heaviest crop / zoom-IN (old Ultra) |
+| 2/10 | Crop | 24 | 118% | still crop-heavy |
+| 3/10 | TallFill | 20 | 120% | V near full; H ~155% |
+| 4/10 | Mild18 | 18 | 120% | prior session (fill≈150%h) |
+| 5/10 | Soft16 | 16 | 122% | easing crop |
+| **6/10** | **Open12** | **12** | **125%** | **DEFAULT — further out than old Out22** |
+| 7/10 | Room8 | 8 | 128% | near H-match |
+| 8/10 | MatchH6 | 6 | 130% | ~100%h cover |
+| 9/10 | Air4 | 4 | 130% | slight under-fill |
+| 10/10 | Window0 | 0 | 130% | no fovadd; max stereo (V bars possible) |
+
+Also writes `fovadd` + `stereoscale`. Live F7. No SoftInset. RT lock / dual+HOLD / look_move / no FPS HUD / light perf logs kept.
+
+**Deploy:** ASI **192000** B · SHA256 `CF01EEEB…` · sidecar `gtaiv_dxvk_vr.asi.mode120-worldscale-more` · backup `…mode120-pre-worldscale-more`. ntfy sent. worldscale index **5** (Open12).
+
+**Kill:** stereo **`51`** / **`45`** / **`0`**.
+
+**Next (DE):** F7 until comfortable; report which **# Name** felt right; watch `fill≈` in log.
+
+---
+
+## 2026-07-27 ~02:43 — Mode **120** sampled perf/mem logs (stutter probe)
+
+**Tree:** `gtaiv-dxvk-vr-clean`. Buildid **`20260727-mode120-perflog`**. Stereo **`120`**. `gtaiv_dxvk_vr.debug=1` (default ON).
+
+### Why
+Prior session log (`20260727-clean-3dmove-opt`, ~40 min, MonoSubmit ≈#39800) showed Mode120 dual everyN=2 + HOLD, Submit errL=errR=0, **no** Hitch/AppFPS/WaitGetPoses-ms/mem samples — stutter cause not in main log. System RAM ~83% of 16 GB (~2.8 GB free) with Cursor/SteamVR/steamtours/Discord/Spotify already up.
+
+### New files (next to EXE, sampled ~1.5–2s — no FPS HUD)
+| File | Contents |
+|------|----------|
+| `gtaiv_dxvk_vr.perf.csv` | app_fps, pose_ms, dual/hold/hitch_skip, pose_stall≥20ms, draw_gap/max_hitch |
+| `gtaiv_dxvk_vr.mem.log` | GTAIV WorkingSet + PrivateBytes |
+| `gtaiv_dxvk_vr.vr.log` | rare WaitGetPoses/Submit errors + ≥20ms stalls |
+
+Toggle off: write `0` into `gtaiv_dxvk_vr.debug`.
+
+**Deploy:** ASI 191488 B · sidecar `gtaiv_dxvk_vr.asi.mode120-perflog` · backup `…mode120-pre-perflog`. ntfy sent.
+
+**Next:** play until mid-session stutter returns → share/open `.perf.csv` + `.mem.log`.
+
+---
+
+## 2026-07-27 ~02:40 — Mode **120** + F7 WorldScale (clean tree)
+
+**Tree:** `gtaiv-dxvk-vr-clean` only. Main `gtaiv-dxvk-vr` = reference.
+
+### Mode 120 3D vs main folder (short)
+
+| | **Main** (Mode74–111) | **Mode 120** (clean) |
+|--|--|--|
+| 3D path | Spaghetti: EyeProj, canvas UV, FocusPace, tight guards, remaps, FPS HUD | Synced **DrawScene×2** everyN + **HOLD** off-ticks |
+| Look | mixed / pedCoupled experiments | **look_move** `atan2(-fx,fy)`; **pedCoupled OFF** |
+| Guard | tight motion guards / StretchRect storms | **OFF** |
+| Submit | AER / TextureWithPose variants | **WaitGetPoses + Submit** |
+| HUD | ColorFill FPS digits | **NO FPS HUD** |
+| Perf | often tanked | **#1** — smooth ~90 even driving |
+
+### F7 visual WorldScale (this build) — SUPERSEDED by worldscale-more
+
+| Step | Name | fovadd | stereoscale | Feel |
+|------|------|--------|-------------|------|
+| 1/6 | Tight | 0 | 115% | current-ish Mode120 (no FOV expand) |
+| 2/6 | Mild | 18 | 120% | Mode37 comfort |
+| **3/6** | **Out** | **22** | **125%** | **DEFAULT — deutlich weiter raus** |
+| 4/6 | Far | 24 | 128% | smaller / more out |
+| 5/6 | VeryFar | 26 | 130% | near max |
+| 6/6 | Ultra | 28 | 130% | widest practical |
+
+- Persist: `gtaiv_dxvk_vr.worldscale` (preset index 0–5)
+- Also writes `fovadd` + `stereoscale`. Live (no restart). No SoftInset / LetterboxPrefer. RT lock kept.
+- 6DoF lean still `gtaiv_dxvk_vr.scale` (not F7). F6 still fine-tunes stereoscale alone.
+- Buildid: **`20260727-mode120-worldscale-f7`**
+- ASI: **187904** B · SHA256 `A619D81E…` · sidecar `gtaiv_dxvk_vr.asi.mode120-worldscale` (LKG `mode120-lkg` untouched)
+- Kill: stereo **`51`** / **`45`** / **`0`**
+- **Correction:** higher fovadd was crop zoom-IN, not dezoom — see worldscale-more.
+
+**Next:** headset — confirm Out default less giant; F7 cycle; keep ~90 FPS.
+
+---
+
+**Tree:** `gtaiv-dxvk-vr-clean`. Buildid **`20260727-mode120-perflog`**. Stereo **`120`**. `gtaiv_dxvk_vr.debug=1` (default ON).
+
+### Why
+Prior session log (`20260727-clean-3dmove-opt`, ~40 min, MonoSubmit ≈#39800) showed Mode120 dual everyN=2 + HOLD, Submit errL=errR=0, **no** Hitch/AppFPS/WaitGetPoses-ms/mem samples — stutter cause not in main log. System RAM ~83% of 16 GB (~2.8 GB free) with Cursor/SteamVR/steamtours/Discord/Spotify already up.
+
+### New files (next to EXE, sampled ~1.5–2s — no FPS HUD)
+| File | Contents |
+|------|----------|
+| `gtaiv_dxvk_vr.perf.csv` | app_fps, pose_ms, dual/hold/hitch_skip, pose_stall≥20ms, draw_gap/max_hitch |
+| `gtaiv_dxvk_vr.mem.log` | GTAIV WorkingSet + PrivateBytes |
+| `gtaiv_dxvk_vr.vr.log` | rare WaitGetPoses/Submit errors + ≥20ms stalls |
+
+Toggle off: write `0` into `gtaiv_dxvk_vr.debug`.
+
+**Deploy:** ASI 191488 B · sidecar `gtaiv_dxvk_vr.asi.mode120-perflog` · backup `…mode120-pre-perflog`. ntfy sent.
+
+**Next:** play until mid-session stutter returns → share/open `.perf.csv` + `.mem.log`.
+
+---
+
+## 2026-07-27 ~02:40 — Mode **120** + F7 WorldScale (clean tree)
+
+**Tree:** `gtaiv-dxvk-vr-clean` only. Main `gtaiv-dxvk-vr` = reference.
+
+### Mode 120 3D vs main folder (short)
+
+| | **Main** (Mode74–111) | **Mode 120** (clean) |
+|--|--|--|
+| 3D path | Spaghetti: EyeProj, canvas UV, FocusPace, tight guards, remaps, FPS HUD | Synced **DrawScene×2** everyN + **HOLD** off-ticks |
+| Look | mixed / pedCoupled experiments | **look_move** `atan2(-fx,fy)`; **pedCoupled OFF** |
+| Guard | tight motion guards / StretchRect storms | **OFF** |
+| Submit | AER / TextureWithPose variants | **WaitGetPoses + Submit** |
+| HUD | ColorFill FPS digits | **NO FPS HUD** |
+| Perf | often tanked | **#1** — smooth ~90 even driving |
+
+### F7 visual WorldScale (this build)
+
+| Step | Name | fovadd | stereoscale | Feel |
+|------|------|--------|-------------|------|
+| 1/6 | Tight | 0 | 115% | current-ish Mode120 (no FOV expand) |
+| 2/6 | Mild | 18 | 120% | Mode37 comfort |
+| **3/6** | **Out** | **22** | **125%** | **DEFAULT — deutlich weiter raus** |
+| 4/6 | Far | 24 | 128% | smaller / more out |
+| 5/6 | VeryFar | 26 | 130% | near max |
+| 6/6 | Ultra | 28 | 130% | widest practical |
+
+- Persist: `gtaiv_dxvk_vr.worldscale` (preset index 0–5)
+- Also writes `fovadd` + `stereoscale`. Live (no restart). No SoftInset / LetterboxPrefer. RT lock kept.
+- 6DoF lean still `gtaiv_dxvk_vr.scale` (not F7). F6 still fine-tunes stereoscale alone.
+- Buildid: **`20260727-mode120-worldscale-f7`**
+- ASI: **187904** B · SHA256 `A619D81E…` · sidecar `gtaiv_dxvk_vr.asi.mode120-worldscale` (LKG `mode120-lkg` untouched)
+- Kill: stereo **`51`** / **`45`** / **`0`**
+
+**Next:** headset — confirm Out default less giant; F7 cycle; keep ~90 FPS.
+
+---
+
+## 2026-07-27 ~02:15 — Mode **120** clean 3D+lookmove (opt-first) on `01f355b`
+
+**Tree:** `gtaiv-dxvk-vr-clean` @ `01f355b` + Mode120 rewrite (main tree = reference only).
+
+| Item | Value |
+|------|--------|
+| Mode | **120** `CleanDualLookMove` (default deploy) |
+| Buildid | **`20260727-clean-3dmove-opt`** |
+| ASI | 186880 B · SHA256 `E864976B…` · **no FPS HUD / ColorFill digits / fpshud** |
+| LKG | `out-asi/gtaiv_dxvk_vr.mode120-lkg.asi` + game `gtaiv_dxvk_vr.asi.mode120-lkg` |
+| 3D path | Synced **DrawScene×2** every `dualn` (default **2**) + **HOLD** off-ticks + hitch skip — **not** AER Mode51, **not** BuildRootA×2 |
+| Look-move | **ON** (`lookmove=1`); ped heading = HMD yaw via **`atan2(-fx, fy)`**; **pedCoupled OFF** |
+| Motion guard | **OFF** |
+| Kills | stereo **`51`** / **`45`** / **`0`** |
+
+### User finding — session/GPU accumulation (document)
+
+After a **PC restart**, FPS is fine again. Something accumulates across ASI swaps / SteamVR / GPU sessions and tanks frames until reboot — **not** only a dirty leftover ASI. If FPS dies mid-session after several deploys: **reboot PC first**, then re-test before blaming new Mode120 code. Cold start = full quit GTA + prefer fresh SteamVR after heavy thrash.
+
+**Next:** headset check Mode120 vs kill 51; NVIDIA overlay only (no in-game FPS HUD).
+
+---
+
+## 2026-07-27 ~01:48 — VIRGIN GitHub rebuild (clean tree only)
+
+**Prior `gtaiv-dxvk-vr-clean` tree abandoned** (local patches / Mode 110–111 / FPS HUD /
+look_move leftovers suspected of poisoning perf tests). Folder deleted + worktree pruned.
+**Fresh clone only** from GitHub:
+
+| Item | Value |
+|------|--------|
+| Path | `C:\Users\Henning\Documents\cursor\gtaiv-dxvk-vr-clean` |
+| SHA | **`01f355b`** (`origin/master`) |
+| Branch | **`clean-rebuild`** @ exact tip — **zero local patches** |
+| Build | Win32 ASI OK · buildid **`20260727-github-fresh-01f355b`** |
+| Deploy | ASI **183296** B · SHA256 `6422C2C4…F2CF` · `openvr_api.dll` |
+| Config | **`gtaiv_dxvk_vr.stereo` = `51`** only (+ buildid). No fpshud / lookmove / fovadd / mode111 ASI backups |
+| Binary proof | **No** `FpsHud` / `fpshud` / `AppFPS` strings in deployed ASI |
+| Kept | Stock `d3d9.dll` + `dxvk.conf` untouched |
+| Backup | Game glue → `_vr_glue_backup_20260727-014831\` |
+| Main tree | **Not touched** (`gtaiv-dxvk-vr` messy worktree left alone) |
+
+**Honest:** this is virgin GitHub tip Mode **51** (the ~90 FPS reference on exact GitHub).
+Old clean experiments are gone; do not mix Mode 110/111 / HUD code back in.
+
+**Cold start required** (full quit → SteamVR → start GTA). See test steps below in chat.
+
+---
+
+**As of:** 2026-07-24 ~22:18 (historical tip content at `01f355b`)
+**Deployed now:** stereo **`51`** (Mode-50 always-distinct L/R + **`Submit_TextureWithPose`**
 AER) + **`fovadd=18`**, **`ipd=3`**, scale **`100`**, stereoscale **`125`**. Mode **50**
 (motion-guard OFF baseline), **53** (soft guard: 8°/6cm AER-only, 15°/12cm hard mono), and
 **52** (swap-eyes depth test) are built and freeze-tested. Mode **49** remains the full
@@ -547,42 +1119,42 @@ VR camera.
 
 ### Session 2026-07-24 ~19:10 (Mode 38 AER pose submit)
 
-**User:** Mode 37 still huge/monitor, jump, bad FPS; F7 doesn’t feel like being in the world; read Luke AER v2 Patreon.  
-**Takeaway:** AER v2 = optical-flow intermediates (skip). Transferable = stamp each eye with capture-time pose (`Submit_TextureWithPose`, OpenVR #1253).  
-**Shipped Mode 38:** Mode 37 path + pose cache on L/R capture + pose promote with pair-hold + `Submit_TextureWithPose`. Fallback to `Submit_Default` if pose missing/err.  
-**Deploy verified (`ASI_BUILD_ID 20260724-191333`):** `StereoMode: 38`, `mode 38 AER-POSE SUBMIT … ok=1`, pair promote `poseL=1 poseR=1`, `AERPose: eye=L/R submitWithPose=1 err=0`, `StereoSubmit … mode=38`. Kill **37** / **30**.  
+**User:** Mode 37 still huge/monitor, jump, bad FPS; F7 doesn’t feel like being in the world; read Luke AER v2 Patreon.<br>
+**Takeaway:** AER v2 = optical-flow intermediates (skip). Transferable = stamp each eye with capture-time pose (`Submit_TextureWithPose`, OpenVR #1253).<br>
+**Shipped Mode 38:** Mode 37 path + pose cache on L/R capture + pose promote with pair-hold + `Submit_TextureWithPose`. Fallback to `Submit_Default` if pose missing/err.<br>
+**Deploy verified (`ASI_BUILD_ID 20260724-191333`):** `StereoMode: 38`, `mode 38 AER-POSE SUBMIT … ok=1`, pair promote `poseL=1 poseR=1`, `AERPose: eye=L/R submitWithPose=1 err=0`, `StereoSubmit … mode=38`. Kill **37** / **30**.<br>
 
 ### Session 2026-07-24 ~18:45–19:00 (Mode 37 comfort — Mode36 bars-gone + Mode30 smooth)
 
-**User feedback (Mode 36):** bars completely gone (keep); still screen-on-face; **FPS much worse**; **jump/jitter very strong** (Mode 30 was smooth); world **too close/huge**. Continue.  
-**Diagnose:** Mode 36 pair-hold path was intact. Jump/FPS from (1) fovadd=22 wide engine FOV + temporal edge disparity, (2) FOV wobble recreating 4 eye RTs every few frames, (3) scale=50 = huge 6DoF feel.  
-**Shipped Mode 37:** same true-FOV canvas + Mode30 pair-hold; **fovadd=18**; canvas **maxDim=1536 LOCKED**; pair-latched rect tangents; publish gate ~2.5%; **WorldScale→100** (one size lever; IPD untouched). No CanvasZoom / no IPD×scale / no forbidden hooks.  
+**User feedback (Mode 36):** bars completely gone (keep); still screen-on-face; **FPS much worse**; **jump/jitter very strong** (Mode 30 was smooth); world **too close/huge**. Continue.<br>
+**Diagnose:** Mode 36 pair-hold path was intact. Jump/FPS from (1) fovadd=22 wide engine FOV + temporal edge disparity, (2) FOV wobble recreating 4 eye RTs every few frames, (3) scale=50 = huge 6DoF feel.<br>
+**Shipped Mode 37:** same true-FOV canvas + Mode30 pair-hold; **fovadd=18**; canvas **maxDim=1536 LOCKED**; pair-latched rect tangents; publish gate ~2.5%; **WorldScale→100** (one size lever; IPD untouched). No CanvasZoom / no IPD×scale / no forbidden hooks.<br>
 **Deferred:** independent VR cam; Mode 34 dual.
 
 ### Session 2026-07-24 ~18:25–18:45 (Mode 36 true-canvas FOV — fill HMD / kill bars)
 
-**User feedback (Mode 35):** better presence / less warp, still screen-on-face + black bars; protect as baseline; push harder.  
-**Root cause:** engine `fovadd` wrote CCam+0x60, but canvas still used stale `D3DTS_PROJECTION` tangents (Rage ignores that transform — Mode 15 dead) → bars stayed.  
-**Shipped Mode 36:** Mode 35 pair-hold + FOV site + `PublishGameFovFromCCamDegrees` (Mode 16 factor 58.7/45) → canvas/rect track TRUE FOV. No CanvasZoom.  
-**Also fixed:** `ParseModeFile` capped at 35 (file `36` became mode 3!); FOV ADD idempotent (no 67→89 compound); ADD only when base FOV ≤55° (skip cutscene/menu spikes).  
-**Deployed:** stereo=`36`, fovadd=`22` (toward G2 ~94°; vertical fill ~90%). Mode **35** unchanged as kill/protect.  
+**User feedback (Mode 35):** better presence / less warp, still screen-on-face + black bars; protect as baseline; push harder.<br>
+**Root cause:** engine `fovadd` wrote CCam+0x60, but canvas still used stale `D3DTS_PROJECTION` tangents (Rage ignores that transform — Mode 15 dead) → bars stayed.<br>
+**Shipped Mode 36:** Mode 35 pair-hold + FOV site + `PublishGameFovFromCCamDegrees` (Mode 16 factor 58.7/45) → canvas/rect track TRUE FOV. No CanvasZoom.<br>
+**Also fixed:** `ParseModeFile` capped at 35 (file `36` became mode 3!); FOV ADD idempotent (no 67→89 compound); ADD only when base FOV ≤55° (skip cutscene/menu spikes).<br>
+**Deployed:** stereo=`36`, fovadd=`22` (toward G2 ~94°; vertical fill ~90%). Mode **35** unchanged as kill/protect.<br>
 **Headset check:** smaller/no bars? Still fused? No look-warp? If bad → stereo **35** or **30**. Try fovadd **18–25** if needed.
 
 **Deferred:** independent VR cam; Mode 34 dual; soft TextureBounds fill; theater quad.
 
 ### Session 2026-07-24 ~18:10–18:25 (Mode 35 FOV recompute — research + spike)
 
-**User ask:** feel inside the game with real 6DoF; Mode 30 fusion OK but warping + screen-on-face.  
-**Research:** Luke Ross / Halo / L4D2 / UEVR / FusionFix — kill monitor-on-face with **true engine FOV**, not canvas zoom / theater. FusionFix `fixes.ixx` = cam process CALL then `*(CCam+0x60) += n*5` = our Mode 17 recompute site.  
-**Shipped Mode 35:** Mode 30 pair-hold + chain-hook that CALL; `gtaiv_dxvk_vr.fovadd` ADD degrees (deployed **15**). Additive preserves aim zoom.  
-**Log proof:** 45→60 stable; thousands of FovSite calls; submits mode=35; game stayed up.  
+**User ask:** feel inside the game with real 6DoF; Mode 30 fusion OK but warping + screen-on-face.<br>
+**Research:** Luke Ross / Halo / L4D2 / UEVR / FusionFix — kill monitor-on-face with **true engine FOV**, not canvas zoom / theater. FusionFix `fixes.ixx` = cam process CALL then `*(CCam+0x60) += n*5` = our Mode 17 recompute site.<br>
+**Shipped Mode 35:** Mode 30 pair-hold + chain-hook that CALL; `gtaiv_dxvk_vr.fovadd` ADD degrees (deployed **15**). Additive preserves aim zoom.<br>
+**Log proof:** 45→60 stable; thousands of FovSite calls; submits mode=35; game stayed up.<br>
 **Headset check:** less black-bar / monitor feel? No look-warp? If warp/bad → kill to 30 + delete fovadd. Keep FusionFix menu FOV at **0**.
 
 **Deferred:** independent VR cam vs wall collision; Mode 34 dual; theater quad.
 
 ### Session 2026-07-24 ~17:50–18:05 (kill canvas zoom + research)
 
-**Headset feedback:** `zoom=85` claimed-FOV warp — every head move warps environment (same class as FusionFix FOV look-up warp).  
+**Headset feedback:** `zoom=85` claimed-FOV warp — every head move warps environment (same class as FusionFix FOV look-up warp).<br>
 **Shipped:**
 - Canvas zoom **forced OFF** in `vr_display.cpp` (always true FOV; file ignored). Game `zoom=100`.
 - Mode **30** + **`ipd=1`** redeploy (preserve scale/stereoscale/eyefwd/pedhide).
@@ -646,8 +1218,8 @@ Log quotes (playable):
 - `CamMatrix: FP lock #1 … sep=1cm eyeFwd=42cm`
 - `StereoSubmit: L=1 R=1 mode=30`
 
-**Mode 34 RESULT (buildId `20260724-164125`):**  
-Goal: when HookSetVSConstF ret==`0x2C73E`, resolve stack → **function starts**, CC-pad thiscall0, count ~1×/frame, dual+pair-hold. Fail → stereo=30.  
+**Mode 34 RESULT (buildId `20260724-164125`):**<br>
+Goal: when HookSetVSConstF ret==`0x2C73E`, resolve stack → **function starts**, CC-pad thiscall0, count ~1×/frame, dual+pair-hold. Fail → stereo=30.<br>
 - EndScene brace bug (Mode34 nested under Mode33) fixed mid-session.
 - `Mode34: DISCOVER armed … rareAgg=24 sampleHits=1392 vsRetHits=276`
 - Rare starts with avg≈1.0 e.g. `0x52E7C0`, `0x5303D0`, `0x4DDAD0`
@@ -657,9 +1229,9 @@ Goal: when HookSetVSConstF ret==`0x2C73E`, resolve stack → **function starts**
 
 ### “No 3D” on Mode 30 — ROOT CAUSE (2026-07-24 ~16:00)
 
-Pair-hold was **not** broken: L/R eye flip + `StereoPairHold: promoted pair` + `StereoSubmit L=1 R=1 mode=30` all healthy.  
-Live log had **`sep=0cm`** because `gtaiv_dxvk_vr.ipd` = **`0`** (F8 preset included 0).  
-CamMatrix with ipd=0 → `ipd=(±0.000…)` → flat image, comfort intact.  
+Pair-hold was **not** broken: L/R eye flip + `StereoPairHold: promoted pair` + `StereoSubmit L=1 R=1 mode=30` all healthy.<br>
+Live log had **`sep=0cm`** because `gtaiv_dxvk_vr.ipd` = **`0`** (F8 preset included 0).<br>
+CamMatrix with ipd=0 → `ipd=(±0.000…)` → flat image, comfort intact.<br>
 **Fix:** restored IPD; F8 presets no longer include 0 (now start at **1**). Log warn if file=0.
 
 ### CE vs version downgrade (verdict)
@@ -713,20 +1285,20 @@ GTAIV.exe
 | Deploy + start | `.\scripts\build-deploy-run.ps1` (Build→Kill→Deploy→Steam start→close dashboard) |
 | Deploy only | `.\scripts\deploy-asi.ps1 -GameDir "<GTAIV>"` (`-Launch` starts the game) |
 
-**Currently deployed:** stereo=**`30`**, ipd=**`1`**, eyefwd=**`20`**, pedhide=**`1`**, zoom=**OFF**.  
-**Mode 30 (2026-07-24):** PAIR-HOLD = Mode 14/26 CCam temporal, but submit textures  
-update **only when a complete L→R pair is ready** (both eyes promote together).  
-User: jumps **definitely less**, barely noticeable — keep as playable. With ipd≥1: try fusion.  
+**Currently deployed:** stereo=**`30`**, ipd=**`1`**, eyefwd=**`20`**, pedhide=**`1`**, zoom=**OFF**.<br>
+**Mode 30 (2026-07-24):** PAIR-HOLD = Mode 14/26 CCam temporal, but submit textures<br>
+update **only when a complete L→R pair is ready** (both eyes promote together).<br>
+User: jumps **definitely less**, barely noticeable — keep as playable. With ipd≥1: try fusion.<br>
 Log: `StereoPairHold: promoted pair #N`, `StereoSubmit … mode=30`, `CanvasZoom: DISABLED`, `sep=1cm`, `eyeFwd=20cm`.
 
-**Mode 34 RESULT (2026-07-24) — dual armed then DEAD for parallax:**  
-VsRet(`0x2C73E`) stack → fn starts; DISCOVER armed; COUNT `0x4DDAD0` avg=2.0 → DUAL armed;  
-live `vsPatch=0` / `vsCallsR=0` for 40k+ frames (no parallax). Earlier COUNT `0x1BF010` hard-kill.  
+**Mode 34 RESULT (2026-07-24) — dual armed then DEAD for parallax:**<br>
+VsRet(`0x2C73E`) stack → fn starts; DISCOVER armed; COUNT `0x4DDAD0` avg=2.0 → DUAL armed;<br>
+live `vsPatch=0` / `vsCallsR=0` for 40k+ frames (no parallax). Earlier COUNT `0x1BF010` hard-kill.<br>
 **Hardened:** forbid `0x4DDAD0` + `0x1BF010`; **never arm Dual** (COUNT-ok → stereo=30). Kill → **30** or **26**.
 
-**Mode 33 RESULT (2026-07-24) — wait worked, dual not armed:**  
-Goal: WAIT until live VsParent samples (Mode32 Soft was empty), then only CC-pad  
-zero-arg thiscall → count → dual+VS. Never `0x2C6AC`/`0x37BD0`/`0x32A40`/`0x372B0`.  
+**Mode 33 RESULT (2026-07-24) — wait worked, dual not armed:**<br>
+Goal: WAIT until live VsParent samples (Mode32 Soft was empty), then only CC-pad<br>
+zero-arg thiscall → count → dual+VS. Never `0x2C6AC`/`0x37BD0`/`0x32A40`/`0x372B0`.<br>
 Fail → write stereo=30.
 
 Log quotes (buildId `20260724-161039`):
@@ -734,17 +1306,17 @@ Log quotes (buildId `20260724-161039`):
 - `Mode33: still waiting … es=60 rareAgg=0` (correct — no early seed)
 - `Mode33: VsParent sample#1 slot=10 exeRva=0x22187` (+ `0x37520`/`0x32BD7`/`0x4D901B`)
 - `Mode33: DISCOVER armed (live VsParent appeared; rareAgg=4 sampleHits=8; no early seed)`
-- Mid bytes prove **epilogues**, not walkers: `0x22187=5F C2 10 00` (pop/ret 0x10),  
+- Mid bytes prove **epilogues**, not walkers: `0x22187=5F C2 10 00` (pop/ret 0x10),<br>
   `0x32BD7→0x32A40` REJECT forbidden stackarg, `0x37520→0x372B0` REJECT forbidden
 - `Mode33: COUNT exeRva=0x4D8F10` → `avgEntries=0.31` REJECT
 - `Mode33: FALLBACK pair-hold — wrote stereo=30`
 - After: `StereoSubmit: L=1 R=1 mode=30` (alive). F8 no longer cycles to 0.
 
-**Hard finding:** VsParent slots 10–32 are **return addresses inside callees** (epilogues /  
-mid-instr), not ~1×/frame thiscall0 draw walkers. Next same-frame spike must find the  
+**Hard finding:** VsParent slots 10–32 are **return addresses inside callees** (epilogues /<br>
+mid-instr), not ~1×/frame thiscall0 draw walkers. Next same-frame spike must find the<br>
 **caller** that drives VsRet ~1×/frame (static E8 / deeper stack), not re-hook these mids.
 
-**Mode 32 RESULT (earlier) — safe fallback, dual not armed:**  
+**Mode 32 RESULT (earlier) — safe fallback, dual not armed:**<br>
 Soft ran before VsRet traffic → empty hist → early seed of stackarg. Mode 33 fixed the wait.
 
 **Next RVA / ABI (do NOT blind-hook):**
@@ -763,18 +1335,18 @@ Soft ran before VsRet traffic → empty hist → early seed of stackarg. Mode 33
 | `0x52E7C0` / `0x5303D0` | ~1×/frame starts | Mode34 rare (0x52E7C0 stackarg forbidden; others untested) |
 | `0x37BD0` / `0x2C6AC` | | **FORBIDDEN** |
 
-**Next session:** headset-check Mode **30** + **ipd=1** + zoom OFF (no warp?). Stay on **30**.  
-Do not re-arm Mode34 dual. Use `VsRetStatic` safe RVAs for next same-frame COUNT-only probe.  
+**Next session:** headset-check Mode **30** + **ipd=1** + zoom OFF (no warp?). Stay on **30**.<br>
+Do not re-arm Mode34 dual. Use `VsRetStatic` safe RVAs for next same-frame COUNT-only probe.<br>
 Playable stays **`30`** + **`ipd=1`** + **`eyefwd=20`** + **`pedhide=1`**. Kill stereo → **`26`**.
 
 **Mode 31:** discover failed (`frameSlots=0`, callee too deep). Superseded by Mode 32/33.
 
-**Mode 30 dual probe (earlier) — DEAD for parallax:**  
+**Mode 30 dual probe (earlier) — DEAD for parallax:**<br>
 device-VS dual `deviceVsPatches=0`. Do not re-arm without replay-thread evidence.
 
-**Mode 29 FAILED (2026-07-24):** `FindFnStartNear(Cand37C01)` → `0x37BD0` crash.  
-Modes **27/29** alias Mode 26. **Mode 28:** wrap@0x2C6AC crashed — aliases 26.  
-**SteamVR dashboard:** `restart-gtaiv.ps1` closes it after GTAIV is up (default).  
+**Mode 29 FAILED (2026-07-24):** `FindFnStartNear(Cand37C01)` → `0x37BD0` crash.<br>
+Modes **27/29** alias Mode 26. **Mode 28:** wrap@0x2C6AC crashed — aliases 26.<br>
+**SteamVR dashboard:** `restart-gtaiv.ps1` closes it after GTAIV is up (default).<br>
 **Quick restart (pinable):** `scripts\install-restart-shortcut.ps1`.
 
 ---
@@ -797,10 +1369,10 @@ Modes **27/29** alias Mode 26. **Mode 28:** wrap@0x2C6AC crashed — aliases 26.
 
 ### Known good AOB (DrawScene::BuildRenderList)
 
-- Mid-body (survives FusionFix SafetyHook):  
+- Mid-body (survives FusionFix SafetyHook):<br>
   `83 BF 38 09 00 00 FF 0F 84 ? ? ? ? 6A 00 6A 0C`
 - Function start = mid − **13**
-- File-offset reference (exe): mid ~`0x527EDE` → start ~`0x527ED1`  
+- File-offset reference (exe): mid ~`0x527EDE` → start ~`0x527ED1`<br>
   Runtime example: `@ 00EAD200` (ASLR)
 
 ---
@@ -834,11 +1406,11 @@ Modes **27/29** alias Mode 26. **Mode 28:** wrap@0x2C6AC crashed — aliases 26.
 | PhaseC | `[8]=00D76950` | `[9]=0053E300` |
 | DrawScene | `[8]=00ADD200` | `[9]=0049C250` |
 
-Mode 9 FPS hole: AOB on every phase call — fixed.  
-**Mode 10:** Execute-only dual → L≠R, F8 sep had no effect. Build+Exec from ExecA = freeze — forbidden.  
-**Mode 11:** Build+Exec from PhaseA build → **black screen** — forbidden.  
-**Mode 13 spike:** temporal stereo + **native-FOV inset** Submit bounds (no D3D cover widen).  
-Cover-crop without cover render caused zoom; Mode **0** = daily ~90 FPS. Mode 11 dead. Kill **0**.  
+Mode 9 FPS hole: AOB on every phase call — fixed.<br>
+**Mode 10:** Execute-only dual → L≠R, F8 sep had no effect. Build+Exec from ExecA = freeze — forbidden.<br>
+**Mode 11:** Build+Exec from PhaseA build → **black screen** — forbidden.<br>
+**Mode 13 spike:** temporal stereo + **native-FOV inset** Submit bounds (no D3D cover widen).<br>
+Cover-crop without cover render caused zoom; Mode **0** = daily ~90 FPS. Mode 11 dead. Kill **0**.<br>
 **Mode 14 — CONFIRMED WORKING (headset test 2026-07-24): FUSION + CORRECT PROPORTIONS.**
 Temporal stereo + **angle-correct per-eye canvas**. Root cause of all previous diplopia:
 nullptr-bounds Submit stretched the 16:9 game image over each eye's full asymmetric G2 frustum
@@ -1002,16 +1574,16 @@ VS patch during walk 2. Stable, but `vsCallsR≈1` — same wrong-thread problem
 - User feedback: jump barely noticeable — **keep as playable**. Needs **`ipd≥1`** (was 0 → no 3D).
 **Currently deployed:** stereo = **`30`**, ipd = **`1`**, pedhide = **`1`**. Kill → **`26`**.
 
-**Mode 31 — SameFrameReplayDual (2026-07-24):** discover failed (stack too deep).  
+**Mode 31 — SameFrameReplayDual (2026-07-24):** discover failed (stack too deep).<br>
 Superseded by Mode 32/33. Kill → **`30`** or **`26`**.
 
-**Mode 32 — SameFrameVsParentDual (2026-07-24):** HookSetVSConstF-depth VsParent +  
-ABI classify + count gate. Soft empty → early seed. Dual not armed; wrote stereo=30.  
+**Mode 32 — SameFrameVsParentDual (2026-07-24):** HookSetVSConstF-depth VsParent +<br>
+ABI classify + count gate. Soft empty → early seed. Dual not armed; wrote stereo=30.<br>
 Kill → **`30`** or **`26`**.
 
-**Mode 33 — SameFrameLateVsParentDual (2026-07-24):** WAIT for live VsParent samples,  
-then CC-pad thiscall0 only. Wait **worked**; mids are epilogues not walkers;  
-`0x4D8F10` count avg=0.31. Dual not armed; wrote stereo=30. See header.  
+**Mode 33 — SameFrameLateVsParentDual (2026-07-24):** WAIT for live VsParent samples,<br>
+then CC-pad thiscall0 only. Wait **worked**; mids are epilogues not walkers;<br>
+`0x4D8F10` count avg=0.31. Dual not armed; wrote stereo=30. See header.<br>
 Kill → **`30`** or **`26`**. Next: find ~1×/frame **caller** of VsRet (not mid slots).
 
 **Comfort pack / Mode 27 (2026-07-24):** Best 3D so far = Mode 26 + user IPD. F6 subtle.
@@ -1044,9 +1616,9 @@ toggle).
 3. **Temporal alternating-eye** (frame L, frame R):
    - Per eye ~half update rate → user saw **~46 FPS** (was ~90).
    - BotW deliberately rejects alternating; for us only a spike, not a goal.
-4. **OpenVR IPD raw values are correct:**  
+4. **OpenVR IPD raw values are correct:**<br>
    `L=(-0.030,…)` `R=(+0.030,…)` sepX≈60 mm.
-5. **IPD via cam basis (right/up/−forward) was wrong** — right eye got negative X + large Y.  
+5. **IPD via cam basis (right/up/−forward) was wrong** — right eye got negative X + large Y.<br>
    Fix: head rotation × EyeToHead translation, then `OvrToGta`. After fix L/R opposite — fusion still not good (FOV/projection missing).
 6. **HMD FOV → `CCam+0x60` (~94°)** → freeze/black screen after load — **do not repeat** without a new plan.
 7. Missing **per-eye projection** (view offset only) is the most likely remaining cause of diplopia with correct parallax.
@@ -1078,16 +1650,16 @@ Rage cam matrix: `right`=X, `up`=Y=**Forward**, `at`=Z=**Up**.
 
 ## Hotkeys / UX
 
-- **F9** — view recenter (SteamVR zero + ped/veh heading baseline; 6DoF unchanged)  
-- **F10** — 6DoF translation origin reset (lean/strafe anchor only)  
-- **F6** — stereo scale · **F7** — WorldScale · **F8** — IPD cycle  
-- SteamVR dashboard auto-closes on restart / after OpenVR init (manual close still OK)  
-- Quick restart: `scripts/restart-gtaiv.*` (optional `-DirectExe` after RGLess)  
-- Faster start/launcher: `docs/STARTUP_SPEED.md`  
-- Inspiration (VC VR / C06alt): `docs/INSPIRATION_NOTES.md`  
+- **F9** — view recenter (SteamVR zero + ped/veh heading baseline; 6DoF unchanged)<br>
+- **F10** — 6DoF translation origin reset (lean/strafe anchor only)<br>
+- **F6** — stereo scale · **F7** — WorldScale · **F8** — IPD cycle<br>
+- SteamVR dashboard auto-closes on restart / after OpenVR init (manual close still OK)<br>
+- Quick restart: `scripts/restart-gtaiv.*` (optional `-DirectExe` after RGLess)<br>
+- Faster start/launcher: `docs/STARTUP_SPEED.md`<br>
+- Inspiration (VC VR / C06alt): `docs/INSPIRATION_NOTES.md`<br>
 
 
-- ntfy phone push on agent stop: topic `cursor-henning-atldv3m1iqosbzh2` @ `https://ntfy.sh`  
+- ntfy phone push on agent stop: topic `cursor-henning-atldv3m1iqosbzh2` @ `https://ntfy.sh`<br>
   Hook: `~/.cursor/hooks.json` → `hooks/ntfy-on-stop/run.cmd`
 
 ---
@@ -1102,7 +1674,7 @@ All share `cmp [edi+0x938], -1`, but different continuations:
 | **PhaseA** | `0x527EC0` | `…FF 0F 84 76 03 00 00 80 3D` | 30 | large stack `0x6D8` → **SceneToGBuffer candidate** |
 | **PhaseC** | `0x975D50` | `…FF 0F 84 77 02 00 00 8D 8F B0 00 00 00` | 39 | third phase |
 
-RTTI strings in exe: `.?AVCRenderPhaseDrawScene@@`, `.?AVCRenderPhaseDeferredLighting_SceneToGBuffer@@`.  
+RTTI strings in exe: `.?AVCRenderPhaseDrawScene@@`, `.?AVCRenderPhaseDeferredLighting_SceneToGBuffer@@`.<br>
 Virtual calls (no direct `E8` to the fn) → dual draw needs correct `this` per phase.
 
 **Mode 5** = phase probe (log only). **Tested 2026-07-23 — success.**
@@ -1121,9 +1693,9 @@ File `gtaiv_dxvk_vr.stereo` = **`6`**
 
 Flow (per frame, after warmup of `this` pointers + eye RTs):
 
-1. Natural: PhaseA + PhaseC with **Left** IPD  
-2. DrawScene hook: DrawScene Left → StretchRect RT_L → PhaseA+C+DrawScene **Right** → RT_R  
-3. EndScene: submit L/R when both RTs filled; otherwise mono fallback  
+1. Natural: PhaseA + PhaseC with **Left** IPD<br>
+2. DrawScene hook: DrawScene Left → StretchRect RT_L → PhaseA+C+DrawScene **Right** → RT_R<br>
+3. EndScene: submit L/R when both RTs filled; otherwise mono fallback<br>
 
 Kill switch: `0`. Log: `StereoSameFrame:`, `StereoSubmit: ... mode=6`.
 
@@ -1143,8 +1715,8 @@ Kill switch: `0`. Log: `StereoSameFrame:`, `StereoSubmit: ... mode=6`.
 
 ## Sensible next steps
 
-1. **Find GBuffer / execute** — not BB after BuildRenderList; RTs of deferred phase or real draw call.  
-2. Per-eye **projection** (without old FOV-freeze path).  
+1. **Find GBuffer / execute** — not BB after BuildRenderList; RTs of deferred phase or real draw call.<br>
+2. Per-eye **projection** (without old FOV-freeze path).<br>
 3. Optional: Mode 6 for debug only; daily use = Mode **0**.
 
 Stereo success criteria: parallax **and** fusion, acceptable FPS.
@@ -1153,9 +1725,9 @@ Stereo success criteria: parallax **and** fusion, acceptable FPS.
 
 ## Quick start checklist
 
-1. SteamVR on, dashboard closed  
-2. `gtaiv_dxvk_vr.stereo` = `0`  
-3. Start GTA → log: `CamMatrix: 4/4 hooked`, `armed after 360`, `MonoSubmit … errL=0`, **no** `StereoTemporal`  
-4. Expect FPS ~90  
+1. SteamVR on, dashboard closed<br>
+2. `gtaiv_dxvk_vr.stereo` = `0`<br>
+3. Start GTA → log: `CamMatrix: 4/4 hooked`, `armed after 360`, `MonoSubmit … errL=0`, **no** `StereoTemporal`<br>
+4. Expect FPS ~90<br>
 
 Kill switch on freeze: kill game → set stereo file to `0` → restart.

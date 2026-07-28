@@ -141,4 +141,29 @@ bool IsHmdPoseValid() {
   return g_valid.load();
 }
 
+bool SampleLateLatchHmdPose(vr::HmdMatrix34_t* out) {
+  if (!out)
+    return false;
+  vr::IVRSystem* sys = vr::VRSystem();
+  if (!sys)
+    return false;
+  // Prefer a short photon prediction when compositor is up; else "now" (0).
+  float predicted = 0.f;
+  if (vr::VRCompositor()) {
+    predicted = vr::VRCompositor()->GetFrameTimeRemaining();
+    if (predicted < 0.f)
+      predicted = 0.f;
+    if (predicted > 0.05f)
+      predicted = 0.05f;
+  }
+  vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount]{};
+  sys->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding, predicted, poses,
+                                       vr::k_unMaxTrackedDeviceCount);
+  const uint32_t hmd = vr::k_unTrackedDeviceIndex_Hmd;
+  if (!poses[hmd].bPoseIsValid || !poses[hmd].bDeviceIsConnected)
+    return false;
+  *out = poses[hmd].mDeviceToAbsoluteTracking;
+  return true;
+}
+
 }  // namespace asi

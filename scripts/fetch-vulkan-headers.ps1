@@ -16,7 +16,10 @@ $PinnedCommit = "8864cdc896bbc2a9b6eb36b3218fc9ef57908d77"
 $Repository = "https://github.com/KhronosGroup/Vulkan-Headers.git"
 
 function Get-ExactCommit([string]$Path) {
-  $commit = & git -C $Path rev-parse HEAD 2>$null
+  # Keep the trust exception local to this exact vendored checkout. This also
+  # works in restored/copied workspaces without changing the user's global Git
+  # configuration.
+  $commit = & git -c "safe.directory=$Path" -C $Path rev-parse HEAD 2>$null
   if ($LASTEXITCODE -ne 0) {
     throw "Vulkan-Headers directory is not a readable Git checkout: $Path"
   }

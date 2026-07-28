@@ -869,7 +869,8 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         sm == StereoMode::HeadOwnedCamStereoSwap ||
         sm == StereoMode::HeadOwnedCamStereoSoftGuard ||
         sm == StereoMode::OpenXrImmersiveMono ||
-        sm == StereoMode::OpenXrDrawSceneStereo)
+        sm == StereoMode::OpenXrDrawSceneStereo ||
+        IsCleanDualLookMove(sm))
       PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
 
     // Modes 45/46/47/48/49: Rage can revise a camera after CopyMat but before this already-safe
@@ -885,7 +886,8 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         sm == StereoMode::HeadOwnedCamStereoSwap ||
         sm == StereoMode::HeadOwnedCamStereoSoftGuard ||
         sm == StereoMode::OpenXrImmersiveMono ||
-        sm == StereoMode::OpenXrDrawSceneStereo) {
+        sm == StereoMode::OpenXrDrawSceneStereo ||
+        IsCleanDualLookMove(sm)) {
       RefreshLiveCamForStereoEye();
       static uint32_t s_headOwnedRefreshes = 0;
       const uint32_t refreshes = ++s_headOwnedRefreshes;
@@ -914,7 +916,8 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
            sm == StereoMode::HeadOwnedCamFullPose ||
            sm == StereoMode::HeadOwnedCamLeveledPitchFlip ||
            sm == StereoMode::HeadOwnedCamPitchStable ||
-           sm == StereoMode::HeadOwnedCamPedCoupled)
+           sm == StereoMode::HeadOwnedCamPedCoupled ||
+           IsCleanDualLookMove(sm))
               ? 1
               : 0);
   } __except (EXCEPTION_EXECUTE_HANDLER) {

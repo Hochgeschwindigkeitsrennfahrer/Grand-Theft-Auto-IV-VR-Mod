@@ -44,7 +44,19 @@ if ($LASTEXITCODE -ne 0) {
   throw "OpenXR host CMake configure failed."
 }
 
-& cmake --build $BuildDir --config $Configuration --target gtaiv_xr_host
+$pathRows = @(& cmd.exe /d /c "set path")
+$hasUpperPath = @($pathRows | Where-Object { $_ -cmatch "^PATH=" }).Count -gt 0
+$hasMixedPath = @($pathRows | Where-Object { $_ -cmatch "^Path=" }).Count -gt 0
+if ($hasUpperPath -and $hasMixedPath) {
+  # Some automation hosts inject both PATH and Path. MSBuild's .NET process
+  # launcher treats those as duplicate dictionary keys and refuses to start
+  # CL.exe. Remove only the duplicate uppercase entry in this child cmd.
+  $buildCommand = 'set "PATH=" && cmake --build "{0}" --config "{1}" --target gtaiv_xr_host' -f `
+    $BuildDir, $Configuration
+  & cmd.exe /d /s /c $buildCommand
+} else {
+  & cmake --build $BuildDir --config $Configuration --target gtaiv_xr_host
+}
 if ($LASTEXITCODE -ne 0) {
   throw "OpenXR host build failed."
 }

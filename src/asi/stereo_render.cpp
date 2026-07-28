@@ -4,8 +4,10 @@
 #include "hmd_pose.h"
 #include "log.h"
 #include "openxr_pose_client.h"
+#include "perf_debug.h"
 #include "stereo_config.h"
 #include "stereo_draw_patch.h"
+#include "stereo_dual.h"
 #include "stereo_eye.h"
 #include "stereo_proj.h"
 #include "ui_state.h"
@@ -77,6 +79,8 @@ std::atomic<uint32_t> g_mode44RtSuppressed{0};
 
 bool g_haveL = false;
 bool g_haveR = false;
+// Mode 133 monolook: one BB→L StretchRect; StereoTrySubmitEyes submits g_texL for both eyes.
+bool g_submitSameLBoth = false;
 bool g_loggedIpd = false;
 std::atomic<uint32_t> g_temporalFrames{0};
 std::atomic<uint32_t> g_sameFrameCount{0};
@@ -210,7 +214,8 @@ bool UsesFovComfortPath(StereoMode mode) {
          mode == StereoMode::HeadOwnedCamStereoAer ||
          mode == StereoMode::HeadOwnedCamStereoSwap ||
          mode == StereoMode::HeadOwnedCamStereoSoftGuard ||
-         mode == StereoMode::OpenXrImmersiveMono;
+         mode == StereoMode::OpenXrImmersiveMono ||
+         IsCleanDualLookMove(mode);
 }
 
 bool UsesTrueFovCanvasPublish(StereoMode mode) {
@@ -291,6 +296,10 @@ SoftGuardAction Mode53SoftGuardAction(float rotDeg, float moveCm) {
 
 std::atomic<uint32_t> g_mode53SoftGuard{0};
 std::atomic<uint32_t> g_mode53FullMono{0};
+
+// Mode 120: DrawScene×2 + HOLD state (see stereo_dual.cpp for cadence helpers).
+std::atomic<bool> g_mode120DualDead{false};
+std::atomic<uint32_t> g_mode120DualN{0};
 
 // ---- Mode 31: discover ~1×/frame VsRet walker → same-frame dual + VS patch ----
 enum class Mode31Phase : int {
@@ -4842,37 +4851,52 @@ bool SubmitEyeTexture(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye 
   t.eType = vr::TextureType_Vulkan;
   t.eColorSpace = vr::ColorSpace_Gamma;
 
-  // Mode 38: Luke Ross AER lesson — stamp capture-time HMD pose so SteamVR can
-  // reproject the stale eye (OpenVR #1253). Fall back to Submit_Default if pose missing.
+  // Mode 38: Luke Ross AER — stamp capture-time HMD pose so SteamVR can
+  // reproject the stale eye (OpenVR #1253). Mode 136: late-latch — sample pose
+  // immediately before Submit (not capture-time). Fall back to Submit_Default
+  // if pose missing.
   vr::EVRCompositorError err = vr::VRCompositorError_None;
-  const bool wantPose = UsesAerPoseSubmit(GetStereoMode());
-  const bool poseOk =
-      wantPose && ((eye == vr::Eye_Left) ? g_submitPoseLValid : g_submitPoseRValid);
-  if (poseOk) {
+  const StereoMode curMode = GetStereoMode();
+  const bool lateLatch = IsCleanDualLateLatch(curMode);
+  const bool wantPose = UsesAerPoseSubmit(curMode) || lateLatch;
+  vr::HmdMatrix34_t latePose{};
+  bool poseOk = false;
+  if (lateLatch)
+    poseOk = SampleLateLatchHmdPose(&latePose);
+  else if (wantPose)
+    poseOk = (eye == vr::Eye_Left) ? g_submitPoseLValid : g_submitPoseRValid;
+  if (wantPose && poseOk) {
     vr::VRTextureWithPose_t tp{};
     tp.handle = &vd;
     tp.eType = vr::TextureType_Vulkan;
     tp.eColorSpace = vr::ColorSpace_Gamma;
     tp.mDeviceToAbsoluteTracking =
-        (eye == vr::Eye_Left) ? g_submitPoseL : g_submitPoseR;
+        lateLatch ? latePose
+                  : ((eye == vr::Eye_Left) ? g_submitPoseL : g_submitPoseR);
     err = vr::VRCompositor()->Submit(eye, &tp, nullptr, vr::Submit_TextureWithPose);
     static uint32_t s_aer = 0;
-    if ((++s_aer) <= 8 || (s_aer % 300) == 0)
-      Log("AERPose: eye=%s submitWithPose=1 err=%d", eye == vr::Eye_Left ? "L" : "R",
-          static_cast<int>(err));
+    if ((++s_aer) <= 8 || (s_aer % 300) == 0) {
+      if (lateLatch)
+        Log("LateLatch: eye=%s TextureWithPose=1 err=%d",
+            eye == vr::Eye_Left ? "L" : "R", static_cast<int>(err));
+      else
+        Log("AERPose: eye=%s submitWithPose=1 err=%d", eye == vr::Eye_Left ? "L" : "R",
+            static_cast<int>(err));
+    }
     if (err != vr::VRCompositorError_None) {
       // Runtime may ignore pose (historic WMR bug) — still try default once.
       err = vr::VRCompositor()->Submit(eye, &t, nullptr, vr::Submit_Default);
       if (s_aer <= 8 || (s_aer % 300) == 0)
-        Log("AERPose: eye=%s pose-submit failed → Default err=%d",
-            eye == vr::Eye_Left ? "L" : "R", static_cast<int>(err));
+        Log("%s: eye=%s pose-submit failed → Default err=%d",
+            lateLatch ? "LateLatch" : "AERPose", eye == vr::Eye_Left ? "L" : "R",
+            static_cast<int>(err));
     }
   } else {
     if (wantPose) {
       static uint32_t s_miss = 0;
       if ((++s_miss) <= 4 || (s_miss % 300) == 0)
-        Log("AERPose: eye=%s pose missing → Submit_Default",
-            eye == vr::Eye_Left ? "L" : "R");
+        Log("%s: eye=%s pose missing → Submit_Default",
+            lateLatch ? "LateLatch" : "AERPose", eye == vr::Eye_Left ? "L" : "R");
     }
     // Fusion baseline: nullptr bounds + temporal IPD only.
     err = vr::VRCompositor()->Submit(eye, &t, nullptr, vr::Submit_Default);
@@ -5097,6 +5121,33 @@ bool RunOpenXrDrawSceneStereoGuarded(void* drawSelf, void* edx) {
   }
 }
 
+// Mode 120: synced sequential DrawScene x2 only (Praydog analogue). Never
+// BuildRootA x2. PhaseA/C already ran once; rebuild the world draw list left
+// then right with IPD. This remains the exact OpenVR fallback path.
+bool RunMode120DrawSceneDualGuarded(void* drawSelf, void* edx) {
+  if (!g_origBuild || !drawSelf || !g_device || !g_texL || !g_texR)
+    return false;
+  __try {
+    SetStereoEye(StereoEye::Left);
+    RefreshLiveCamForStereoEye();
+    g_origBuild(drawSelf, edx);
+    if (CopyBbToEyeCanvas(g_device, g_texL, vr::Eye_Left))
+      g_haveL = true;
+
+    SetStereoEye(StereoEye::Right);
+    RefreshLiveCamForStereoEye();
+    g_origBuild(drawSelf, edx);
+    if (CopyBbToEyeCanvas(g_device, g_texR, vr::Eye_Right))
+      g_haveR = true;
+
+    SetStereoEye(StereoEye::Left);
+    RefreshLiveCamForStereoEye();
+    return true;
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+}
+
 void __fastcall HookBuildRenderList(void* self, void* edx) {
   if (!g_origBuild)
     return;
@@ -5137,6 +5188,137 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
         "StereoOpenXR: DrawScene stereo capture failed; disabled for this "
         "run and native GTA continues (Mode55 remains the safe fallback)");
     g_origBuild(self, edx);
+    return;
+  }
+
+  // Mode 120–136: DrawScene×2 every N + HOLD off-ticks (hitchcut). No FPS HUD.
+  // 120=LKG dualn=2; 121=dualn=3; 122=dualn=4+look/pose HOLD; 123=fill; 124=zoom;
+  // 125=122+123; 126=123 fill + POSEHOLD + live BB; 127=126 + tighter POSEHOLD/dualn3;
+  // 128=127 fill/tight but HOLD last stereo on pose (no look-rate LIVELOOK);
+  // 129=look→force same-tick dual; calm dualn=3; pose→mono BB ≥200ms hyst;
+  // 130=look→identical BB both eyes ≥350ms hyst; calm dualn=3 HOLD;
+  // 131=130 + pitch-stable + 600ms + BB/3 + calm POSEHOLD (FAILED HMD starve);
+  // 132=131 pitch-stable but BB→both EVERY EndScene; calm dualn=3 HOLD;
+  // 133=FAILED same-tex L+R Submit (jump/fusion gone);
+  // 134=132-safe twin + dualn=3 HOLD (FAILED HMD freeze via stale HOLD);
+  // 135=ALWAYS-FRESH: everyN=1 dual; look/pose→BB×2; never bare HOLD.
+  if (IsCleanDualLookMove(mode)) {
+    if (g_mode120DualDead.load() || g_inDual.load() || !IsCamMatrixOverrideEnabled() ||
+        !g_device || !g_texL || !g_texR) {
+      g_origBuild(self, edx);
+      return;
+    }
+    static DWORD s_prev = 0;
+    static uint32_t s_gate = 0;
+    static uint32_t s_tick = 0;
+    const DWORD now = GetTickCount();
+    const DWORD gap = (s_prev != 0) ? (now - s_prev) : 0;
+    s_prev = now;
+    if (gap >= StereoDualHitchMs()) {
+      g_origBuild(self, edx);
+      // Mode 126/127/135 hitch: live BB (not stale HOLD). Mode 128–134: keep last L/R.
+      if (IsCleanDualAlwaysFresh(mode) || IsCleanDualFpsLiveLook(mode))
+        StereoDualMarkLiveLook();
+      else if (g_haveL && g_haveR)
+        StereoDualMarkHold();
+      PerfDebugNoteDrawScene(false, g_haveL && g_haveR, gap);
+      return;
+    }
+    // Mode 135: look (low) OR pose → fresh BB both eyes (never bare HOLD).
+    if (StereoDualShouldAlwaysFreshMono()) {
+      g_origBuild(self, edx);
+      StereoDualMarkLiveLook();
+      PerfDebugNoteDrawScene(false, false, gap);
+      return;
+    }
+    // Mode 131/132/133/134: sustained look → identical BB both eyes ≥600ms; pitch thresh > yaw.
+    if (StereoDualShouldMonoLookPitchHyst()) {
+      g_origBuild(self, edx);
+      StereoDualMarkLiveLook();
+      PerfDebugNoteDrawScene(false, false, gap);
+      return;
+    }
+    // Mode 130: look/pose → identical BB both eyes with ≥350ms hysteresis.
+    if (StereoDualShouldMonoLookHyst()) {
+      g_origBuild(self, edx);
+      StereoDualMarkLiveLook();
+      PerfDebugNoteDrawScene(false, false, gap);
+      return;
+    }
+    // Mode 129: pose budget → mono BB both eyes with ≥200ms hysteresis (caps cost).
+    if (StereoDualShouldPoseMonoHyst()) {
+      g_origBuild(self, edx);
+      StereoDualMarkLiveLook();
+      PerfDebugNoteDrawScene(false, false, gap);
+      return;
+    }
+    // Mode 126/127: look/pose → live BB both eyes (fixes Mode122 snap from stale HOLD).
+    if (StereoDualShouldLiveLook()) {
+      g_origBuild(self, edx);
+      StereoDualMarkLiveLook();
+      PerfDebugNoteDrawScene(false, false, gap);
+      return;
+    }
+    // Mode 128 / Mode 131/132/133/134 calm: pose budget → HOLD last stereo (no LIVELOOK mono /
+    // no look-rate; look uses monolook above — no mismatched HOLD pair). Mode 135 excluded.
+    if (StereoDualShouldPoseHoldStereo()) {
+      g_origBuild(self, edx);
+      if (g_haveL && g_haveR)
+        StereoDualMarkHold();
+      PerfDebugNoteDrawScene(false, g_haveL && g_haveR, gap);
+      return;
+    }
+    // Mode 122/125: look-rate / pose-budget stale HOLD before dual cadence.
+    if (StereoDualShouldLookHold()) {
+      g_origBuild(self, edx);
+      if (g_haveL && g_haveR)
+        StereoDualMarkHold();
+      PerfDebugNoteDrawScene(false, g_haveL && g_haveR, gap);
+      return;
+    }
+    if (s_gate < StereoDualGateNeed()) {
+      ++s_gate;
+      g_origBuild(self, edx);
+      return;
+    }
+    ++s_tick;
+    const uint32_t everyN = StereoDualEveryN();
+    // Mode 129 look: force same-tick dual (skip everyN HOLD → no L/R age desync).
+    const bool forceLookDual = StereoDualShouldForceLookDual();
+    if (!forceLookDual && (s_tick % everyN) != 0u) {
+      g_origBuild(self, edx);
+      // Mode 135 safety: never bare HOLD on off-tick (everyN should be 1).
+      if (IsCleanDualAlwaysFresh(mode))
+        StereoDualMarkLiveLook();
+      else if (g_haveL && g_haveR)
+        StereoDualMarkHold();
+      PerfDebugNoteDrawScene(false, g_haveL && g_haveR, gap);
+      return;
+    }
+    g_inDual.store(true);
+    const bool ok = RunMode120DrawSceneDualGuarded(self, edx);
+    g_inDual.store(false);
+    if (!ok) {
+      g_mode120DualDead.store(true);
+      g_haveL = g_haveR = false;
+      // Experiments (121+) fall back to LKG 120; Mode 120 keeps kill=51.
+      const int killMode =
+          (mode == StereoMode::CleanDualLookMove) ? 51 : 120;
+      Log("Mode%d: EXCEPTION in DrawScene dual — permanently disabled; wrote stereo=%d",
+          static_cast<int>(mode), killMode);
+      WriteStereoModeFile(killMode);
+      PerfDebugVrNote("CleanDual DrawScene dual EXCEPTION — fell back");
+      g_origBuild(self, edx);
+      return;
+    }
+    StereoDualMarkHold();
+    PerfDebugNoteDrawScene(true, true, gap);
+    const uint32_t n = ++g_mode120DualN;
+    if (n <= 6 || (n % 300) == 0)
+      Log("Mode%d: DRAWSCENE dual #%u haveL=%d haveR=%d sep=%.0fcm everyN=%u "
+          "(HOLD off-tick; kill=120/51/45/0)",
+          static_cast<int>(mode), n, g_haveL ? 1 : 0, g_haveR ? 1 : 0,
+          GetStereoSepMeters() * 100.f, everyN);
     return;
   }
 
@@ -5723,6 +5905,124 @@ bool InstallStereoRenderHooks() {
         "in ONE game tick; expect ~half FPS but no L/R jumping) ok=%d",
         g_ok.load() ? 1 : 0);
     Log("StereoRender: kill-switch - set gtaiv_dxvk_vr.stereo to 0 if freeze");
+    return g_ok.load();
+  }
+
+  if (IsCleanDualLookMove(mode)) {
+    // Mode 120 LKG / 121–132 experiments: Mode50-class FOV/RT + DrawScene dual.
+    // No AER temporal capture. No FPS HUD. Kill → 120 (good) / 51 / 45 / 0.
+    SetStereoEye(StereoEye::Left);
+    g_haveL = g_haveR = false;
+    g_mode30Phase.store(static_cast<int>(Mode30Phase::PairHold));
+    g_execDualDead.store(true);
+    g_mode120DualDead.store(false);
+    g_mode120DualN.store(0);
+    g_pairAwaitingR = false;
+    g_holdPoseLValid = g_holdPoseRValid = false;
+    g_submitPoseLValid = g_submitPoseRValid = false;
+    g_vsPatchOn.store(false);
+    ClearGameFovPairLatch();
+    StereoDualClearHold();
+    StereoDualClearLiveLook();
+    const bool fovOk = InstallFovRecomputeSiteHook();
+    g_ok = InstallAllThreePhases();
+    const int mid = static_cast<int>(mode);
+    if (mode == StereoMode::CleanDualAlwaysFresh) {
+      Log("StereoRender: mode %d CLEAN ALWAYS-FRESH (everyN=1 dual; look→BB→L+R EVERY; "
+          "POSEHOLD→fresh monolook; hitch→LIVELOOK; NEVER bare HOLD; NOT same-tex; "
+          "hitch 32; no AER; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else if (mode == StereoMode::CleanDualLateLatch) {
+      Log("StereoRender: mode %d CLEAN LATE-LATCH (Mode120 content dualn=2 HOLD; "
+          "NO monolook; every Submit TextureWithPose pose sampled immediately "
+          "before Submit; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else if (mode == StereoMode::CleanDualMonoLookBack132) {
+      Log("StereoRender: mode %d CLEAN BACK-132 FAILED HOLD freeze (prefer 135; BB→L AND "
+          "BB→R EVERY EndScene monolook; 132 pitch/hyst; NOT same-tex; calm POSEHOLD; "
+          "dualn=3; hitch 32; no AER; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else if (mode == StereoMode::CleanDualMonoLookHmdCheap) {
+      Log("StereoRender: mode %d CLEAN MONOLOOK-HMD-CHEAP FAILED (same-tex L+R; "
+          "prefer 134; BB→L only + Submit same tex; calm POSEHOLD; dualn=3; hitch 32; "
+          "no AER; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else if (mode == StereoMode::CleanDualMonoLookHmdEvery) {
+      Log("StereoRender: mode %d CLEAN MONOLOOK-HMD-EVERY (131 pitch-stable; "
+          "BB→both EVERY EndScene; calm POSEHOLD last stereo; dualn=3; hitch 32; "
+          "no AER; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else if (mode == StereoMode::CleanDualMonoLookPitch) {
+      Log("StereoRender: mode %d CLEAN MONOLOOK-PITCH (130 monolook; pitch≥2.5° + "
+          "sustain3; ≥600ms hyst; BB→both every 3 frames; calm POSEHOLD last stereo; "
+          "dualn=3; hitch 32; no AER; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else if (mode == StereoMode::CleanDualMonoLook) {
+      Log("StereoRender: mode %d CLEAN MONOLOOK (128 fill/tight; look→identical BB "
+          "both eyes ≥350ms hyst; calm dualn=3 HOLD; pose extends mono; hitch 32; "
+          "no LOOK-FORCE dual; no AER; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else if (mode == StereoMode::CleanDualLrSync) {
+      Log("StereoRender: mode %d CLEAN L/R SYNC (128 fill/tight; look→force same-tick "
+          "dual; calm dualn=3 HOLD; pose→mono BB ≥200ms hyst; hitch 32; no mismatched "
+          "HOLD pair; no AER; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else if (mode == StereoMode::CleanDualFpsHoldStereo) {
+      Log("StereoRender: mode %d CLEAN FPS NO-LIVELOOK (127 fill + POSEHOLD≥12ms/5 "
+          "HARD≥24ms/8; dualn=3; hitch 32; pose→HOLD last stereo; no look-rate "
+          "LIVELOOK; no AER; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else if (mode == StereoMode::CleanDualFpsPoseTight) {
+      Log("StereoRender: mode %d CLEAN FPS+LIVELOOK TIGHT (126 path + POSEHOLD≥12ms/5 "
+          "HARD≥24ms/8; dualn=3; hitch 32; no stale LOOKHOLD; no AER; no FPS HUD) "
+          "ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else if (mode == StereoMode::CleanDualFpsLiveLook) {
+      Log("StereoRender: mode %d CLEAN FPS+LIVELOOK (123 fill + POSEHOLD + live BB "
+          "both eyes; no stale LOOKHOLD; no AER; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else if (mode == StereoMode::CleanDualPerfLookHold) {
+      Log("StereoRender: mode %d CLEAN PERF LOOKHOLD (dualn=4; look/pose HOLD; "
+          "no AER; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else if (mode == StereoMode::CleanDualPerfFillCombo) {
+      Log("StereoRender: mode %d CLEAN PERF+FILL COMBO (dualn=4 LOOKHOLD + "
+          "cover-matched fovadd; no AER; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else if (mode == StereoMode::CleanDualFillMatch) {
+      Log("StereoRender: mode %d CLEAN FILLMATCH (cover-matched fovadd; H≈100%%; "
+          "no SoftInset; no AER; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else if (mode == StereoMode::CleanDualZoomScale) {
+      Log("StereoRender: mode %d CLEAN ZOOMSCALE (MatchH6 default; F7 dezoom ladder; "
+          "no AER; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else if (mode == StereoMode::CleanDualLookMoveDualN3) {
+      Log("StereoRender: mode %d CLEAN DUAL+LOOKMOVE dualn=3 EXPERIMENT (HOLD; "
+          "same as 120; no AER; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=120 (good), 51, 45, or 0");
+    } else {
+      Log("StereoRender: mode %d CLEAN DUAL+LOOKMOVE LKG (DrawScene×2 everyN + HOLD; "
+          "head-owned; pedCoupled=0; motionGuard=0; no AER; no FPS HUD) ok=%d fovSite=%d",
+          mid, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
+      Log("StereoRender: kill-switch - stereo=51, 45, or 0");
+    }
     return g_ok.load();
   }
 
@@ -6319,7 +6619,80 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
     return;
   }
 
-    // Mode 30 / 35..43: pair-hold temporal only (device-VS dual proven dead — mode30dev=0).
+    // Mode 120–136: Dual path owns L/R via DrawScene (runs before EndScene).
+    // HOLD → skip TemporalCapture. Mode126/127 LIVELOOK + Mode129–135 mono →
+    // StretchRect live BB (Mode131 only: every 3rd mono frame; Mode133: BB→L once FAILED).
+    // Mode 135: liveLook always BB→L AND BB→R (132 style); never same-tex.
+    if (IsCleanDualLookMove(mode)) {
+      g_dualDoneThisFrame = false;
+      IDirect3DSurface9* bb = nullptr;
+      if (FAILED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb)
+        return;
+      D3DSURFACE_DESC desc{};
+      bb->GetDesc(&desc);
+      bb->Release();
+      uint32_t rtW = desc.Width, rtH = desc.Height;
+      ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
+      EnsureEyeRts(device, rtW, rtH);
+      const bool liveLook = StereoDualLiveLookActive();
+      StereoDualClearLiveLook();
+      const bool hold = StereoDualHoldActive();
+      StereoDualClearHold();
+      // Mode 131 mono streak: reset when not in liveLook so next enter forces BB copy.
+      // Mode 132/134/135 deliberately have NO throttle — StretchRect×2 every mono EndScene.
+      // Mode 133 same-tex path kept for A/B only (FAILED fusion).
+      static bool s_mono131Streak = false;
+      if (!liveLook) {
+        s_mono131Streak = false;
+        g_submitSameLBoth = false;
+      }
+      if (liveLook) {
+        // Mode 131 ONLY: StretchRect BB→L+R every EndScene was expensive (Mode130 dips
+        // ~50–56 FPS during monolook). Refresh live BB every 3rd mono frame; reuse
+        // last identical L/R otherwise. FAILED: HMD starved while Present stayed ~90.
+        // Mode 132/134/135: skip this throttle — every-frame StretchRect×2 during mono.
+        // Mode 133: every-frame ONE StretchRect BB→L; Submit same tex for both eyes (FAILED).
+        if (IsCleanDualMonoLookPitch(mode)) {
+          if (s_mono131Streak && g_haveL && g_haveR) {
+            static uint32_t s_monoRefresh = 0;
+            if ((++s_monoRefresh % 3u) != 0u)
+              return;
+          } else {
+            s_mono131Streak = true;
+          }
+        }
+        if (IsCleanDualMonoLookHmdCheap(mode)) {
+          // FAILED path kept for A/B: BB→L once; OpenVR Submit same handle L+R.
+          const bool okL = CopyBbToEyeCanvas(device, g_texL, vr::Eye_Left);
+          if (okL) {
+            g_haveL = g_haveR = true;
+            g_submitSameLBoth = true;
+          }
+          static uint32_t s_cheapN = 0;
+          const uint32_t n = ++s_cheapN;
+          if (n <= 6 || (n % 300) == 0)
+            Log("Mode133: EndScene LIVELOOK BB→L same-Submit #%u ok=%d", n, okL ? 1 : 0);
+          return;
+        }
+        // Mode 132/134/135 (+130/129 LIVELOOK): same BB → L and R (never same-tex Submit).
+        g_submitSameLBoth = false;
+        const bool okL = CopyBbToEyeCanvas(device, g_texL, vr::Eye_Left);
+        const bool okR = CopyBbToEyeCanvas(device, g_texR, vr::Eye_Right);
+        if (okL && okR)
+          g_haveL = g_haveR = true;
+        static uint32_t s_liveN = 0;
+        const uint32_t n = ++s_liveN;
+        if (n <= 6 || (n % 300) == 0)
+          Log("Mode%d: EndScene LIVELOOK BB→both eyes #%u ok=%d",
+              static_cast<int>(mode), n, (okL && okR) ? 1 : 0);
+        return;
+      }
+      if (hold || (g_haveL && g_haveR))
+        return;
+      // Pre-gate mono: wait for first dual; do not AER temporal.
+      return;
+    }
+
     if (mode == StereoMode::PhaseDualDeviceVs || mode == StereoMode::FovRecomputeSite ||
         mode == StereoMode::FovRecomputeTrueCanvas || mode == StereoMode::FovCanvasComfort ||
         mode == StereoMode::AerPoseSubmit || mode == StereoMode::FovCanvasLowMotion ||
@@ -6483,7 +6856,8 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
       mode != StereoMode::HeadOwnedCamStereoAlways &&
       mode != StereoMode::HeadOwnedCamStereoAer &&
       mode != StereoMode::HeadOwnedCamStereoSwap &&
-      mode != StereoMode::HeadOwnedCamStereoSoftGuard)
+      mode != StereoMode::HeadOwnedCamStereoSoftGuard &&
+      !IsCleanDualLookMove(mode))
     return false;
   if (!device || !interop || !g_texL || !g_texR)
     return false;
@@ -6495,10 +6869,16 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
   interop->FlushRenderingCommands();
   interop->LockSubmissionQueue();
   bool okL = false, okR = false;
+  const bool sameL = g_submitSameLBoth;
   if (mode == StereoMode::FusionSwap || mode == StereoMode::HeadOwnedCamStereoSwap) {
     // Diagnostic: feed captured-Left texture to Right eye and vice versa.
     okL = SubmitEyeTexture(device, g_texR, vr::Eye_Left, interop);
     okR = SubmitEyeTexture(device, g_texL, vr::Eye_Right, interop);
+  } else if (sameL) {
+    // Mode 133 FAILED monolook: same Vulkan image for both eyes (kept for A/B only).
+    okL = SubmitEyeTexture(device, g_texL, vr::Eye_Left, interop);
+    okR = SubmitEyeTexture(device, g_texL, vr::Eye_Right, interop);
+    g_submitSameLBoth = false;
   } else {
     okL = SubmitEyeTexture(device, g_texL, vr::Eye_Left, interop);
     okR = SubmitEyeTexture(device, g_texR, vr::Eye_Right, interop);
@@ -6507,9 +6887,10 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
 
   static uint32_t s_n = 0;
   if ((++s_n) <= 8 || (s_n % 120) == 0)
-    Log("StereoSubmit: L=%d R=%d mode=%d swap=%d", okL ? 1 : 0, okR ? 1 : 0,
+    Log("StereoSubmit: L=%d R=%d mode=%d swap=%d sameL=%d", okL ? 1 : 0, okR ? 1 : 0,
         static_cast<int>(mode),
-        (mode == StereoMode::FusionSwap || mode == StereoMode::HeadOwnedCamStereoSwap) ? 1 : 0);
+        (mode == StereoMode::FusionSwap || mode == StereoMode::HeadOwnedCamStereoSwap) ? 1 : 0,
+        sameL ? 1 : 0);
   return okL && okR;
 }
 

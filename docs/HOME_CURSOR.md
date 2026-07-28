@@ -41,9 +41,18 @@ Offline already prepared: glue stubs (`src/gtaiv/`), `deploy.ps1`, `docs/IRONWOL
 
 ## 1. One-time: install software
 
+**Preferred (new PC):** one script — see **`docs/NEW_PC_SETUP.md`**.
+
+```powershell
+cd <path-to>\gtaiv-dxvk-vr
+.\scripts\setup-dev-pc.ps1
+```
+
+That installs Git / VS2022 C++ / Python (via winget) and fetches MinHook + OpenVR **v2.12.14** + the DXVK submodule.
+
 | Tool | Purpose | Note |
 |------|---------|------|
-| [Cursor](https://cursor.com) | AI coding | Open this folder |
+| [Cursor](https://cursor.com) **Desktop** (local agent) | AI coding on this PC | Open this folder — **not** a Cloud Agent for daily build/test |
 | [Git for Windows](https://git-scm.com/download/win) | Submodules, commits | "Git from command line" ok |
 | [Visual Studio 2022](https://visualstudio.microsoft.com/) | Build C++ x86 | Workload **Desktop development with C++** |
 | Vulkan SDK (optional at first) | DXVK build | Add later if build asks |
@@ -52,7 +61,7 @@ Offline already prepared: glue stubs (`src/gtaiv/`), `deploy.ps1`, `docs/IRONWOL
 | GTA IV **Complete Edition** | Target game | Singleplayer / offline while developing |
 | [FusionFix for GTA IV CE](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix) | ASI loader + CE fixes | In graphics options **Graphics API = DirectX 9** when our `d3d9.dll` is active (not FusionFix Vulkan) |
 
-**Work PC:** submodules/GitHub preferably at home (network). Local builds/tests ok if tools are already there.
+**Work on this Windows PC locally.** Cloud Agents cannot install VS/SteamVR or run `GTAIV.exe` on your machine.
 
 ---
 
@@ -141,13 +150,13 @@ Rule: **one change per test** — otherwise you won't know what broke.
 
 ## 8. "Home Day 1" checklist
 
-- [ ] Cursor shows folder `gtaiv-dxvk-vr`  
-- [ ] VS2022 C++ + Git installed  
-- [ ] SteamVR + Reverb G2 ok  
-- [ ] FusionFix in GTA IV CE  
-- [ ] Chat prompt from section 3 used  
-- [ ] `.\scripts\init-submodules.ps1` succeeded  
-- [ ] Next agent step: x86 build of flat `d3d9.dll`  
+- [ ] Cursor **Desktop** shows folder `gtaiv-dxvk-vr` (local agent, not Cloud)
+- [ ] `.\scripts\setup-dev-pc.ps1` succeeded (or VS2022 C++ + Git installed by hand)
+- [ ] `.\scripts\build-asi.ps1` produced `out-asi\gtaiv_dxvk_vr.asi`
+- [ ] SteamVR + Reverb G2 ok
+- [ ] FusionFix in GTA IV CE + stock DXVK 3.0.2 flat ok
+- [ ] Chat prompt from section 3 used in a **local** agent
+- [ ] Next: deploy ASI / headset test (see `docs/CURRENT-STATE.md`)
 
 ---
 

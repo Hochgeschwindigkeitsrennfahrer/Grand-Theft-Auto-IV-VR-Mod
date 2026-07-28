@@ -15,7 +15,8 @@ $PinnedCommit = "5267613edf3d937e3d77556a106a65c2f82b25c6"
 $Repository = "https://github.com/KhronosGroup/OpenXR-SDK.git"
 
 function Get-ExactCommit([string]$Path) {
-  $commit = & git -C $Path rev-parse HEAD 2>$null
+  # Scope trust to this exact vendored checkout; never alter global Git config.
+  $commit = & git -c "safe.directory=$Path" -C $Path rev-parse HEAD 2>$null
   if ($LASTEXITCODE -ne 0) {
     throw "OpenXR SDK directory is not a readable Git checkout: $Path"
   }
@@ -28,7 +29,7 @@ if (Test-Path $Destination) {
     throw "OpenXR SDK mismatch at '$Destination'. Expected $PinnedTag ($PinnedCommit), found $actual. Remove or move that dependency directory, then rerun."
   }
 
-  [string]$actualTagObject = & git -C $Destination rev-parse $PinnedTag
+  [string]$actualTagObject = & git -c "safe.directory=$Destination" -C $Destination rev-parse $PinnedTag
   if ($LASTEXITCODE -ne 0) {
     throw "OpenXR SDK tag '$PinnedTag' is missing from $Destination."
   }
@@ -55,7 +56,7 @@ if ($actual -ne $PinnedCommit) {
   throw "OpenXR SDK tag verification failed. Expected $PinnedCommit, got $actual."
 }
 
-[string]$actualTagObject = & git -C $Destination rev-parse $PinnedTag
+[string]$actualTagObject = & git -c "safe.directory=$Destination" -C $Destination rev-parse $PinnedTag
 if ($LASTEXITCODE -ne 0) {
   throw "OpenXR SDK clone is missing tag '$PinnedTag'."
 }

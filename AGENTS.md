@@ -37,6 +37,7 @@ separate x64 host; OpenVR remains the fallback.
 
 | File | When to read |
 |------|--------------|
+| `docs/NEW_PC_SETUP.md` | Fresh Windows PC — tools + deps |
 | `docs/HOME_CURSOR.md` | User setup at home |
 | `docs/CURRENT-STATE.md` | Status / Next |
 | `docs/VR_STRATEGY.md` | Interop instead of IronWolf |

@@ -3,8 +3,11 @@
 #include "hmd_look.h"
 #include "hmd_pose.h"
 #include "log.h"
+#include "look_move.h"
 #include "ped_hide.h"
+#include "perf_debug.h"
 #include "stereo_config.h"
+#include "stereo_dual.h"
 #include "stereo_render.h"
 #include "vr_display.h"
 #include "vr_move.h"
@@ -213,18 +216,35 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
     vr::VRCompositor()->CompositorBringToFront();
 
   vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount]{};
+  static LARGE_INTEGER s_poseQpf{};
+  if (s_poseQpf.QuadPart == 0)
+    QueryPerformanceFrequency(&s_poseQpf);
+  LARGE_INTEGER poseT0{}, poseT1{};
+  QueryPerformanceCounter(&poseT0);
   const vr::EVRCompositorError poseErr =
       vr::VRCompositor()->WaitGetPoses(poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
+  QueryPerformanceCounter(&poseT1);
+  const double poseMs =
+      (s_poseQpf.QuadPart > 0)
+          ? (1000.0 * static_cast<double>(poseT1.QuadPart - poseT0.QuadPart) /
+             static_cast<double>(s_poseQpf.QuadPart))
+          : 0.0;
+  PerfDebugOnPoseWait(poseMs, static_cast<int>(poseErr));
+  StereoDualNotePoseMs(poseMs);
   if (poseErr == vr::VRCompositorError_DoNotHaveFocus) {
     vr::VRCompositor()->CompositorBringToFront();
     // One more async dashboard close if still open (max 2 total; no OpenVR
     // WaitGetPoses/Submit from any other thread).
     TryCloseSteamVrDashboard();
+    PerfDebugVrNote("WaitGetPoses DoNotHaveFocus — CompositorBringToFront");
+  } else if (poseErr != vr::VRCompositorError_None) {
+    PerfDebugVrNote("WaitGetPoses err=%d", static_cast<int>(poseErr));
   }
   UpdateHmdPose(poses, vr::k_unMaxTrackedDeviceCount);
 
   StereoRenderOnDevice(device);
   UpdateGameFovFromDevice(device);
+  TryApplyCoverMatchedFovAdd();  // Mode 123 once cover FOV known
 
   // Always ask — StereoTrySubmitEyes has the full mode + haveL/R gate. A second
   // mode list here went stale (mode 26 captured canvases but never submitted →
@@ -248,6 +268,12 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
         static_cast<int>(eL), static_cast<int>(eR),
         vr::VRCompositor()->CanRenderScene() ? 1 : 0, stereoSubmitted ? 1 : 0);
   }
+  if (eL != vr::VRCompositorError_None || eR != vr::VRCompositorError_None) {
+    PerfDebugVrNote("Submit errL=%d errR=%d stereo=%d n=%u", static_cast<int>(eL),
+                    static_cast<int>(eR), stereoSubmitted ? 1 : 0, n);
+  }
+  // Sampled perf/mem (~1.5–2s) — no per-frame I/O, no FPS HUD.
+  PerfDebugOnPresent(stereoSubmitted, false, StereoDualHoldActive(), 0);
 
   PollRecenterHotkey();
   PollCamHotkeys();
@@ -260,7 +286,7 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   constexpr uint32_t kCamAfter = 360;
   if (n > kLookAfter) {
     ApplyHmdMouseLook(poses, vr::k_unMaxTrackedDeviceCount);
-    UpdateVrMoveAndStick();  // head-directed walk + right-stick camera yaw
+    UpdateLookMove();  // stick yaw + optional HMD→ped heading (Mode120 forces ON)
   }
   if (n == kCamAfter) {
     if (InstallCamMatrixHooks()) {
