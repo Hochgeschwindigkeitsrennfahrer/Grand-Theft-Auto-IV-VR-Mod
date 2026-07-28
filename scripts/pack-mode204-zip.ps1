@@ -95,6 +95,18 @@ if ($cacheSrc) {
 dxvk.enableAsync = true
 "@ | Set-Content -LiteralPath (Join-Path $Drop "dxvk.conf") -Encoding ASCII
 
+# Luke Ross-style square aspect (inactive by default — rename to commandline.txt to use)
+$squareCmd = @"
+-windowed
+-width 1440
+-height 1440
+-norestrictions
+"@
+Set-Content -LiteralPath (Join-Path $Drop "commandline.txt.vr-square") -Value $squareCmd.TrimEnd() -Encoding ASCII
+# Also ship ready-to-use name so copy-all enables square; friend can rename off for widescreen
+Set-Content -LiteralPath (Join-Path $Drop "commandline.txt") -Value $squareCmd.TrimEnd() -Encoding ASCII
+Copy-Item (Join-Path $Drop "commandline.txt.vr-square") (Join-Path $Pre "commandline.txt.vr-square") -Force
+
 # --- Mode 204 knobs (friend-safe vres; live often used 3884) ---
 $configs = @{
   "gtaiv_dxvk_vr.stereo"      = "204"

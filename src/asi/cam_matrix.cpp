@@ -405,9 +405,27 @@ bool ResolvePedGetBonePos() {
 
 // Eye pivot from ped HEAD bone via CE Vec3 thiscall.
 // Dual L/R must share one sample — Mode193 enables dual cam freeze (pairFreeze).
+// Mode216: SampleDeferredHeadBoneEye calls this once per EndScene; cam bake only
+// reads g_deferredBoneEye (never GetBonePos mid-DrawScene).
 Vec4 g_stickyBoneEye{};
 Vec4 g_stickyBoneRoot{};
 bool g_haveStickyBoneEye = false;
+
+Vec4 g_deferredBoneEye{};
+Vec4 g_deferredBoneRoot{};
+bool g_haveDeferredBoneEye = false;
+DWORD g_deferredBoneTick = 0;
+uint32_t g_deferredSampleOk = 0;
+uint32_t g_deferredSampleFail = 0;
+// Mode216: adaptive track — stick on stairs/crouch, damp walk bob.
+Vec4 g_deferredWorldEye{};
+bool g_haveDeferredWorldEye = false;
+Vec4 g_deferredSmoothOff{};  // smoothed (bone - root)
+bool g_haveDeferredSmoothOff = false;
+float g_deferredSmoothRootZ = 0.f;
+float g_deferredSmoothRootX = 0.f;
+float g_deferredSmoothRootY = 0.f;
+bool g_haveDeferredSmoothRootZ = false;
 
 bool TryGetPedHeadBoneEye(Vec4* outEye) {
   if (!outEye || !g_FindPlayerPed || g_boneThiscallDead)
@@ -450,6 +468,12 @@ bool TryGetPedHeadBoneEye(Vec4* outEye) {
   __try {
     g_pedGetBonePos(ped, xyz, static_cast<uint32_t>(kBoneHead));
   } __except (EXCEPTION_EXECUTE_HANDLER) {
+    // Mode216: one AV → kill bone for the session (height fallback). SEH does not
+    // save a stack-smash, but catches plain AVs from early/bad ped state.
+    if (IsOursFpDeferredHeadBone(GetStereoMode())) {
+      g_boneThiscallDead = true;
+      Log("CamMatrix: deferred HEAD SEH — bone DISABLED for session (use height)");
+    }
     if (g_haveStickyBoneEye) {
       *outEye = g_stickyBoneEye;
       return true;
@@ -519,6 +543,116 @@ bool TryGetPedHeadBoneEye(Vec4* outEye) {
   return true;
 }
 
+bool TryReadPedRoot(Vec4* outRoot) {
+  if (!outRoot || !g_FindPlayerPed)
+    return false;
+  void* ped = g_FindPlayerPed(0);
+  if (!ped)
+    return false;
+  auto* pMat = *reinterpret_cast<Matrix44**>(reinterpret_cast<uint8_t*>(ped) + 0x20);
+  if (pMat) {
+    *outRoot = pMat->pos;
+  } else {
+    const float* t = reinterpret_cast<const float*>(reinterpret_cast<uint8_t*>(ped) + 0x10);
+    outRoot->x = t[0];
+    outRoot->y = t[1];
+    outRoot->z = t[2];
+    outRoot->w = 1.f;
+  }
+  return SaneWorldPos(*outRoot);
+}
+
+bool TryReadPedBasis(Vec4* outRoot, float* fwdX, float* fwdY, float* fwdZ, float* upX,
+                     float* upY, float* upZ) {
+  if (!outRoot || !g_FindPlayerPed)
+    return false;
+  void* ped = g_FindPlayerPed(0);
+  if (!ped)
+    return false;
+  auto* pMat = *reinterpret_cast<Matrix44**>(reinterpret_cast<uint8_t*>(ped) + 0x20);
+  if (!pMat) {
+    if (!TryReadPedRoot(outRoot))
+      return false;
+    if (fwdX) {
+      *fwdX = 0.f;
+      *fwdY = 1.f;
+      *fwdZ = 0.f;
+    }
+    if (upX) {
+      *upX = 0.f;
+      *upY = 0.f;
+      *upZ = 1.f;
+    }
+    return true;
+  }
+  *outRoot = pMat->pos;
+  if (!SaneWorldPos(*outRoot))
+    return false;
+  // RAGE: up = forward, at = world-up.
+  if (fwdX) {
+    float fx = pMat->up.x, fy = pMat->up.y, fz = pMat->up.z;
+    const float len = std::sqrt(fx * fx + fy * fy + fz * fz);
+    if (len > 1e-4f) {
+      *fwdX = fx / len;
+      *fwdY = fy / len;
+      *fwdZ = fz / len;
+    } else {
+      *fwdX = 0.f;
+      *fwdY = 1.f;
+      *fwdZ = 0.f;
+    }
+  }
+  if (upX) {
+    float ux = pMat->at.x, uy = pMat->at.y, uz = pMat->at.z;
+    const float len = std::sqrt(ux * ux + uy * uy + uz * uz);
+    if (len > 1e-4f) {
+      *upX = ux / len;
+      *upY = uy / len;
+      *upZ = uz / len;
+    } else {
+      *upX = 0.f;
+      *upY = 0.f;
+      *upZ = 1.f;
+    }
+  }
+  return true;
+}
+
+bool TryGetDeferredHeadBoneEyeCached(Vec4* outEye) {
+  if (!outEye || !g_haveDeferredWorldEye)
+    return false;
+  Vec4 root{};
+  if (TryReadPedRoot(&root)) {
+    const float dx = root.x - g_deferredBoneRoot.x;
+    const float dy = root.y - g_deferredBoneRoot.y;
+    const float dz = root.z - g_deferredBoneRoot.z;
+    if (dx * dx + dy * dy + dz * dz >= 4.f) {
+      g_haveDeferredWorldEye = false;
+      g_haveDeferredBoneEye = false;
+      g_haveDeferredSmoothOff = false;
+      g_haveDeferredSmoothRootZ = false;
+      return false;
+    }
+  }
+  // Dual L/R share the eye frozen at sample time (before HookDrawWalk dual).
+  *outEye = g_deferredWorldEye;
+  outEye->w = 1.f;
+  return SaneWorldPos(*outEye);
+}
+
+// Fast catch-up on big errors (stairs / crouch), heavy damp on small bob.
+float AdaptiveFollowAlpha(float errAbs, float aBob, float aMove, float bobThresh,
+                          float moveThresh) {
+  if (!(errAbs >= 0.f))
+    return aBob;
+  if (errAbs <= bobThresh)
+    return aBob;
+  if (errAbs >= moveThresh)
+    return aMove;
+  const float t = (errAbs - bobThresh) / (moveThresh - bobThresh);
+  return aBob + t * (aMove - aBob);
+}
+
 // Ped-fixed eye-center (Mode 155+) BEFORE 6DoF / camoff / IPD.
 bool TryGetPedEyeCenterBase(Vec4* outEye) {
   if (!g_FindPlayerPed || !outEye)
@@ -529,7 +663,30 @@ bool TryGetPedEyeCenterBase(Vec4* outEye) {
   const StereoMode sm = GetStereoMode();
   const bool inVeh = IsPlayerInVehicleSticky();
 
-  // Mode 193: stick to HEAD bone via CE thiscall (crouch/sprint).
+  // Mode 216: always model-centered HEAD (foot + car + enter/exit soft scenes).
+  // Never skip for vehicle — keep bone pivot through jack/enter/exit when ped exists.
+  if (IsOursFpDeferredHeadBone(sm)) {
+    if (TryGetDeferredHeadBoneEyeCached(outEye))
+      return true;
+    // Height fallback: root + eyeH only (no foot/car forward nudge).
+    const float kEyeH = 0.65f;
+    auto* pMat = *reinterpret_cast<Matrix44**>(reinterpret_cast<uint8_t*>(ped) + 0x20);
+    if (!pMat) {
+      const float* t = reinterpret_cast<const float*>(reinterpret_cast<uint8_t*>(ped) + 0x10);
+      outEye->x = t[0];
+      outEye->y = t[1];
+      outEye->z = t[2] + kEyeH;
+      outEye->w = 1.f;
+    } else {
+      outEye->x = pMat->pos.x + pMat->at.x * kEyeH;
+      outEye->y = pMat->pos.y + pMat->at.y * kEyeH;
+      outEye->z = pMat->pos.z + pMat->at.z * kEyeH;
+      outEye->w = 1.f;
+    }
+    return SaneWorldPos(*outEye);
+  }
+
+  // Mode 193: stick to HEAD bone via CE thiscall (crouch/sprint) — mid-draw path.
   if (IsOursFpHeadBoneCam(sm) && !inVeh) {
     if (TryGetPedHeadBoneEye(outEye))
       return true;
@@ -748,21 +905,24 @@ void ApplyHmdToCam(Matrix44* mat) {
     }
   }
 
-  const float eyeFwd = eyeCenter ? 0.f : GetEyeForwardMeters();
+  const float eyeFwd =
+      (eyeCenter || IsOursFpDeferredHeadBone(sm)) ? 0.f : GetEyeForwardMeters();
   eye.x += fx * eyeFwd;
   eye.y += fy * eyeFwd;
   eye.z += fz * eyeFwd;
 
   // Inspiration FirstPerson.ini FPX/FPY/FPZ (our units: cm via gtaiv_dxvk_vr.camoff).
+  // Mode216: model-centered only — ignore camoff + vehcamoff (foot/car nudges OFF).
   float offR = 0.f, offF = 0.f, offU = 0.f;
-  GetCamOffsetMeters(&offR, &offF, &offU);
-  // Mode 164/165 in vehicle only: extra rearward offset (vehcamoff). Cleared on foot.
-  if (IsOursFpInCarHead(sm) && IsPlayerInVehicleSticky()) {
-    float vr = 0.f, vf = 0.f, vu = 0.f;
-    GetVehicleCamOffsetMeters(&vr, &vf, &vu);
-    offR += vr;
-    offF += vf;
-    offU += vu;
+  if (!IsOursFpDeferredHeadBone(sm)) {
+    GetCamOffsetMeters(&offR, &offF, &offU);
+    if (IsOursFpInCarHead(sm) && IsPlayerInVehicleSticky()) {
+      float vr = 0.f, vf = 0.f, vu = 0.f;
+      GetVehicleCamOffsetMeters(&vr, &vf, &vu);
+      offR += vr;
+      offF += vf;
+      offU += vu;
+    }
   }
   if (offR != 0.f || offF != 0.f || offU != 0.f) {
     eye.x += rx * offR + fx * offF + ux * offU;
@@ -770,8 +930,10 @@ void ApplyHmdToCam(Matrix44* mat) {
     eye.z += rz * offR + fz * offF + uz * offU;
   }
 
-  // Inspiration-style head/hair hide (CE SetDraw helper — not EndScene natives).
-  UpdatePedHeadHide();
+  // Inspiration-style head/hair hide. Mode216: once per deferred sample (not every
+  // CopyMat) — hide thrash on the 204 dual path looked like model spazz.
+  if (!IsOursFpDeferredHeadBone(sm))
+    UpdatePedHeadHide();
 
   // Mode 178+: freeze FULL pre-IPD cam (basis+center) across L→R; only ±IPD differs.
   if (g_dualCamFreeze.load() && g_freezeFullBasis) {
@@ -871,6 +1033,43 @@ void ApplyHmdToCam(Matrix44* mat) {
       eye.z += ipdZ;
     } else {
       ipdX = ipdY = ipdZ = 0.f;
+    }
+
+    // Mode 210/211/215: toe-in so optical axes meet ahead (near fusion try).
+    // 210/215 ≈ 1.5m; 211 stronger ≈ 0.85m (dash/hands).
+    if (IsOursFpSameTickParentDual203ToeIn(GetStereoMode()) && half > 1e-5f) {
+      const float convM =
+          IsOursFpSameTickParentDual203ToeInStrong(GetStereoMode()) ? 0.85f : 1.5f;
+      float ang = std::atan2(half, convM);
+      if (!rightEye)
+        ang = -ang;
+      const float ca = std::cos(ang);
+      const float sa = std::sin(ang);
+      // Rotate around up (ux,uy,uz): v' = v*c + (u×v)*s + u*(u·v)*(1-c)
+      auto rotU = [&](float vx, float vy, float vz, float* ox, float* oy, float* oz) {
+        const float dot = ux * vx + uy * vy + uz * vz;
+        const float cxv_x = uy * vz - uz * vy;
+        const float cxv_y = uz * vx - ux * vz;
+        const float cxv_z = ux * vy - uy * vx;
+        *ox = vx * ca + cxv_x * sa + ux * dot * (1.f - ca);
+        *oy = vy * ca + cxv_y * sa + uy * dot * (1.f - ca);
+        *oz = vz * ca + cxv_z * sa + uz * dot * (1.f - ca);
+      };
+      float nrx, nry, nrz, nfx, nfy, nfz;
+      rotU(rx, ry, rz, &nrx, &nry, &nrz);
+      rotU(fx, fy, fz, &nfx, &nfy, &nfz);
+      rx = nrx;
+      ry = nry;
+      rz = nrz;
+      fx = nfx;
+      fy = nfy;
+      fz = nfz;
+      static uint32_t s_toeN = 0;
+      const uint32_t tn = ++s_toeN;
+      if (tn <= 4 || (tn % 600) == 0)
+        Log("Mode%d: toe-in #%u %s ang=%.3fdeg half=%.3fcm conv=%.2fm",
+            static_cast<int>(GetStereoMode()), tn, rightEye ? "R" : "L",
+            ang * (180.f / 3.14159265f), half * 100.f, convM);
     }
   }
 
@@ -1074,6 +1273,139 @@ void NotifyHeadBoneSoftSkip(unsigned ms, const char* why) {
   (void)ms;
   if (why)
     Log("CamMatrix: Mode193 dual-AV note (%s) — HOLD stereo, skip DrawScene", why);
+}
+
+void SampleDeferredHeadBoneEye() {
+  if (!IsOursFpDeferredHeadBone(GetStereoMode()))
+    return;
+  if (!g_gameplayActive.load())
+    return;
+  // Keep sampling in vehicles / enter-exit — model-centered through soft scenes.
+  if (g_boneThiscallDead)
+    return;
+  // Never sample mid-DrawScene / mid parent dual (Mode193 crash surface).
+  if (StereoInDualPass() || StereoInParentDualWalk())
+    return;
+  if (StereoMode193SkipDrawActive())
+    return;
+  // Warm gate: first duals after load use height only (bone too early = crash).
+  if (!StereoParentDualReadyForBone())
+    return;
+
+  static bool s_loggedFirst = false;
+  if (!s_loggedFirst) {
+    s_loggedFirst = true;
+    Log("CamMatrix: deferred HEAD first sample (warm dual ready) — attempt GetBonePos");
+  }
+
+  Vec4 eye{};
+  if (TryGetPedHeadBoneEye(&eye)) {
+    Vec4 root{};
+    float fwdX = 0.f, fwdY = 1.f, fwdZ = 0.f;
+    float upX = 0.f, upY = 0.f, upZ = 1.f;
+    if (!TryReadPedBasis(&root, &fwdX, &fwdY, &fwdZ, &upX, &upY, &upZ)) {
+      if (!TryReadPedRoot(&root))
+        root = g_stickyBoneRoot;
+    }
+
+    // Bone offset from root (posture / crouch lives here; walk bob too).
+    float ox = eye.x - root.x;
+    float oy = eye.y - root.y;
+    float oz = eye.z - root.z;
+
+    // Adaptive: walk/run bob (~2–8cm) heavily damped; stairs/crouch catch up fast.
+    // Prior bobA~0.08–0.12 still tracked walk and shook the world.
+    constexpr float kOffBobA = 0.025f;
+    constexpr float kOffMoveA = 0.80f;
+    constexpr float kOffBobT = 0.08f;   // treat ≤8cm as bob
+    constexpr float kOffMoveT = 0.22f;  // ≥22cm = posture/stair stick
+    if (!g_haveDeferredSmoothOff) {
+      g_deferredSmoothOff.x = ox;
+      g_deferredSmoothOff.y = oy;
+      g_deferredSmoothOff.z = oz;
+      g_haveDeferredSmoothOff = true;
+    } else {
+      const float axy = AdaptiveFollowAlpha(
+          std::sqrt((ox - g_deferredSmoothOff.x) * (ox - g_deferredSmoothOff.x) +
+                    (oy - g_deferredSmoothOff.y) * (oy - g_deferredSmoothOff.y)),
+          kOffBobA, kOffMoveA, kOffBobT, kOffMoveT);
+      const float az = AdaptiveFollowAlpha(std::fabs(oz - g_deferredSmoothOff.z), kOffBobA,
+                                           kOffMoveA, kOffBobT, kOffMoveT);
+      g_deferredSmoothOff.x += axy * (ox - g_deferredSmoothOff.x);
+      g_deferredSmoothOff.y += axy * (oy - g_deferredSmoothOff.y);
+      g_deferredSmoothOff.z += az * (oz - g_deferredSmoothOff.z);
+    }
+
+    // Smooth root XYZ — live root.xy every sample was injecting walk sway into the view.
+    constexpr float kRootBobA = 0.03f;
+    constexpr float kRootMoveA = 0.92f;
+    constexpr float kRootBobT = 0.08f;
+    constexpr float kRootMoveT = 0.20f;
+    if (!g_haveDeferredSmoothRootZ) {
+      g_deferredSmoothRootX = root.x;
+      g_deferredSmoothRootY = root.y;
+      g_deferredSmoothRootZ = root.z;
+      g_haveDeferredSmoothRootZ = true;
+    } else {
+      const float dxy = std::sqrt((root.x - g_deferredSmoothRootX) * (root.x - g_deferredSmoothRootX) +
+                                 (root.y - g_deferredSmoothRootY) * (root.y - g_deferredSmoothRootY));
+      const float axy =
+          AdaptiveFollowAlpha(dxy, kRootBobA, kRootMoveA, kRootBobT, kRootMoveT);
+      const float az = AdaptiveFollowAlpha(std::fabs(root.z - g_deferredSmoothRootZ),
+                                           kRootBobA, kRootMoveA, kRootBobT, kRootMoveT);
+      g_deferredSmoothRootX += axy * (root.x - g_deferredSmoothRootX);
+      g_deferredSmoothRootY += axy * (root.y - g_deferredSmoothRootY);
+      g_deferredSmoothRootZ += az * (root.z - g_deferredSmoothRootZ);
+    }
+
+    // Between the eyes: +6cm up, +3cm forward (no back — vehicles looked wrong).
+    constexpr float kUpM = 0.06f;
+    constexpr float kFwdM = 0.03f;
+    g_deferredWorldEye.x =
+        g_deferredSmoothRootX + g_deferredSmoothOff.x + upX * kUpM + fwdX * kFwdM;
+    g_deferredWorldEye.y =
+        g_deferredSmoothRootY + g_deferredSmoothOff.y + upY * kUpM + fwdY * kFwdM;
+    g_deferredWorldEye.z =
+        g_deferredSmoothRootZ + g_deferredSmoothOff.z + upZ * kUpM + fwdZ * kFwdM;
+    g_deferredWorldEye.w = 1.f;
+    g_haveDeferredWorldEye = true;
+
+    g_deferredBoneEye = g_deferredWorldEye;
+    g_deferredBoneRoot = root;
+    g_haveDeferredBoneEye = true;
+    g_deferredBoneTick = GetTickCount();
+
+    // One hide pulse per sample (Mode216) — avoids CopyMat×hide thrash on 204 dual.
+    UpdatePedHeadHide();
+
+    const uint32_t n = ++g_deferredSampleOk;
+    if (n <= 6 || (n % 600) == 0) {
+      Log("CamMatrix: deferred HEAD #%u rootZ=%.3f smRootZ=%.3f offZ=%.3f eyeZ=%.3f "
+          "(bob≤8cm damp; stairs/crouch stick; +3cm fwd)",
+          n, root.z, g_deferredSmoothRootZ, g_deferredSmoothOff.z, g_deferredWorldEye.z);
+    }
+    return;
+  }
+
+  // Keep last world eye if root still nearby; else clear for height fallback.
+  Vec4 root{};
+  if (g_haveDeferredWorldEye && TryReadPedRoot(&root)) {
+    const float dx = root.x - g_deferredBoneRoot.x;
+    const float dy = root.y - g_deferredBoneRoot.y;
+    const float dz = root.z - g_deferredBoneRoot.z;
+    if (dx * dx + dy * dy + dz * dz < 4.f) {
+      g_deferredBoneRoot = root;
+      g_deferredBoneTick = GetTickCount();
+      return;
+    }
+  }
+  g_haveDeferredBoneEye = false;
+  g_haveDeferredWorldEye = false;
+  g_haveDeferredSmoothOff = false;
+  g_haveDeferredSmoothRootZ = false;
+  const uint32_t n = ++g_deferredSampleFail;
+  if (n <= 4 || (n % 300) == 0)
+    Log("CamMatrix: deferred HEAD miss #%u — height fallback next bake", n);
 }
 
 bool InstallCamMatrixHooks() {

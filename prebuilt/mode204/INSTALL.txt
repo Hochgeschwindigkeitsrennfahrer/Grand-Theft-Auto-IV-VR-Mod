@@ -7,6 +7,7 @@ This pack is the fused stereo milestone (Mode 204). It includes:
   - FusionFix (dinput8.dll + plugins + update assets / shaders)
   - DXVK shader cache (GTAIV.dxvk-cache) to reduce first-run stutter
   - Mode 204 knobs (fused 3D VR)
+  - commandline.txt = 1440x1440 square (Luke Ross-style aspect)
 
 See THIRDPARTY.txt for credits. Do not redistribute Rockstar game files.
 
@@ -30,12 +31,19 @@ INSTALL (drag and drop)
 3. Copy EVERYTHING from this zip's "drop-into-GTAIV" folder into that
    GTAIV folder. Merge folders when Windows asks. Overwrite is OK.
 
-4. Start SteamVR, put the headset on, then start GTA IV
+4. Square aspect: this pack includes commandline.txt (1440x1440).
+   That is the Luke Ross-style square resolution.
+   - Keep it for square VR.
+   - For normal widescreen: rename commandline.txt → commandline.txt.off
+     (or delete it). Backup is also named commandline.txt.vr-square.
+   - Full game restart after any rename.
+
+5. Start SteamVR, put the headset on, then start GTA IV
    (singleplayer / offline).
 
-5. In FusionFix graphics options: use DirectX 9 (NOT FusionFix Vulkan).
+6. In FusionFix graphics options: use DirectX 9 (NOT FusionFix Vulkan).
 
-6. Wait until you are in-game. Headset should show fused stereo.
+7. Wait until you are in-game. Headset should show fused stereo.
    Log next to GTAIV.exe: gtaiv_dxvk_vr.log
    Expect stereo mode 204 in the log.
 

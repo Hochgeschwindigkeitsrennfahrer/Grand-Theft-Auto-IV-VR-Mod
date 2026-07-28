@@ -67,6 +67,26 @@ void HideOneNative(int component) {
   }
 }
 
+void ShowOneHelper(int component) {
+  if (!g_setDraw || g_dead.load())
+    return;
+  __try {
+    g_setDraw(component, 1);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    g_dead.store(true);
+    Log("PedHide: EXCEPTION show component %d — DISABLED", component);
+  }
+}
+
+void ShowOneNative(int component) {
+  __try {
+    InvokeNativeVoid_I32_I32(kSetDrawPlayerComponent, component, 1);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    g_dead.store(true);
+    Log("PedHide: NATIVE EXCEPTION show component %d — DISABLED", component);
+  }
+}
+
 }  // namespace
 
 void UpdatePedHeadHide() {
@@ -81,6 +101,7 @@ void UpdatePedHeadHide() {
     return;
 
   const uint32_t n = ++g_calls;
+  // Same throttle for Mode216 as other modes — rapid hide thrash looked like model spazz.
   if (n > 1 && (n % 30) != 0)
     return;
 
@@ -92,6 +113,15 @@ void UpdatePedHeadHide() {
     }
     if (!g_nativeLogged.exchange(true))
       Log("PedHide: NATIVE SET_DRAW_PLAYER_COMPONENT path ON (Mode150/151)");
+    // One-shot: restore torso/legs after bad Mode216 hide of comps 1+2.
+    static bool s_restoredBody = false;
+    if (!s_restoredBody && IsOursFpDeferredHeadBone(GetStereoMode())) {
+      s_restoredBody = true;
+      ShowOneNative(1);
+      ShowOneNative(2);
+      Log("PedHide: restored draw comps 1+2 (torso/legs) after accidental hide");
+    }
+    // Head/hair only — NEVER 1/2 (torso/legs).
     HideOneNative(0);
     HideOneNative(7);
     HideOneNative(8);
@@ -100,6 +130,13 @@ void UpdatePedHeadHide() {
   } else {
     if (!ResolveSetDraw())
       return;
+    static bool s_restoredBodyH = false;
+    if (!s_restoredBodyH && IsOursFpDeferredHeadBone(GetStereoMode())) {
+      s_restoredBodyH = true;
+      ShowOneHelper(1);
+      ShowOneHelper(2);
+      Log("PedHide: restored draw comps 1+2 (helper path)");
+    }
     HideOneHelper(0);
     HideOneHelper(7);
     HideOneHelper(8);

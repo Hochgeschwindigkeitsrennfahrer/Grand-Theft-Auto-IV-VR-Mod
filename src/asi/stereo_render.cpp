@@ -544,12 +544,60 @@ void Mode199OnEndScene() {
   }
 }
 
-// Mode 200: HookDrawWalk dual on same parent as Mode199 (0x4D8BF0). Single BuildRootA.
-// Mode 200–204: parent dual target. 203=MILESTONE @0x4D8BF0; 204=next Mode198 @0x4DE020.
+// Mode 200: HookDrawWalk dual. 203=@0x4D8BF0; 209=OUTER @0x4D8E80 (calls 203).
 constexpr uint32_t kMode200TargetRva = 0x4D8BF0;
 constexpr uint32_t kMode204TargetRva = 0x4DE020;  // Mode198 ret 0x4DE0DC → thiscall-56
+constexpr uint32_t kMode205TargetRva = 0x4DDD50;  // REJECT math helper
+constexpr uint32_t kMode206TargetRva = 0x309D0;   // Mode198 ret 0x30C97 owner shell
+constexpr uint32_t kMode207TargetRva = 0x541DC0;  // Mode198 ret 0x5421BB tiny wrapper
+constexpr uint32_t kMode208TargetRva = 0x4DA2BA;  // Mode198 ret mid E9 jmp
+constexpr uint32_t kMode209TargetRva = 0x4D8E80;  // outer caller of 0x4D8BF0
 uint32_t ParentDualTargetRva() {
-  return IsOursFpSameTickParentDualTry2(GetStereoMode()) ? kMode204TargetRva : kMode200TargetRva;
+  if (IsOursFpSameTickParentDual203Outer(GetStereoMode()))
+    return kMode209TargetRva;
+  if (IsOursFpSameTickParentDualTry6(GetStereoMode()))
+    return kMode208TargetRva;
+  if (IsOursFpSameTickParentDualTry5(GetStereoMode()))
+    return kMode207TargetRva;
+  if (IsOursFpSameTickParentDualTry4(GetStereoMode()))
+    return kMode206TargetRva;
+  if (IsOursFpSameTickParentDualTry3(GetStereoMode()))
+    return kMode205TargetRva;
+  if (IsOursFpSameTickParentDualTry2(GetStereoMode()))
+    return kMode204TargetRva;
+  return kMode200TargetRva;
+}
+int ParentDualKillStereo() {
+  if (IsOursFpDeferredHeadBone(GetStereoMode()))
+    return 204;
+  if (IsOursFpSameTickParentDual203CloseIpdToeIn(GetStereoMode()))
+    return 214;
+  if (IsOursFpSameTickParentDual203CloseIpdQtr(GetStereoMode()))
+    return 213;
+  if (IsOursFpSameTickParentDual203CloseIpdHalf(GetStereoMode()))
+    return 212;
+  if (IsOursFpSameTickParentDual203CloseIpd(GetStereoMode()) ||
+      IsOursFpSameTickParentDual203ToeIn(GetStereoMode()) ||
+      IsOursFpSameTickParentDual203Outer(GetStereoMode()))
+    return 203;
+  if (IsOursFpSameTickParentDualTry6(GetStereoMode()) ||
+      IsOursFpSameTickParentDualTry5(GetStereoMode()) ||
+      IsOursFpSameTickParentDualTry4(GetStereoMode()) ||
+      IsOursFpSameTickParentDualTry3(GetStereoMode()))
+    return 204;
+  if (IsOursFpSameTickParentDualTry2(GetStereoMode()))
+    return 203;
+  if (IsOursFpSameTickParentDualPose(GetStereoMode()) ||
+      IsOursFpSameTickParentDualFreeze(GetStereoMode()) ||
+      IsOursFpSameTickParentDualVs(GetStereoMode()))
+    return 200;
+  return 191;
+}
+bool ParentDualPrologueOk(const uint8_t* b) {
+  // Mode 208: mid-site is E9 rel32 (5 bytes) — MinHook-capable, not a fn prologue.
+  if (IsOursFpSameTickParentDualTry6(GetStereoMode()))
+    return b[0] == 0xE9;
+  return b[0] == 0x56 && b[1] == 0x8B && b[2] == 0xF1;
 }
 std::atomic<uint32_t> g_mode200Es{0};
 std::atomic<uint32_t> g_mode200DualN{0};
@@ -1767,6 +1815,18 @@ void __fastcall HookRoot1(void* self, void* edx) {
                        : IsOursFpSameTickOwnerCount(mode)   ? 191
                        : IsOursFpSameTickParentProbe(mode)  ? 191
                        : IsOursFpSameTickParentCount(mode)  ? 191
+                       : IsOursFpDeferredHeadBone(mode) ? 204
+                       : IsOursFpSameTickParentDual203CloseIpdToeIn(mode) ? 214
+                       : IsOursFpSameTickParentDual203CloseIpdQtr(mode) ? 213
+                       : IsOursFpSameTickParentDual203CloseIpdHalf(mode) ? 212
+                       : IsOursFpSameTickParentDual203CloseIpd(mode) ? 203
+                       : IsOursFpSameTickParentDual203ToeInStrong(mode) ? 203
+                       : IsOursFpSameTickParentDual203ToeIn(mode) ? 203
+                       : IsOursFpSameTickParentDual203Outer(mode) ? 203
+                       : IsOursFpSameTickParentDualTry6(mode)   ? 204
+                       : IsOursFpSameTickParentDualTry5(mode)   ? 204
+                       : IsOursFpSameTickParentDualTry4(mode)   ? 204
+                       : IsOursFpSameTickParentDualTry3(mode)   ? 204
                        : IsOursFpSameTickParentDualTry2(mode)   ? 203
                        : IsOursFpSameTickParentDualFreeze(mode) ? 200
                        : IsOursFpSameTickParentDualVs(mode)     ? 200
@@ -2233,6 +2293,10 @@ void __fastcall HookDrawWalk(void* self, void* edx) {
       CallDrawWalkOnceGuarded(self, edx);
       return;
     }
+    // Mode216: sample HEAD once here (draw shell alive) BEFORE dual flag — never
+    // mid-CopyMat, never EndScene-during-load (that crashed after load screen).
+    if (IsOursFpDeferredHeadBone(GetStereoMode()) && StereoParentDualReadyForBone())
+      SampleDeferredHeadBoneEye();
     const bool freeze = IsOursFpSameTickParentDualFreeze(GetStereoMode());
     const bool vsDual = IsOursFpSameTickParentDualVs(GetStereoMode());
     const bool poseLatch = IsOursFpSameTickParentDualPose(GetStereoMode());
@@ -2598,10 +2662,8 @@ bool InstallMode200ParentDualHook() {
   const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
   const uintptr_t addr = base + targetRva;
   const auto* b = reinterpret_cast<const uint8_t*>(addr);
-  const int kill = IsOursFpSameTickParentDualTry2(GetStereoMode())     ? 203
-                   : IsOursFpSameTickParentDualPose(GetStereoMode())   ? 200
-                                                                        : 191;
-  if (b[0] != 0x56 || b[1] != 0x8B || b[2] != 0xF1) {
+  const int kill = ParentDualKillStereo();
+  if (!ParentDualPrologueOk(b)) {
     Log("Mode%d: FAIL unexpected prologue @0x%X bytes=%02X %02X %02X — wrote stereo=%d",
         static_cast<int>(GetStereoMode()), targetRva, b[0], b[1], b[2], kill);
     WriteStereoModeFile(kill);
@@ -2647,11 +2709,7 @@ void Mode200Kill(const char* why) {
   g_mode200HookOk.store(false);
   SetStereoEye(StereoEye::Left);
   RefreshLiveCamForStereoEye();
-  const int kill = IsOursFpSameTickParentDualTry2(GetStereoMode())     ? 203
-                   : IsOursFpSameTickParentDualPose(GetStereoMode())   ? 200
-                   : IsOursFpSameTickParentDualFreeze(GetStereoMode()) ? 200
-                   : IsOursFpSameTickParentDualVs(GetStereoMode())     ? 200
-                                                                        : 191;
+  const int kill = ParentDualKillStereo();
   Log("Mode%d: KILL — %s — wrote stereo=%d", static_cast<int>(GetStereoMode()), why, kill);
   WriteStereoModeFile(kill);
 }
@@ -2678,6 +2736,16 @@ void Mode200OnEndScene() {
       Log("Mode%d: warm OK avg=%.2f entries/ES over 90 — keep parent dual",
           static_cast<int>(GetStereoMode()), avg);
     }
+  }
+  // Mode 206 lesson: warm can be cold, then spike to 35+/ES (car freeze / FPS death).
+  if (es > 90 && frame > 8 &&
+      (IsOursFpSameTickParentDualTry4(GetStereoMode()) ||
+       IsOursFpSameTickParentDualTry5(GetStereoMode()) ||
+       IsOursFpSameTickParentDualTry6(GetStereoMode()) ||
+       IsOursFpSameTickParentDual203Outer(GetStereoMode()))) {
+    char buf[96];
+    sprintf_s(buf, "entriesThisFrame=%ld > 8 after warm (206 HOT lesson)", frame);
+    Mode200Kill(buf);
   }
 }
 
@@ -6471,7 +6539,31 @@ bool InstallStereoRenderHooks() {
           mid, g_ok.load() ? 1 : 0);
       Log("StereoRender: kill-switch - 147 soft-move / 150 native-hide+FP / 151 ours+hide");
     } else if (IsHeadHideNativeOurs(mode)) {
-      const char* tag = mode == StereoMode::OursFpSameTickParentDualTry2
+      const char* tag = mode == StereoMode::OursFpSameTickParentDual204DeferredHead
+                            ? "+SAME-TICK-PARENT-DUAL-204-DEFHEAD"
+                        : mode == StereoMode::OursFpSameTickParentDual203CloseIpdToeIn
+                            ? "+SAME-TICK-PARENT-DUAL-203CLOSEIPD+TOEIN"
+                        : mode == StereoMode::OursFpSameTickParentDual203CloseIpdQtr
+                            ? "+SAME-TICK-PARENT-DUAL-203CLOSEIPD-Q"
+                        : mode == StereoMode::OursFpSameTickParentDual203CloseIpdHalf
+                            ? "+SAME-TICK-PARENT-DUAL-203CLOSEIPD-H"
+                        : mode == StereoMode::OursFpSameTickParentDual203CloseIpd
+                            ? "+SAME-TICK-PARENT-DUAL-203CLOSEIPD"
+                        : mode == StereoMode::OursFpSameTickParentDual203ToeInStrong
+                            ? "+SAME-TICK-PARENT-DUAL-203TOEIN-S"
+                        : mode == StereoMode::OursFpSameTickParentDual203ToeIn
+                            ? "+SAME-TICK-PARENT-DUAL-203TOEIN"
+                        : mode == StereoMode::OursFpSameTickParentDual203Outer
+                            ? "+SAME-TICK-PARENT-DUAL-203OUTER"
+                        : mode == StereoMode::OursFpSameTickParentDualTry6
+                            ? "+SAME-TICK-PARENT-DUAL-TRY6"
+                        : mode == StereoMode::OursFpSameTickParentDualTry5
+                            ? "+SAME-TICK-PARENT-DUAL-TRY5"
+                        : mode == StereoMode::OursFpSameTickParentDualTry4
+                            ? "+SAME-TICK-PARENT-DUAL-TRY4"
+                        : mode == StereoMode::OursFpSameTickParentDualTry3
+                            ? "+SAME-TICK-PARENT-DUAL-TRY3"
+                        : mode == StereoMode::OursFpSameTickParentDualTry2
                             ? "+SAME-TICK-PARENT-DUAL-TRY2"
                         : mode == StereoMode::OursFpSameTickParentDualPose
                             ? "+SAME-TICK-PARENT-DUAL-POSE"
@@ -6528,7 +6620,31 @@ bool InstallStereoRenderHooks() {
                         : IsOursFpFovProfile(mode)       ? "+FP-PRESENCE"
                                                          : "";
       const char* detail =
-          mode == StereoMode::OursFpSameTickParentDualTry2
+          mode == StereoMode::OursFpSameTickParentDual204DeferredHead
+              ? "; Mode204 + deferred HEAD EndScene sample (kill=204)"
+          : mode == StereoMode::OursFpSameTickParentDual203CloseIpdToeIn
+              ? "; Mode203 + IPD 0.25cm + toe-in ~1.5m (kill=214)"
+          : mode == StereoMode::OursFpSameTickParentDual203CloseIpdQtr
+              ? "; Mode203 + IPD 0.25cm (kill=213)"
+          : mode == StereoMode::OursFpSameTickParentDual203CloseIpdHalf
+              ? "; Mode203 + IPD 0.5cm (kill=212)"
+          : mode == StereoMode::OursFpSameTickParentDual203CloseIpd
+              ? "; Mode203 + IPD 1cm (kill=203)"
+          : mode == StereoMode::OursFpSameTickParentDual203ToeInStrong
+              ? "; Mode203 + stronger toe-in ~0.85m (kill=203)"
+          : mode == StereoMode::OursFpSameTickParentDual203ToeIn
+              ? "; Mode203 + toe-in ~1.5m MIXED mild (kill=203)"
+          : mode == StereoMode::OursFpSameTickParentDual203Outer
+              ? "; REJECT OUTER @0x4D8E80 — use 203"
+          : mode == StereoMode::OursFpSameTickParentDualTry6
+              ? "; REJECT mid-jmp 0x4DA2BA — use 204"
+          : mode == StereoMode::OursFpSameTickParentDualTry5
+              ? "; REJECT tiny @0x541DC0 — same-image no fuse; use 204"
+          : mode == StereoMode::OursFpSameTickParentDualTry4
+              ? "; MIXED HOT owner shell @0x309D0 — prefer 204"
+          : mode == StereoMode::OursFpSameTickParentDualTry3
+              ? "; REJECT math helper @0x4DDD50 — use 204"
+          : mode == StereoMode::OursFpSameTickParentDualTry2
               ? "; Mode203 path on next Mode198 parent @0x4DE020 (kill=203 MILESTONE)"
           : mode == StereoMode::OursFpSameTickParentDualPose
               ? "; MILESTONE Mode200 full CCam±IPD + ONE HMD pose latch @0x4D8BF0"
@@ -6631,7 +6747,27 @@ bool InstallStereoRenderHooks() {
       Log("StereoRender: mode %d OURS+HIDE%s (%s + our HMD cam + "
           "native SET_DRAW%s; FirstPerson.asi OFF) ok=%d fovSite=%d",
           mid, tag,
-          IsOursFpSameTickParentDualTry2(mode) ? "single BuildRootA + parent dual TRY2@4DE020"
+          IsOursFpDeferredHeadBone(mode)
+              ? "single BuildRootA + parent dual 204+deferredHEAD@4DE020"
+              : IsOursFpSameTickParentDual203CloseIpdToeIn(mode)
+              ? "single BuildRootA + parent dual 203+closeIpd0.25+toeIn@4D8BF0"
+              : IsOursFpSameTickParentDual203CloseIpdQtr(mode)
+              ? "single BuildRootA + parent dual 203+closeIpd0.25cm@4D8BF0"
+              : IsOursFpSameTickParentDual203CloseIpdHalf(mode)
+              ? "single BuildRootA + parent dual 203+closeIpd0.5cm@4D8BF0"
+              : IsOursFpSameTickParentDual203CloseIpd(mode)
+              ? "single BuildRootA + parent dual 203+closeIpd1cm@4D8BF0"
+              : IsOursFpSameTickParentDual203ToeInStrong(mode)
+              ? "single BuildRootA + parent dual 203+toeInStrong@4D8BF0"
+              : IsOursFpSameTickParentDual203ToeIn(mode)
+              ? "single BuildRootA + parent dual 203+toeIn@4D8BF0"
+              : IsOursFpSameTickParentDual203Outer(mode)
+              ? "single BuildRootA + parent dual 203-OUTER@4D8E80"
+              : IsOursFpSameTickParentDualTry6(mode) ? "single BuildRootA + parent dual TRY6@4DA2BA"
+              : IsOursFpSameTickParentDualTry5(mode) ? "single BuildRootA + parent dual TRY5@541DC0"
+              : IsOursFpSameTickParentDualTry4(mode) ? "single BuildRootA + parent dual TRY4@309D0"
+              : IsOursFpSameTickParentDualTry3(mode) ? "single BuildRootA + parent dual TRY3@4DDD50"
+              : IsOursFpSameTickParentDualTry2(mode) ? "single BuildRootA + parent dual TRY2@4DE020"
               : IsOursFpSameTickParentDualPose(mode) ? "single BuildRootA + parent dual+poseLatch"
               : IsOursFpSameTickParentDualVs(mode) ? "single BuildRootA + parent dual VS"
               : IsOursFpSameTickParentDualFreeze(mode) ? "single BuildRootA + parent dual+freeze"
@@ -6645,7 +6781,21 @@ bool InstallStereoRenderHooks() {
               : IsOursFpSameTickBuildDual(mode)  ? "BuildRootA x2 same-tick"
                                                  : "Mode120 DrawScene dual",
           detail, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
-      if (IsOursFpSameTickParentDualTry2(mode))
+      if (IsOursFpDeferredHeadBone(mode))
+        Log("StereoRender: kill-switch - stereo=204 (fusion LKG) / 203 / 0");
+      else if (IsOursFpSameTickParentDual203CloseIpdToeIn(mode))
+        Log("StereoRender: kill-switch - stereo=214 (IPD 0.25 no toe-in) / 203 / 0");
+      else if (IsOursFpSameTickParentDual203CloseIpdQtr(mode))
+        Log("StereoRender: kill-switch - stereo=213 (IPD 0.5cm) / 203 / 0");
+      else if (IsOursFpSameTickParentDual203CloseIpdHalf(mode))
+        Log("StereoRender: kill-switch - stereo=212 (IPD 1cm) / 203 / 0");
+      else if (IsOursFpSameTickParentDual203CloseIpd(mode) ||
+          IsOursFpSameTickParentDual203ToeIn(mode) || IsOursFpSameTickParentDual203Outer(mode))
+        Log("StereoRender: kill-switch - stereo=203 (MILESTONE) / 204 / 0");
+      else if (IsOursFpSameTickParentDualTry6(mode) || IsOursFpSameTickParentDualTry5(mode) ||
+          IsOursFpSameTickParentDualTry4(mode) || IsOursFpSameTickParentDualTry3(mode))
+        Log("StereoRender: kill-switch - stereo=204 (fusion LKG) / 203 / 0");
+      else if (IsOursFpSameTickParentDualTry2(mode))
         Log("StereoRender: kill-switch - stereo=203 (MILESTONE 3D VR) / 0");
       else if (IsOursFpSameTickParentDualPose(mode))
         Log("StereoRender: kill-switch - stereo=200 / 191 / 0");
@@ -7216,6 +7366,9 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
 
   const StereoMode mode = GetStereoMode();
 
+  // Mode216 bone sample moved to HookDrawWalk (after dual warm) — EndScene-during-
+  // load called GetBonePos too early and crashed after the load screen.
+
   if (mode == StereoMode::PhaseProbe) {
     static uint32_t s_end = 0;
     if (s_end < 8 || (s_end % 300) == 0)
@@ -7582,6 +7735,17 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
 
 bool StereoInDualPass() {
   return g_inDual.load();
+}
+
+bool StereoInParentDualWalk() {
+  return g_inDrawWalkDual.load();
+}
+
+bool StereoParentDualReadyForBone() {
+  // Crash after load: GetBonePos before world/ped skeleton ready kills the process.
+  // Wait for dual walk to prove the draw shell is alive first.
+  return g_mode200HookOk.load() && !g_mode200TooHot.load() &&
+         g_mode200DualN.load() >= 5 && g_mode200Es.load() >= 30;
 }
 
 bool StereoMode193SkipDrawActive() {

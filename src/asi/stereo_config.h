@@ -574,7 +574,43 @@ enum class StereoMode : int {
   OursFpSameTickParentDualPose = 203,
   // Mode 204: Mode203 path on NEXT Mode198 RARE thiscall parent fn-start 0x4DE020
   // (ret 0x4DE0DC). Same pose latch + CCam±IPD. Kill: 203 MILESTONE.
+  // Headset: fusion LKG; near bounce + phone washout noted — leave frozen.
   OursFpSameTickParentDualTry2 = 204,
+  // Mode 205: REJECT CRASH — Mode198 ret 0x4DDE1F → fn 0x4DDD50 looks thiscall-56
+  // but is a float/math helper (not a draw shell). Dual after load = hard crash.
+  // Log: dual #1 then die; 0 entries during load. Leave enum; kill=204. Do not retry.
+  OursFpSameTickParentDualTry3 = 205,
+  // Mode 206: MIXED — no near-bounce, no phone washout; but HOT (~35–47 entries/ES
+  // after warm; soft gate only checked es#90). Car enter froze; FPS worse. Kill: 204.
+  // Leave enum; do not use as daily. 203/204 frozen.
+  OursFpSameTickParentDualTry4 = 206,
+  // Mode 207: REJECT — tiny wrapper @0x541DC0 duals a lea/call/ret stub; same BB both
+  // eyes (no 3D / no fuse). Leave enum; kill=204. Do not retry.
+  OursFpSameTickParentDualTry5 = 207,
+  // Mode 208: REJECT — mid-jmp @0x4DA2BA neither works. Leave enum; kill=204.
+  OursFpSameTickParentDualTry6 = 208,
+  // Mode 209: REJECT — OUTER @0x4D8E80 same-image both eyes (no fusion). Bake-widen
+  // via outer caller failed; near fusion on 203 is not fixed by dualing the caller.
+  // Leave enum; kill=203. Do not retry.
+  OursFpSameTickParentDual203Outer = 209,
+  // Mode 210: MIXED — 203 + toe-in ~1.5m; headset: maybe slightly better near fuse,
+  // still not fused; cam drag not worse. Leave enum. Kill: 203.
+  OursFpSameTickParentDual203ToeIn = 210,
+  // Mode 211: same as 210 but stronger toe-in (converge ~0.85m — dash/hands).
+  // Headset: still not fully fused. Kill: 203.
+  OursFpSameTickParentDual203ToeInStrong = 211,
+  // Mode 212: 203 path + closer eyes IPD 1cm. Headset: getting there, wants bit more.
+  // Kill: 203.
+  OursFpSameTickParentDual203CloseIpd = 212,
+  // Mode 213: same as 212 but IPD 0.5cm (closer still). Kill: 212 / 203.
+  OursFpSameTickParentDual203CloseIpdHalf = 213,
+  // Mode 214: same as 213 but IPD 0.25cm (closer still). Kill: 213 / 203.
+  OursFpSameTickParentDual203CloseIpdQtr = 214,
+  // Mode 215: 214 IPD 0.25cm + mild toe-in ~1.5m (combine levers). Kill: 214.
+  OursFpSameTickParentDual203CloseIpdToeIn = 215,
+  // Mode 216: Mode204 stereo (@0x4DE020) + deferred HEAD bone sample (EndScene only;
+  // cam bake reads cache — never GetBonePos mid-DrawScene). Kill: 204.
+  OursFpSameTickParentDual204DeferredHead = 216,
 };
 
 // Mode 40–49: rapid HMD delta → temporary mono pair. Mode 50+ never flattens.
@@ -657,11 +693,23 @@ bool IsOursFpSameTickOwnerObserve(StereoMode mode); // 196 DONE — observe disa
 bool IsOursFpSameTickOwnerCount(StereoMode mode);  // 197 FAILED — hook refused
 bool IsOursFpSameTickParentProbe(StereoMode mode); // 198 light once/ES parent hunt
 bool IsOursFpSameTickParentCount(StereoMode mode); // 199 COUNT @ 0x4D8BF0
-bool IsOursFpSameTickParentDual(StereoMode mode);  // 200–204 parent dual family
+bool IsOursFpSameTickParentDual(StereoMode mode);  // 200–216 parent dual family
 bool IsOursFpSameTickParentDualFreeze(StereoMode mode); // 201 REJECT freeze
 bool IsOursFpSameTickParentDualVs(StereoMode mode);     // 202 REJECT VS-translate
-bool IsOursFpSameTickParentDualPose(StereoMode mode);   // 203–204 HMD pose latch + full L/R
-bool IsOursFpSameTickParentDualTry2(StereoMode mode);   // 204 next Mode198 parent @0x4DE020
+bool IsOursFpSameTickParentDualPose(StereoMode mode);   // 203–216 HMD pose latch + full L/R
+bool IsOursFpSameTickParentDualTry2(StereoMode mode);   // 204 + 216 @0x4DE020 (204 frozen)
+bool IsOursFpSameTickParentDualTry3(StereoMode mode);   // 205 REJECT @0x4DDD50
+bool IsOursFpSameTickParentDualTry4(StereoMode mode);   // 206 MIXED HOT @0x309D0
+bool IsOursFpSameTickParentDualTry5(StereoMode mode);   // 207 REJECT tiny @0x541DC0
+bool IsOursFpSameTickParentDualTry6(StereoMode mode);   // 208 REJECT mid-jmp @0x4DA2BA
+bool IsOursFpSameTickParentDual203Outer(StereoMode mode); // 209 REJECT outer @0x4D8E80
+bool IsOursFpSameTickParentDual203ToeIn(StereoMode mode); // 210–211, 215 toe-in near fusion
+bool IsOursFpSameTickParentDual203ToeInStrong(StereoMode mode); // 211 stronger ~0.85m
+bool IsOursFpSameTickParentDual203CloseIpd(StereoMode mode); // 212–215 closer IPD
+bool IsOursFpSameTickParentDual203CloseIpdHalf(StereoMode mode); // 213–215 IPD ≤0.5cm
+bool IsOursFpSameTickParentDual203CloseIpdQtr(StereoMode mode);  // 214–215 IPD 0.25cm
+bool IsOursFpSameTickParentDual203CloseIpdToeIn(StereoMode mode); // 215 IPD0.25+toe-in
+bool IsOursFpDeferredHeadBone(StereoMode mode);     // 216 deferred HEAD sample (not 193)
 bool IsOursFpUiLift(StereoMode mode);              // 172–173 canvas phone lift (not 174+)
 bool IsOursFpAtomicEyePair(StereoMode mode);       // 168–173, 176, 178–180, 183–192
 bool IsOursFpAlwaysBbCapture(StereoMode mode);     // 168–173, 176, 178–180, 183–192

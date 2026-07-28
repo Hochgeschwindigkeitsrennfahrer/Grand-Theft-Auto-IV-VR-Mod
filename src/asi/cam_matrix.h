@@ -48,6 +48,10 @@ void PushLiveCamToD3D(IDirect3DDevice9* device);
 // Mode193: after a DrawScene dual AV (door/interior), pause GetBonePos briefly.
 void NotifyHeadBoneSoftSkip(unsigned ms, const char* why);
 
+// Mode216: sample HEAD bone once outside DrawScene/CopyMat (EndScene). Cam bake
+// only reads the cache — never calls GetBonePos mid-dual.
+void SampleDeferredHeadBoneEye();
+
 // Row-major 4x4 D3D LH view from live Rage cam. Returns false if no cam.
 bool BuildLiveViewMatrix16(float* out16);
 

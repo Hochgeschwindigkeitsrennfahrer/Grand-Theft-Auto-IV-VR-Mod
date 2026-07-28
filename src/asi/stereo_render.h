@@ -15,6 +15,12 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
 // True while same-frame L/R dual pass is running (projection inject gate).
 bool StereoInDualPass();
 
+// True while Mode200+ parent HookDrawWalk L/R dual is in flight.
+bool StereoInParentDualWalk();
+
+// Mode216: true after parent dual has warmed (safe to call GetBonePos).
+bool StereoParentDualReadyForBone();
+
 // Mode193: true while DrawScene is paused after a door/interior AV.
 bool StereoMode193SkipDrawActive();
 

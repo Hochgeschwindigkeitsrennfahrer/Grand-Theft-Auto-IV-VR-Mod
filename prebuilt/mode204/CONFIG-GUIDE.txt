@@ -30,6 +30,13 @@ gtaiv_dxvk_vr.vehcamoff
 gtaiv_dxvk_vr.pedhide
   1 = hide player ped in FP (if used). Pack: 0
 
+commandline.txt
+  Luke Ross-style square game resolution (pack: 1440x1440 windowed).
+  Rename to commandline.txt.off for normal widescreen.
+  Keep a copy as commandline.txt.vr-square to switch back later.
+  Change -width/-height together (same number) for other square sizes.
+  Full restart after any change.
+
 dxvk.conf
   Optional DXVK tweaks. Pack may include enableAsync for less stutter.
 

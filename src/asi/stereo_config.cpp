@@ -86,6 +86,14 @@ void SetSepCm(int cm) {
   g_sepM.store(static_cast<float>(cm) / 100.f);
 }
 
+void SetSepCmFloat(float cm) {
+  if (cm < 0.f)
+    cm = 0.f;
+  if (cm > 500.f)
+    cm = 500.f;
+  g_sepM.store(cm / 100.f);
+}
+
 void SaveIpdFile(int cm) {
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -95,6 +103,18 @@ void SaveIpdFile(int cm) {
   if (fopen_s(&f, path, "wb") != 0 || !f)
     return;
   std::fprintf(f, "%d\n", cm);
+  std::fclose(f);
+}
+
+void SaveIpdFileFloat(float cm) {
+  char path[MAX_PATH]{};
+  if (!GetAsiDir(path, MAX_PATH))
+    return;
+  strcat_s(path, "gtaiv_dxvk_vr.ipd");
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "wb") != 0 || !f)
+    return;
+  std::fprintf(f, "%.2f\n", cm);
   std::fclose(f);
 }
 
@@ -340,18 +360,19 @@ void ReloadIpdScale() {
   fclose(f);
   if (n == 0)
     return;
-  int cm = 0;
-  if (sscanf_s(buf, "%d", &cm) != 1)
+  float cm = 0.f;
+  if (sscanf_s(buf, "%f", &cm) != 1)
     return;
-  if (cm < 0 || cm > 500)
+  if (cm < 0.f || cm > 500.f)
     return;
-  SetSepCm(cm);
+  SetSepCmFloat(cm);
   if (!g_loggedIpd.exchange(true)) {
-    if (cm == 0)
-      Log("StereoSep: 0 cm (file) — NO PARALLAX / flat image. Set gtaiv_dxvk_vr.ipd to 1+ "
-          "(or F8; presets start at 1cm) for 3D");
+    if (cm < 0.05f)
+      Log("StereoSep: %.2f cm (file) — near-zero parallax. Set gtaiv_dxvk_vr.ipd higher "
+          "(or F8) for stronger 3D",
+          cm);
     else
-      Log("StereoSep: %d cm (file gtaiv_dxvk_vr.ipd) — F8 cycles 1,2,3,4,6,7,10", cm);
+      Log("StereoSep: %.2f cm (file gtaiv_dxvk_vr.ipd) — F8 cycles 1,2,3,4,6,7,10", cm);
   }
 }
 
@@ -393,6 +414,7 @@ void EnsureVrSquareCommandlineReady();
 void EnsureFpProfileDefaults();
 void ForceFpFovDegrees(int forward, int rear, int foot);
 void EnsureVehicleCamOffDefaults();
+void EnsureModelCenteredCamOffsets();  // Mode216: camoff/vehcamoff/eyefwd all zero
 void ReloadCanvasMaxDim();
 void SetCanvasMaxDim(uint32_t dim, bool fromHotkey);
 void SetEyeForwardCm(int cm);
@@ -452,7 +474,118 @@ void ReloadStereoMode() {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadStereoScale();
-    if (v == static_cast<int>(StereoMode::OursFpSameTickParentDualTry2)) {
+    if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual204DeferredHead)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureModelCenteredCamOffsets();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode216: OURS+PARENT-DUAL-204-DEFERRED-HEAD — model-centered HEAD (no "
+          "camoff/vehcamoff/eyefwd); kill=204");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual203CloseIpdToeIn)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      SetSepCmFloat(0.25f);
+      SaveIpdFileFloat(0.25f);
+      Log("Mode215: OURS+PARENT-DUAL-203-CLOSE-IPD+TOEIN — IPD 0.25cm + mild toe-in "
+          "~1.5m; kill=214/203");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual203CloseIpdQtr)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      SetSepCmFloat(0.25f);
+      SaveIpdFileFloat(0.25f);
+      Log("Mode214: OURS+PARENT-DUAL-203-CLOSE-IPD-QTR — IPD 0.25cm (bit closer than "
+          "213); kill=213/203");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual203CloseIpdHalf)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      SetSepCmFloat(0.5f);
+      SaveIpdFileFloat(0.5f);
+      Log("Mode213: OURS+PARENT-DUAL-203-CLOSE-IPD-HALF — IPD 0.5cm (bit closer than "
+          "212); kill=212/203");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual203CloseIpd)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      SetSepCm(1);
+      SaveIpdFile(1);
+      Log("Mode212: MIXED — IPD 1cm getting there, wants closer; kill=203");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual203ToeInStrong)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode211: MIXED — strong toe-in still not fully fused; kill=203");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual203ToeIn)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode210: MIXED — toe-in ~1.5m mild near help, still not fused; kill=203");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual203Outer)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode209: REJECT — OUTER @0x4D8E80 same-image (no fusion); use 203; kill=203");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDualTry6)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode208: REJECT — mid-jmp @0x4DA2BA; use 204; kill=204");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDualTry5)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode207: REJECT — tiny @0x541DC0 same-image both eyes (no 3D/fuse); "
+          "use 204; kill=204");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDualTry4)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode206: MIXED — no bounce/phone washout but HOT ~35+/ES + car freeze; "
+          "prefer 204; kill=204");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDualTry3)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode205: REJECT — math helper @0x4DDD50 crashed after load; use 204; "
+          "kill=204");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDualTry2)) {
       ApplyMode162SquareWideBase();
       ForceFpFovDegrees(110, 110, 110);
       EnsureVehicleCamOffDefaults();
@@ -1462,7 +1595,19 @@ bool IsOursFpSameTickBuildDual(StereoMode mode) {
          mode == StereoMode::OursFpSameTickParentDualFreeze ||
          mode == StereoMode::OursFpSameTickParentDualVs ||
          mode == StereoMode::OursFpSameTickParentDualPose ||
-         mode == StereoMode::OursFpSameTickParentDualTry2;
+         mode == StereoMode::OursFpSameTickParentDualTry2 ||
+         mode == StereoMode::OursFpSameTickParentDualTry3 ||
+         mode == StereoMode::OursFpSameTickParentDualTry4 ||
+         mode == StereoMode::OursFpSameTickParentDualTry5 ||
+         mode == StereoMode::OursFpSameTickParentDualTry6 ||
+         mode == StereoMode::OursFpSameTickParentDual203Outer ||
+         mode == StereoMode::OursFpSameTickParentDual203ToeIn ||
+         mode == StereoMode::OursFpSameTickParentDual203ToeInStrong ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpd ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdHalf ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdQtr ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdToeIn ||
+         mode == StereoMode::OursFpSameTickParentDual204DeferredHead;
 }
 
 bool IsOursFpSameTickPhaseRight(StereoMode mode) {
@@ -1494,7 +1639,19 @@ bool IsOursFpSameTickParentDual(StereoMode mode) {
          mode == StereoMode::OursFpSameTickParentDualFreeze ||
          mode == StereoMode::OursFpSameTickParentDualVs ||
          mode == StereoMode::OursFpSameTickParentDualPose ||
-         mode == StereoMode::OursFpSameTickParentDualTry2;
+         mode == StereoMode::OursFpSameTickParentDualTry2 ||
+         mode == StereoMode::OursFpSameTickParentDualTry3 ||
+         mode == StereoMode::OursFpSameTickParentDualTry4 ||
+         mode == StereoMode::OursFpSameTickParentDualTry5 ||
+         mode == StereoMode::OursFpSameTickParentDualTry6 ||
+         mode == StereoMode::OursFpSameTickParentDual203Outer ||
+         mode == StereoMode::OursFpSameTickParentDual203ToeIn ||
+         mode == StereoMode::OursFpSameTickParentDual203ToeInStrong ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpd ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdHalf ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdQtr ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdToeIn ||
+         mode == StereoMode::OursFpSameTickParentDual204DeferredHead;
 }
 
 bool IsOursFpSameTickParentDualFreeze(StereoMode mode) {
@@ -1507,11 +1664,80 @@ bool IsOursFpSameTickParentDualVs(StereoMode mode) {
 
 bool IsOursFpSameTickParentDualPose(StereoMode mode) {
   return mode == StereoMode::OursFpSameTickParentDualPose ||
-         mode == StereoMode::OursFpSameTickParentDualTry2;
+         mode == StereoMode::OursFpSameTickParentDualTry2 ||
+         mode == StereoMode::OursFpSameTickParentDualTry3 ||
+         mode == StereoMode::OursFpSameTickParentDualTry4 ||
+         mode == StereoMode::OursFpSameTickParentDualTry5 ||
+         mode == StereoMode::OursFpSameTickParentDualTry6 ||
+         mode == StereoMode::OursFpSameTickParentDual203Outer ||
+         mode == StereoMode::OursFpSameTickParentDual203ToeIn ||
+         mode == StereoMode::OursFpSameTickParentDual203ToeInStrong ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpd ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdHalf ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdQtr ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdToeIn ||
+         mode == StereoMode::OursFpSameTickParentDual204DeferredHead;
 }
 
 bool IsOursFpSameTickParentDualTry2(StereoMode mode) {
-  return mode == StereoMode::OursFpSameTickParentDualTry2;
+  return mode == StereoMode::OursFpSameTickParentDualTry2 ||
+         mode == StereoMode::OursFpSameTickParentDual204DeferredHead;
+}
+
+bool IsOursFpSameTickParentDualTry3(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDualTry3;
+}
+
+bool IsOursFpSameTickParentDualTry4(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDualTry4;
+}
+
+bool IsOursFpSameTickParentDualTry5(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDualTry5;
+}
+
+bool IsOursFpSameTickParentDualTry6(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDualTry6;
+}
+
+bool IsOursFpSameTickParentDual203Outer(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDual203Outer;
+}
+
+bool IsOursFpSameTickParentDual203ToeIn(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDual203ToeIn ||
+         mode == StereoMode::OursFpSameTickParentDual203ToeInStrong ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdToeIn;
+}
+
+bool IsOursFpSameTickParentDual203ToeInStrong(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDual203ToeInStrong;
+}
+
+bool IsOursFpSameTickParentDual203CloseIpd(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDual203CloseIpd ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdHalf ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdQtr ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdToeIn;
+}
+
+bool IsOursFpSameTickParentDual203CloseIpdHalf(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDual203CloseIpdHalf ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdQtr ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdToeIn;
+}
+
+bool IsOursFpSameTickParentDual203CloseIpdQtr(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDual203CloseIpdQtr ||
+         mode == StereoMode::OursFpSameTickParentDual203CloseIpdToeIn;
+}
+
+bool IsOursFpSameTickParentDual203CloseIpdToeIn(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDual203CloseIpdToeIn;
+}
+
+bool IsOursFpDeferredHeadBone(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDual204DeferredHead;
 }
 
 bool IsOursFpHeadBoneCam(StereoMode mode) {
@@ -1877,6 +2103,16 @@ void EnsureVehicleCamOffDefaults() {
   WriteSmallConfigAlways("gtaiv_dxvk_vr.vehcamoff", "0 -12 0\n");
   VehCamCache().loaded = false;
   LoadVehCamOffOnce();
+}
+
+void EnsureModelCenteredCamOffsets() {
+  // Mode216: no foot/car cam nudges — pivot stays on HEAD bone.
+  WriteSmallConfigAlways("gtaiv_dxvk_vr.vehcamoff", "0 0 0\n");
+  WriteSmallConfigAlways("gtaiv_dxvk_vr.camoff", "0 0 0\n");
+  VehCamCache().loaded = false;
+  LoadVehCamOffOnce();
+  SetEyeForwardCm(0);
+  Log("Config: Mode216 model-centered — camoff/vehcamoff/eyefwd forced 0");
 }
 
 void GetVehicleCamOffsetMeters(float* outRight, float* outForward, float* outUp) {
