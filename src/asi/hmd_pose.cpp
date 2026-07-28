@@ -161,6 +161,13 @@ void UpdateHmdPose(const vr::TrackedDevicePose_t* poses, uint32_t poseCount) {
   CacheEyeToHeadFromHmd();
 }
 
+bool IsOpenXrPoseRenderable(
+    const gtaiv_xr_bridge::PoseBridge& pose) {
+  vr::HmdMatrix34_t matrix{};
+  EyeOffset offsets[2]{};
+  return DecodeOpenXrPose(pose, &matrix, offsets);
+}
+
 void UpdateHmdPoseFromOpenXr(const gtaiv_xr_bridge::PoseBridge& pose) {
   vr::HmdMatrix34_t matrix{};
   EyeOffset offsets[2]{};

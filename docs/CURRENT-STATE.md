@@ -1,6 +1,67 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-28 04:11 PT
+**As of:** 2026-07-28 04:44 PT
+
+## Latest producer pacing pass: two-boundary Mode 57 readback (full-game proof PASS)
+
+The x86 Mode 57 CPU-mailbox producer now spreads one atomic stereo transaction
+over two fresh OpenXR-pose boundaries. Boundary A queues the left-eye
+`GetRenderTargetData` into its persistent system-memory surface and returns
+without locking pixels or changing any mailbox slot, transaction, or descriptor.
+On a later producer call with the exact same pair/context and a strictly newer
+valid host pose, boundary B queues the right eye, locks both completed readbacks,
+hashes/copies both eyes, and publishes one seqlock-protected transaction.
+UI, Mode 55, and Mode 56 retain their immediate path.
+
+Pending state contains scalar pair/context identity only; it does not retain an
+extra GTA `D3DPOOL_DEFAULT` texture reference across calls. Route, pose, producer
+epoch, reference-space, resource-generation, D3D-thread, Reset, disable, and stop
+changes cancel the unpublished stage. A mailbox slot is made odd and its old
+transaction ID is cleared before pixel copy, so a copy/reset failure cannot expose
+partial new pixels under an old transaction. The scheduler uses a 250 ms
+monotonic-time bound rather than a raw producer-call bound.
+
+The first live attempt,
+`out-openxr/runs/20260728-043350-steam-safe/`, exposed why that distinction is
+required. One split transaction completed, but GTA was calling the producer about
+900 times per second while host poses advanced near runtime cadence. The original
+two-call expiry repeatedly rejected pending work before a fresh pose, and the
+launcher's ten-second continuity gate correctly stopped the run. SteamVR remained
+absent and cleanup/restoration completed without failure.
+
+The isolated wall-time fix then passed the complete headless regression:
+
+```text
+out-openxr/runs/20260728-044211-steam-safe/
+```
+
+Its `result.txt` reports `outcome=PROOF_COMPLETE`, matching producer/host world
+endpoints `1906 -> 2520`, receipt-proven pair 600, and all stationary-menu,
+world-load, pause/resume, Start/A, stick/neutral, pose-sweep, sRGB, exact capture
+pose, and host-swapchain-reuse gates. The strict split proof reports
+`phasePose=6830/6831`, `phaseCall=34544/34547`, `phaseGapMs=6.88`,
+`atomic=1`, and pixel-distinct L/R eyes. The three-call gap directly proves that
+the removed two-call timeout was invalid. SteamVR stayed at zero; there were no
+proof, cleanup, archive, or restore failures. Afterward, scoped game/host/SteamVR/
+Rockstar process count was zero and the installed state was verified as
+`backend=off`, `stereo=0`, OpenVR DLL restored, and disable sentinel absent.
+
+On 12 rate-limited world samples, readback mean/p95 using the same sparse-sample
+convention fell from `6.55/9.55 ms` in `040944` to `5.73/8.81 ms`; mean wait was
+about 12.6% lower. Left enqueue rounded to `0.00 ms`, the inter-boundary gap
+averaged `9.41 ms`, and mailbox pixel copy remained about `0.72 ms`. This is a
+measured pacing improvement, not a shipping-smoothness claim: Mode 57 is still
+temporal stereo at roughly 31 pairs per second and still uses synchronous CPU
+readback. The next larger diagnostic option is queue-both/defer-lock; the product
+target remains same-frame stereo plus GPU-only transport.
+
+The tested x86 ASI SHA-256 is
+`497DC6CF812E8D43256EB45E24EE806602761DA27B89E37FC8FEE3846E7152AA`;
+the x64 host SHA-256 is
+`AE3D27A6F964940C6DAD41DA7C5A8A7C39C99FAA87322BF38620B32673C05874`.
+Origin was fetched immediately before this pass; `origin/master` remains
+`01f355b992d87b0b0dba47c3b78a302315b222cf` and is fully contained by this
+branch.
 
 ## Latest producer pacing probe: batched DXVK readback (full-game proof PASS; GPU wait still dominant)
 

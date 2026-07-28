@@ -70,6 +70,8 @@ HRESULT STDMETHODCALLTYPE HookReset(IDirect3DDevice9* self, D3DPRESENT_PARAMETER
   const UINT width = pp ? pp->BackBufferWidth : 0;
   const UINT height = pp ? pp->BackBufferHeight : 0;
   asi::Log("DeviceReset: BEFORE Reset bb=%ux%u - releasing eye RTs", width, height);
+  if (asi::IsOpenXrBridgeRequested())
+    asi::NotifyOpenXrBridgeDeviceLost();
   asi::StereoNotifyDeviceLost();
   const HRESULT result = g_realReset(self, pp);
   // Clear again after Reset in case EndScene raced and recreated a resource.

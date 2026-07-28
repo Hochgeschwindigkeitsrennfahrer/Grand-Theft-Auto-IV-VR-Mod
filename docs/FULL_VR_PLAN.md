@@ -5,15 +5,16 @@
 **Repository baseline:** upstream `01f355b` (Modes 50–53), merged on the
 `codex/openxr-sidecar-integration` branch
 
-**Status:** The corrected Mode 57 build-to-replay receipt chain passed a complete
-headless Elliott full-game run on 2026-07-28. GTA loaded into the world, sustained
-fresh producer/host frames, completed a pause-menu round trip, consumed Start, A,
-forward-stick and neutral input, and completed a scripted head-pose sweep without
-SteamVR. Four receipt-proven L/R pairs passed immediately and the run continued
-through accepted pair 600. Mode 55 remains the mono reliability fallback. Mode
-56's nominal same-frame DrawScene x2 outputs were byte-identical and that seam is
-rejected as the current stereo route. Real Quest 3 visual/comfort acceptance and
-the same-tick product stereo result required by Gate 6 remain pending.
+**Status:** The corrected Mode 57 build-to-replay receipt chain and its
+two-boundary CPU-readback scheduler passed a complete headless Elliott full-game
+run on 2026-07-28. GTA loaded into the world, sustained matching producer/host
+transactions `1906 -> 2520`, completed a pause-menu round trip, consumed Start,
+A, forward-stick and neutral input, and completed a scripted head-pose sweep
+without SteamVR. The run continued through accepted receipt pair 600. Mode 55
+remains the mono reliability fallback. Mode 56's nominal same-frame DrawScene x2
+outputs were byte-identical and that seam is rejected as the current stereo
+route. Real Quest 3 visual/comfort acceptance and the same-tick product stereo
+result required by Gate 6 remain pending.
 
 **Primary headset:** Meta Quest 3
 
@@ -600,6 +601,21 @@ are `1893 -> 2580`. The superseded 2026-07-27 run cannot close this gate. The
 accepted result is still temporal stereo rather than the same-tick product result
 required by Gate 6.
 
+The latest transport/pacing regression is:
+
+```text
+out-openxr/runs/20260728-044211-steam-safe/
+```
+
+It adds an atomic two-boundary CPU-readback gate: queue L without touching the
+mailbox, then queue R and commit both eyes only on a fresh valid host pose with
+the exact same pair/context. The completed proof reached matching world
+transactions `1906 -> 2520`, pair 600, full menu/controller/pose automation, and
+exact restoration with no SteamVR process. Its sparse readback mean/p95 improved
+from `6.55/9.55 ms` to `5.73/8.81 ms`. This closes the scheduling experiment,
+not Gate 6: it adds bounded delivery latency, remains a CPU pixel path, and does
+not make the two eye images same-tick.
+
 ### Gate 6 - complete same-frame stereo through OpenXR
 
 Publish the locked same-frame `StereoPair`:
@@ -775,6 +791,13 @@ The 2026-07-28 Mode 57 headless profile separates the present bottlenecks:
   (`6.55/9.55 ms` versus `6.49/9.36 ms`). Enqueue rounded to zero and the cost
   remained in GPU completion, so a duplicate submission flush was not the main
   bottleneck;
+- splitting Mode 57 over two fresh host-pose boundaries then reduced the same
+  sparse readback mean/p95 to `5.73/8.81 ms` (12 samples). Phase L queues its
+  copy without locking or publishing; the later phase queues R, waits, and
+  atomically commits both eyes. The successful run advanced world transactions
+  `1906 -> 2520`. A 250 ms wall-time bound is required because raw GTA producer
+  calls run much faster than host poses; a rejected two-call bound caused the
+  intentionally retained `043350` negative test to stall;
 - the x64 host previously reacquired and redrew unchanged GTA transactions. It now
   reuses the most recently released OpenXR swapchain image while keeping
   `xrWaitFrame`, pose/input publication, and `xrEndFrame` live. The full-game
@@ -784,6 +807,8 @@ That host change removes redundant work and prevents exact temporal capture pose
 from aging out of the live lookup ring. It does not improve GTA motion rate. The
 remaining Gate 10 path is same-frame dual-eye rendering plus GPU-only transport; a
 CPU-mailbox scheduling change is diagnostic mitigation, not the shipping answer.
+Queue-both/defer-lock is the next larger CPU-path experiment only if another
+measurement is needed before replacing this transport.
 
 Measure separately:
 

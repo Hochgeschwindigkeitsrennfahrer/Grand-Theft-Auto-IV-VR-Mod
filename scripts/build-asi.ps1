@@ -62,10 +62,16 @@ foreach ($requiredBridgeSource in @(
   "StereoMode::OpenXrTemporalStereo",
   "CpuFrameEyeCount",
   "cpu_readback_batch::queueAllBeforeLock(",
+  "cpu_temporal_readback::ScheduleDecision::StageLeft",
   "sampleLockedBgraHash(",
   "rejected exact-mono L/R world readback",
   "pixelDistinct=%d",
-  "enqueueMs=%.2f waitMs=%.2f"
+  "enqueueMs=%.2f waitMs=%.2f",
+  "split=%d leftQueueMs=%.2f phaseGapMs=%.2f",
+  "phasePose=%llu/%llu phaseCall=%llu/%llu",
+  "phaseEpoch=%llu atomic=1",
+  "TemporalReadbackMaxPendingAgeMs",
+  "cpuMailbox_->slotTransactionId[slot] = 0u;"
 )) {
   if (-not $openXrSource.Contains($requiredBridgeSource)) {
     throw "OpenXR stereo-mailbox source check failed: missing '$requiredBridgeSource'"
@@ -157,6 +163,7 @@ $hooksSource = Get-Content -LiteralPath "$Root\src\asi\hooks.cpp" -Raw
 foreach ($requiredResetSource in @(
   "HookReset(",
   "vt[16]",
+  "NotifyOpenXrBridgeDeviceLost();",
   "StereoNotifyDeviceLost();"
 )) {
   if (-not $hooksSource.Contains($requiredResetSource)) {
@@ -236,6 +243,10 @@ cd /d "$Root"
 cl /nologo /EHsc /O2 /MD /W4 /WX /std:c++17 tests\gtaiv_cpu_readback_batch_test.cpp /Fo:"$outDir\gtaiv_cpu_readback_batch_test.obj" /Fe:"$outDir\gtaiv_cpu_readback_batch_test.exe"
 if errorlevel 1 exit /b 1
 "$outDir\gtaiv_cpu_readback_batch_test.exe"
+if errorlevel 1 exit /b 1
+cl /nologo /EHsc /O2 /MD /W4 /WX /std:c++17 tests\gtaiv_cpu_temporal_readback_test.cpp /Fo:"$outDir\gtaiv_cpu_temporal_readback_test.obj" /Fe:"$outDir\gtaiv_cpu_temporal_readback_test.exe"
+if errorlevel 1 exit /b 1
+"$outDir\gtaiv_cpu_temporal_readback_test.exe"
 if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /MD /W4 /WX /std:c++17 tests\gtaiv_stereo_wvp_test.cpp /Fo:"$outDir\gtaiv_stereo_wvp_test.obj" /Fe:"$outDir\gtaiv_stereo_wvp_test.exe"
 if errorlevel 1 exit /b 1

@@ -17,6 +17,8 @@ void UpdateHmdPose(const vr::TrackedDevicePose_t* poses, uint32_t poseCount);
 
 // Converts the standard OpenXR LOCAL-space quaternion/position sample into the
 // same tracking matrix cache used by the established GTA camera code.
+bool IsOpenXrPoseRenderable(
+    const gtaiv_xr_bridge::PoseBridge& pose);
 void UpdateHmdPoseFromOpenXr(const gtaiv_xr_bridge::PoseBridge& pose);
 void InvalidateHmdPose();
 

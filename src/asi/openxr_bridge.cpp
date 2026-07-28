@@ -2,6 +2,7 @@
 
 #include "cam_matrix.h"
 #include "cpu_readback_batch.h"
+#include "cpu_temporal_readback.h"
 #include "hmd_pose.h"
 #include "log.h"
 #include "openxr_controller.h"
@@ -25,6 +26,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -45,6 +47,7 @@ constexpr VkExternalMemoryHandleTypeFlagBits MemoryHandleType =
     VK_EXTERNAL_MEMORY_HANDLE_TYPE_D3D11_TEXTURE_BIT;
 constexpr VkExternalSemaphoreHandleTypeFlagBits FenceHandleType =
     VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_D3D11_FENCE_BIT;
+constexpr uint64_t TemporalReadbackMaxPendingAgeMs = 250u;
 
 std::string moduleDirectory()
 {
@@ -348,13 +351,22 @@ class OpenXrFrameProducer
 public:
     void heartbeat()
     {
+        cancelPendingCpuTemporalReadback(
+            "fresh OpenXR pose unavailable",
+            true);
         publishHeartbeat();
     }
 
-    void publish(IDirect3DDevice9* gameDevice)
+    void publish(
+        IDirect3DDevice9* gameDevice,
+        uint64_t poseProducerEpoch,
+        uint64_t poseFrameId,
+        uint32_t referenceSpaceGeneration,
+        bool renderPoseValid)
     {
         if (permanentlyDisabled_ || !gameDevice)
             return;
+        observeDeviceResetNotification();
 
         const UiPresentationState uiState = GetUiPresentationState();
         const StereoMode stereoMode = GetStereoMode();
@@ -364,9 +376,29 @@ public:
         const bool temporalStereoMode =
             !uiState
             && stereoMode == StereoMode::OpenXrTemporalStereo;
+        ++producerCallOrdinal_;
+        if (producerCallOrdinal_ == 0u)
+            producerCallOrdinal_ = 1u;
+        if (!temporalStereoMode)
+        {
+            cancelPendingCpuTemporalReadback(
+                "presentation left Mode57 world",
+                true);
+        }
+        else if (!renderPoseValid)
+        {
+            cancelPendingCpuTemporalReadback(
+                "current OpenXR render pose invalid",
+                true);
+            publishHeartbeat();
+            return;
+        }
         PairLease lease;
         if (!StereoAcquireOpenXrPair(&lease.pair))
         {
+            cancelPendingCpuTemporalReadback(
+                "completed stereo pair unavailable",
+                true);
             if (!uiState)
                 publishHeartbeat();
             return;
@@ -374,6 +406,9 @@ public:
         if (!lease.pair.poseStamped
             || lease.pair.eyes[0] == lease.pair.eyes[1])
         {
+            cancelPendingCpuTemporalReadback(
+                "captured pair identity invalid",
+                true);
             logRateLimited(
                 "OpenXRBridge: waiting for a pose-stamped, non-aliased L/R pair",
                 lastPairWaitLogTick_);
@@ -384,6 +419,9 @@ public:
             || (!uiState
                 && immersiveMono != lease.pair.immersiveMono))
         {
+            cancelPendingCpuTemporalReadback(
+                "captured pair route changed",
+                true);
             logRateLimited(
                 "OpenXRBridge: captured frame route does not match current "
                 "menu/game state; old transaction held",
@@ -396,6 +434,9 @@ public:
             && !(temporalStereoMode
                 && lease.pair.verifiedTemporalStereo))
         {
+            cancelPendingCpuTemporalReadback(
+                "captured pair timing proof changed",
+                true);
             logRateLimited(
                 "OpenXRBridge: world frame is not one simulation tick/pose; "
                 "transaction withheld unless explicit Mode57 temporal proof "
@@ -411,6 +452,9 @@ public:
             && !(temporalStereoMode
                 && lease.pair.verifiedTemporalStereo))
         {
+            cancelPendingCpuTemporalReadback(
+                "captured pair stereo proof changed",
+                true);
             logRateLimited(
                 "OpenXRBridge: world pair lacks validated same-frame or "
                 "explicit Mode57 temporal proof; transaction withheld",
@@ -418,8 +462,12 @@ public:
             publishHeartbeat();
             return;
         }
-        if (lease.pair.pairId == lastPairId_)
+        if (lastHandledPairId_ != 0u
+            && lease.pair.pairId <= lastHandledPairId_)
         {
+            cancelPendingCpuTemporalReadback(
+                "pair was already handled",
+                false);
             if (!uiState)
                 publishHeartbeat();
             return;
@@ -451,7 +499,12 @@ public:
                     gameDevice,
                     lease.pair,
                     uiState,
-                    immersiveMono))
+                    immersiveMono,
+                    temporalStereoMode,
+                    poseProducerEpoch,
+                    poseFrameId,
+                    referenceSpaceGeneration,
+                    producerCallOrdinal_))
             {
                 logRateLimited(
                     "OpenXRBridge: CPU mailbox capture unavailable; "
@@ -462,6 +515,9 @@ public:
             return;
         }
 
+        cancelPendingCpuTemporalReadback(
+            "CPU mailbox route inactive",
+            true);
         std::array<SourceEye, gtaiv_xr_bridge::EyeCount> source;
         if (!querySourceEyes(gameDevice, lease.pair, source))
         {
@@ -520,6 +576,7 @@ public:
         lastPair_.eyes[0] = nullptr;
         lastPair_.eyes[1] = nullptr;
         lastPairId_ = lease.pair.pairId;
+        markPairHandled(lease.pair.pairId);
         lastPresentationMode_ = uiState
             ? gtaiv_xr_bridge::PresentationMode::UiQuad
             : lease.pair.immersiveMono
@@ -558,6 +615,7 @@ public:
 
     void announceStopped()
     {
+        cancelPendingCpuTemporalReadback("producer stopped", true);
         if (shared_)
         {
             FrameBridge stopped {};
@@ -593,6 +651,12 @@ public:
         // DXVK queue or tear down imported GPU objects under the loader lock;
         // process teardown releases those process-lifetime objects.
         ready_ = false;
+    }
+
+    void notifyDeviceLost()
+    {
+        deviceResetNotification_.fetch_add(
+            1u, std::memory_order_release);
     }
 
 private:
@@ -761,17 +825,135 @@ private:
         return true;
     }
 
+    static cpu_temporal_readback::PairKey temporalReadbackKey(
+        const OpenXrStereoPair& pair,
+        uint64_t poseProducerEpoch,
+        uint32_t referenceSpaceGeneration,
+        uint64_t resourceGeneration)
+    {
+        cpu_temporal_readback::PairKey key {};
+        key.pairId = pair.pairId;
+        key.sourceFrameId[0] = pair.sourceFrameId[0];
+        key.sourceFrameId[1] = pair.sourceFrameId[1];
+        key.poseSequence[0] = pair.poseSequence[0];
+        key.poseSequence[1] = pair.poseSequence[1];
+        key.renderedDisplayTime[0] = pair.renderedDisplayTime[0];
+        key.renderedDisplayTime[1] = pair.renderedDisplayTime[1];
+        key.poseProducerEpoch = poseProducerEpoch;
+        key.resourceGeneration = resourceGeneration;
+        key.width = pair.width;
+        key.height = pair.height;
+        key.contentWidth = pair.contentWidth;
+        key.contentHeight = pair.contentHeight;
+        key.format = static_cast<uint32_t>(pair.format);
+        key.flags =
+            (pair.sameSimulationTick ? 1u << 0u : 0u)
+            | (pair.poseStamped ? 1u << 1u : 0u)
+            | (pair.verifiedWvpStereo ? 1u << 2u : 0u)
+            | (pair.verifiedDrawSceneStereo ? 1u << 3u : 0u)
+            | (pair.verifiedTemporalStereo ? 1u << 4u : 0u)
+            | (pair.uiQuad ? 1u << 5u : 0u)
+            | (pair.immersiveMono ? 1u << 6u : 0u);
+        key.d3dThreadId = GetCurrentThreadId();
+        key.referenceSpaceGeneration = referenceSpaceGeneration;
+        return key;
+    }
+
+    bool queueCpuReadbackEye(
+        IDirect3DDevice9* gameDevice,
+        const OpenXrStereoPair& pair,
+        uint32_t eye,
+        ComPtr<IDirect3DSurface9>& source)
+    {
+        if (!gameDevice
+            || eye >= gtaiv_xr_bridge::EyeCount
+            || !pair.eyes[eye]
+            || !cpuReadbacks_[eye])
+        {
+            return false;
+        }
+
+        D3DSURFACE_DESC description {};
+        return SUCCEEDED(pair.eyes[eye]->GetSurfaceLevel(0u, &source))
+            && source
+            && SUCCEEDED(source->GetDesc(&description))
+            && description.Width == width_
+            && description.Height == height_
+            && description.Format == cpuD3dFormat_
+            && SUCCEEDED(gameDevice->GetRenderTargetData(
+                source.Get(), cpuReadbacks_[eye].Get()));
+    }
+
+    void markPairHandled(uint64_t pairId)
+    {
+        if (pairId > lastHandledPairId_)
+            lastHandledPairId_ = pairId;
+    }
+
+    void observeDeviceResetNotification()
+    {
+        const uint64_t notified =
+            deviceResetNotification_.load(std::memory_order_acquire);
+        if (notified == cpuReadbackGeneration_)
+            return;
+        cancelPendingCpuTemporalReadback(
+            "D3D9 device Reset/loss",
+            true);
+        cpuReadbackGeneration_ = notified != 0u ? notified : 1u;
+    }
+
+    void cancelPendingCpuTemporalReadback(
+        const char* reason,
+        bool consumePair)
+    {
+        if (!temporalReadbackScheduler_.active())
+            return;
+
+        const uint64_t pairId =
+            temporalReadbackScheduler_.pendingPairId();
+        const uint64_t gatePose =
+            temporalReadbackScheduler_.gatePoseFrameId();
+        if (consumePair)
+            markPairHandled(pairId);
+        temporalReadbackScheduler_.cancel();
+        pendingTemporalLeftQueueMs_ = 0.0;
+        pendingTemporalStageQpc_ = 0;
+
+        const uint64_t now = GetTickCount64();
+        if (lastTemporalCancelLogTick_ == 0u
+            || now - lastTemporalCancelLogTick_ >= 5000u)
+        {
+            Log(
+                "OpenXRBridge: Mode57 CPU readback pending pair=%llu "
+                "poseGate=%llu cancelled reason=%s consumed=%d; "
+                "no mailbox transaction exposed",
+                static_cast<unsigned long long>(pairId),
+                static_cast<unsigned long long>(gatePose),
+                reason ? reason : "unspecified",
+                consumePair ? 1 : 0);
+            lastTemporalCancelLogTick_ = now;
+        }
+    }
+
     bool publishCpuMailboxFrame(
         IDirect3DDevice9* gameDevice,
         const OpenXrStereoPair& pair,
         const UiPresentationState& uiState,
-        bool immersiveMono)
+        bool immersiveMono,
+        bool temporalStereoMode,
+        uint64_t poseProducerEpoch,
+        uint64_t poseFrameId,
+        uint32_t referenceSpaceGeneration,
+        uint64_t producerCallOrdinal)
     {
         if (!cpuMailboxMode_
             || !cpuMailbox_
             || !gameDevice
             || !pair.eyes[0])
         {
+            cancelPendingCpuTemporalReadback(
+                "CPU mailbox resources unavailable",
+                true);
             return false;
         }
 
@@ -784,7 +966,23 @@ private:
             ? gtaiv_xr_bridge::EyeCount
             : 1u;
         if (sourceEyeCount == gtaiv_xr_bridge::EyeCount && !pair.eyes[1])
+        {
+            cancelPendingCpuTemporalReadback(
+                "right eye unavailable",
+                true);
             return false;
+        }
+
+        const bool splitTemporalReadback =
+            temporalStereoMode
+            && distinctStereo
+            && pair.verifiedTemporalStereo;
+        if (!splitTemporalReadback)
+        {
+            cancelPendingCpuTemporalReadback(
+                "immediate CPU mailbox route selected",
+                true);
+        }
 
         std::array<ComPtr<IDirect3DSurface9>, gtaiv_xr_bridge::EyeCount>
             sources;
@@ -809,43 +1007,183 @@ private:
         LARGE_INTEGER afterEnqueue {};
         LARGE_INTEGER afterReadback {};
         LARGE_INTEGER finished {};
+        double stagedLeftQueueMs = 0.0;
+        double phaseGapMs = 0.0;
+        uint64_t phaseGatePose = 0u;
+        uint64_t phaseGateCall = 0u;
         QueryPerformanceCounter(&start);
-        const bool readbacksReady =
-            cpu_readback_batch::queueAllBeforeLock(
-                sourceEyeCount,
-                [&](uint32_t eye) {
-                    D3DSURFACE_DESC description {};
-                    return cpuReadbacks_[eye]
-                        && SUCCEEDED(pair.eyes[eye]->GetSurfaceLevel(
-                            0u, &sources[eye]))
-                        && sources[eye]
-                        && SUCCEEDED(sources[eye]->GetDesc(&description))
-                        && description.Width == width_
-                        && description.Height == height_
-                        && description.Format == cpuD3dFormat_
-                        && SUCCEEDED(gameDevice->GetRenderTargetData(
-                            sources[eye].Get(),
-                            cpuReadbacks_[eye].Get()));
-                },
-                [&]() {
-                    QueryPerformanceCounter(&afterEnqueue);
-                },
-                [&](uint32_t eye) {
-                    if (FAILED(cpuReadbacks_[eye]->LockRect(
-                            &locked[eye],
-                            nullptr,
-                            D3DLOCK_READONLY)))
-                    {
-                        return false;
-                    }
-                    isLocked[eye] = true;
-                    return locked[eye].pBits
-                        && locked[eye].Pitch
-                            >= static_cast<INT>(rowBytes);
-                });
+
+        bool readbacksReady = false;
+        if (splitTemporalReadback)
+        {
+            const cpu_temporal_readback::PairKey key =
+                temporalReadbackKey(
+                    pair,
+                    poseProducerEpoch,
+                    referenceSpaceGeneration,
+                    cpuReadbackGeneration_);
+            const uint64_t pendingBefore =
+                temporalReadbackScheduler_.pendingPairId();
+            const cpu_temporal_readback::ScheduleDecision decision =
+                temporalReadbackScheduler_.decide(
+                    key,
+                    poseFrameId,
+                    producerCallOrdinal,
+                    GetTickCount64(),
+                    TemporalReadbackMaxPendingAgeMs);
+            if (decision
+                == cpu_temporal_readback::ScheduleDecision::Rejected)
+            {
+                markPairHandled(pendingBefore);
+                markPairHandled(pair.pairId);
+                logRateLimited(
+                    "OpenXRBridge: Mode57 CPU readback rejected changed "
+                    "pair/pose/thread metadata; no transaction exposed",
+                    lastTemporalRejectLogTick_);
+                publishHeartbeat();
+                return true;
+            }
+            if (decision
+                == cpu_temporal_readback::ScheduleDecision::WaitForFreshPose)
+            {
+                publishHeartbeat();
+                return true;
+            }
+            if (decision
+                    == cpu_temporal_readback::ScheduleDecision::StageLeft
+                || decision
+                    == cpu_temporal_readback::ScheduleDecision::ReplaceWithLeft)
+            {
+                if (decision
+                    == cpu_temporal_readback::
+                        ScheduleDecision::ReplaceWithLeft)
+                {
+                    markPairHandled(pendingBefore);
+                }
+                LARGE_INTEGER staged {};
+                if (!queueCpuReadbackEye(
+                        gameDevice, pair, 0u, sources[0]))
+                {
+                    cancelPendingCpuTemporalReadback(
+                        "left-eye queue failed",
+                        true);
+                    return false;
+                }
+                QueryPerformanceCounter(&staged);
+                LARGE_INTEGER frequency {};
+                QueryPerformanceFrequency(&frequency);
+                const double ticksPerMs =
+                    frequency.QuadPart > 0
+                        ? static_cast<double>(frequency.QuadPart) / 1000.0
+                        : 1.0;
+                pendingTemporalLeftQueueMs_ =
+                    static_cast<double>(
+                        staged.QuadPart - start.QuadPart)
+                    / ticksPerMs;
+                pendingTemporalStageQpc_ = staged.QuadPart;
+                const uint64_t stagedCount = ++temporalStageCount_;
+                if (stagedCount <= 4u || stagedCount % 60u == 0u)
+                {
+                    Log(
+                        "OpenXRBridge: Mode57 CPU readback phase=L "
+                        "pair=%llu poseGate=%llu leftQueueMs=%.2f "
+                        "transactionHeld=%llu replaced=%d atomic=1",
+                        static_cast<unsigned long long>(pair.pairId),
+                        static_cast<unsigned long long>(poseFrameId),
+                        pendingTemporalLeftQueueMs_,
+                        static_cast<unsigned long long>(nextTransaction_),
+                        decision
+                                == cpu_temporal_readback::
+                                    ScheduleDecision::ReplaceWithLeft
+                            ? 1
+                            : 0);
+                }
+                publishHeartbeat();
+                return true;
+            }
+
+            stagedLeftQueueMs = pendingTemporalLeftQueueMs_;
+            phaseGatePose =
+                temporalReadbackScheduler_.gatePoseFrameId();
+            phaseGateCall =
+                temporalReadbackScheduler_.gateCallOrdinal();
+            if (pendingTemporalStageQpc_ != 0)
+            {
+                LARGE_INTEGER frequency {};
+                QueryPerformanceFrequency(&frequency);
+                const double ticksPerMs =
+                    frequency.QuadPart > 0
+                        ? static_cast<double>(frequency.QuadPart) / 1000.0
+                        : 1.0;
+                phaseGapMs =
+                    static_cast<double>(
+                        start.QuadPart - pendingTemporalStageQpc_)
+                    / ticksPerMs;
+            }
+            if (!queueCpuReadbackEye(
+                    gameDevice, pair, 1u, sources[1]))
+            {
+                cancelPendingCpuTemporalReadback(
+                    "right-eye queue failed",
+                    true);
+                return false;
+            }
+            QueryPerformanceCounter(&afterEnqueue);
+            readbacksReady = true;
+            for (uint32_t eye = 0u; eye < sourceEyeCount; ++eye)
+            {
+                if (FAILED(cpuReadbacks_[eye]->LockRect(
+                        &locked[eye],
+                        nullptr,
+                        D3DLOCK_READONLY)))
+                {
+                    readbacksReady = false;
+                    break;
+                }
+                isLocked[eye] = true;
+                if (!locked[eye].pBits
+                    || locked[eye].Pitch < static_cast<INT>(rowBytes))
+                {
+                    readbacksReady = false;
+                    break;
+                }
+            }
+        }
+        else
+        {
+            readbacksReady =
+                cpu_readback_batch::queueAllBeforeLock(
+                    sourceEyeCount,
+                    [&](uint32_t eye) {
+                        return queueCpuReadbackEye(
+                            gameDevice, pair, eye, sources[eye]);
+                    },
+                    [&]() {
+                        QueryPerformanceCounter(&afterEnqueue);
+                    },
+                    [&](uint32_t eye) {
+                        if (FAILED(cpuReadbacks_[eye]->LockRect(
+                                &locked[eye],
+                                nullptr,
+                                D3DLOCK_READONLY)))
+                        {
+                            return false;
+                        }
+                        isLocked[eye] = true;
+                        return locked[eye].pBits
+                            && locked[eye].Pitch
+                                >= static_cast<INT>(rowBytes);
+                    });
+        }
         if (!readbacksReady)
         {
             unlockAll();
+            if (splitTemporalReadback)
+            {
+                cancelPendingCpuTemporalReadback(
+                    "staged eye lock failed",
+                    true);
+            }
             return false;
         }
         if (auditEyeContent)
@@ -862,6 +1200,12 @@ private:
                 || eyeHashes[0] == eyeHashes[1])
             {
                 unlockAll();
+                if (splitTemporalReadback)
+                {
+                    cancelPendingCpuTemporalReadback(
+                        "staged L/R pixels rejected",
+                        true);
+                }
                 logRateLimited(
                     "OpenXRBridge: rejected exact-mono L/R world readback; "
                     "last proved stereo transaction retained",
@@ -871,6 +1215,27 @@ private:
         }
         QueryPerformanceCounter(&afterReadback);
 
+        if (deviceResetNotification_.load(std::memory_order_acquire)
+            != cpuReadbackGeneration_)
+        {
+            unlockAll();
+            cancelPendingCpuTemporalReadback(
+                "D3D9 Reset raced staged readback",
+                true);
+            return false;
+        }
+        const uint64_t transaction = nextTransaction_ + 1u;
+        if (transaction == 0u)
+        {
+            unlockAll();
+            if (splitTemporalReadback)
+            {
+                cancelPendingCpuTemporalReadback(
+                    "transaction counter wrapped",
+                    true);
+            }
+            return false;
+        }
         const uint32_t slot = nextSlot_;
         nextSlot_ =
             (nextSlot_ + 1u) % gtaiv_xr_bridge::SlotCount;
@@ -881,6 +1246,11 @@ private:
             InterlockedCompareExchange(slotSequence, 0, 0);
         LONG writing = (current & 1) ? current + 2 : current + 1;
         InterlockedExchange(slotSequence, writing);
+        // Invalidate the old transaction while the slot is write-locked. If a
+        // Reset or copy failure aborts this publication, closing the seqlock
+        // must expose an invalid slot rather than partial pixels under the
+        // previous transaction ID.
+        cpuMailbox_->slotTransactionId[slot] = 0u;
         MemoryBarrier();
 
         for (uint32_t eye = 0u; eye < sourceEyeCount; ++eye)
@@ -890,6 +1260,12 @@ private:
             {
                 unlockAll();
                 InterlockedExchange(slotSequence, writing + 1);
+                if (splitTemporalReadback)
+                {
+                    cancelPendingCpuTemporalReadback(
+                        "mailbox slot unavailable",
+                        true);
+                }
                 return false;
             }
             const auto* sourceBytes =
@@ -906,9 +1282,15 @@ private:
         }
         unlockAll();
 
-        const uint64_t transaction = nextTransaction_ + 1u;
-        if (transaction == 0u)
+        if (deviceResetNotification_.load(std::memory_order_acquire)
+            != cpuReadbackGeneration_)
+        {
+            InterlockedExchange(slotSequence, writing + 1);
+            cancelPendingCpuTemporalReadback(
+                "D3D9 Reset raced mailbox copy",
+                true);
             return false;
+        }
         cpuMailbox_->slotTransactionId[slot] = transaction;
         MemoryBarrier();
         InterlockedExchange(slotSequence, writing + 1);
@@ -919,6 +1301,13 @@ private:
         lastPair_.eyes[0] = nullptr;
         lastPair_.eyes[1] = nullptr;
         lastPairId_ = pair.pairId;
+        markPairHandled(pair.pairId);
+        if (splitTemporalReadback)
+        {
+            temporalReadbackScheduler_.complete();
+            pendingTemporalLeftQueueMs_ = 0.0;
+            pendingTemporalStageQpc_ = 0;
+        }
         lastPresentationMode_ = uiState
             ? gtaiv_xr_bridge::PresentationMode::UiQuad
             : immersiveMono
@@ -946,6 +1335,9 @@ private:
                 "sameTick=%d temporal=%d "
                 "pose=%llu/%llu source=%llu/%llu capture=%ux%u "
                 "readbackMs=%.2f enqueueMs=%.2f waitMs=%.2f copyMs=%.2f "
+                "split=%d leftQueueMs=%.2f phaseGapMs=%.2f "
+                "phasePose=%llu/%llu phaseCall=%llu/%llu "
+                "phaseEpoch=%llu atomic=1 "
                 "eyeHashL=%016llx eyeHashR=%016llx pixelDistinct=%d",
                 static_cast<unsigned long long>(transaction),
                 slot,
@@ -980,6 +1372,17 @@ private:
                 static_cast<double>(
                     finished.QuadPart - afterReadback.QuadPart)
                     / ticksPerMs,
+                splitTemporalReadback ? 1 : 0,
+                stagedLeftQueueMs,
+                phaseGapMs,
+                static_cast<unsigned long long>(phaseGatePose),
+                static_cast<unsigned long long>(
+                    splitTemporalReadback ? poseFrameId : 0u),
+                static_cast<unsigned long long>(phaseGateCall),
+                static_cast<unsigned long long>(
+                    splitTemporalReadback ? producerCallOrdinal : 0u),
+                static_cast<unsigned long long>(
+                    splitTemporalReadback ? poseProducerEpoch : 0u),
                 static_cast<unsigned long long>(eyeHashes[0]),
                 static_cast<unsigned long long>(eyeHashes[1]),
                 auditEyeContent
@@ -2053,6 +2456,9 @@ private:
     {
         if (permanentlyDisabled_)
             return;
+        cancelPendingCpuTemporalReadback(
+            reason ? reason : "producer disabled",
+            true);
         permanentlyDisabled_ = true;
         Log(
             "OpenXRBridge: DISABLED for this process - %s; no retry, "
@@ -2114,6 +2520,7 @@ private:
         gtaiv_xr_bridge::EyeCount> cpuReadbacks_;
     D3DFORMAT cpuD3dFormat_ = D3DFMT_UNKNOWN;
     PixelFormat cpuProtocolFormat_ = PixelFormat::Unknown;
+    cpu_temporal_readback::Scheduler temporalReadbackScheduler_;
 
     OpenXrStereoPair lastPair_ {};
     uint64_t producerEpoch_ = 0u;
@@ -2121,13 +2528,22 @@ private:
     uint64_t adapterLuid_ = 0u;
     uint64_t nextTransaction_ = 0u;
     uint64_t lastPairId_ = 0u;
+    uint64_t lastHandledPairId_ = 0u;
+    uint64_t producerCallOrdinal_ = 0u;
+    uint64_t cpuReadbackGeneration_ = 1u;
+    std::atomic<uint64_t> deviceResetNotification_ {1u};
     uint64_t lastHeartbeatPublishTick_ = 0u;
     uint64_t lastPairWaitLogTick_ = 0u;
     uint64_t lastRouteWaitLogTick_ = 0u;
     uint64_t lastBusyLogTick_ = 0u;
     uint64_t lastCpuFailureLogTick_ = 0u;
     uint64_t lastStereoDuplicateLogTick_ = 0u;
+    uint64_t lastTemporalCancelLogTick_ = 0u;
+    uint64_t lastTemporalRejectLogTick_ = 0u;
     uint64_t cpuCaptureCount_ = 0u;
+    uint64_t temporalStageCount_ = 0u;
+    int64_t pendingTemporalStageQpc_ = 0;
+    double pendingTemporalLeftQueueMs_ = 0.0;
     uint32_t resourceGeneration_ = 0u;
     uint32_t currentSlot_ = 0u;
     uint32_t nextSlot_ = 0u;
@@ -2223,7 +2639,11 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
         return true;
     };
     if (openVrLoaded())
+    {
+        if (g_producer)
+            g_producer->heartbeat();
         return;
+    }
 
     gtaiv_xr_bridge::PoseBridge pose {};
     if (!GetLatestOpenXrPoseBridge(&pose))
@@ -2245,6 +2665,11 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
         return;
     }
     g_openXrPoseLostLogged = false;
+    const bool renderPoseValid =
+        pose.producerEpoch != 0u
+        && pose.frameId != 0u
+        && pose.predictedDisplayTime != 0
+        && IsOpenXrPoseRenderable(pose);
     StereoSetOpenXrRenderPose(
         g_openXrHavePoseForNextFrame
             ? &g_openXrPoseForNextFrame
@@ -2324,7 +2749,11 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
 
     StereoRenderOnDevice(device);
     if (openVrLoaded())
+    {
+        if (g_producer)
+            g_producer->heartbeat();
         return;
+    }
     UpdateGameFovFromDevice(device);
     PollCamHotkeys();
     PollIpdScaleHotkey();
@@ -2332,7 +2761,14 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
     PollStereoScaleHotkey();
     PumpOpenXrControllerBridge();
     if (g_producer)
-        g_producer->publish(device);
+    {
+        g_producer->publish(
+            device,
+            pose.producerEpoch,
+            pose.frameId,
+            pose.referenceSpaceGeneration,
+            renderPoseValid);
+    }
     // Keep the established GTA-side locomotion/right-stick behavior identical
     // across compositors. OpenXR only supplies the cached HMD pose and XInput
     // state; vr_move.cpp remains the single owner of gameplay movement policy.
@@ -2345,5 +2781,11 @@ void ShutdownOpenXrBridge()
     StereoSetOpenXrRenderPose(nullptr);
     if (g_producer)
         g_producer->announceStopped();
+}
+
+void NotifyOpenXrBridgeDeviceLost()
+{
+    if (g_producer)
+        g_producer->notifyDeviceLost();
 }
 }

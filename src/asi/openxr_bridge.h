@@ -17,5 +17,6 @@ VrBackend GetVrBackend();
 bool IsOpenXrBridgeRequested();
 bool IsOpenVrBridgeRequested();
 void PublishOpenXrFrame(IDirect3DDevice9* device);
+void NotifyOpenXrBridgeDeviceLost();
 void ShutdownOpenXrBridge();
 }

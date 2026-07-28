@@ -7,6 +7,33 @@ through its child `XR_RUNTIME_JSON` environment.
 
 ## Verification status
 
+The two-boundary Mode 57 CPU-readback scheduler passed the current complete
+full-game regression:
+
+```text
+out-openxr/runs/20260728-044211-steam-safe/
+```
+
+That run reports `outcome=PROOF_COMPLETE`, matching producer/host world endpoints
+`1906 -> 2520`, receipt-proven pair 600, and every menu, input, color, pose,
+swapchain-reuse, cleanup, and restoration gate. It additionally requires a
+deferred-left stage plus a completed `split=1 atomic=1 pixelDistinct=1`
+transaction. The recorded split advanced host pose `6830/6831` and producer call
+`34544/34547` over `6.88 ms`; the launcher accepts only a positive gap no greater
+than the producer's 250 ms safety bound. SteamVR remained absent.
+
+Twelve sparse world samples reduced readback mean/p95 from `6.55/9.55 ms` in
+`040944` to `5.73/8.81 ms`; mean wait was about 12.6% lower. This validates the
+two-boundary scheduling mitigation, but Mode 57 remains temporal and CPU-backed.
+It is not the same-frame/GPU-only product result.
+
+The preceding `20260728-043350-steam-safe` attempt is a retained negative test.
+Its two-call pending-age rule expired before a new host pose because GTA invokes
+the producer far faster than runtime pose cadence. The ten-second transaction
+stall gate aborted that run, and cleanup/restoration still passed. The accepted
+implementation uses monotonic elapsed time, not producer-call count, as its
+bounded-age safety rule.
+
 The batched DXVK CPU-readback ordering passed a further complete full-game
 regression:
 
@@ -163,6 +190,8 @@ WORLD LOAD READY
 continuous world frames proven
 Mode57 build-to-replay receipt PASS
 Mode57 mailbox contains temporal, pixel-distinct L/R eyes
+Mode57 deferred-left CPU readback stage PASS
+Mode57 two-boundary atomic CPU readback PASS
 Mode57 temporal L/R transaction accepted by host
 Mode57 per-eye capture poses active in OpenXR host
 unchanged OpenXR world swapchain reuse READY
@@ -182,6 +211,12 @@ stereoProofComplete=True
 worldLoadFullyReady=True
 pauseRoundTrip=True
 temporalBuildReplayReceiptReady=True
+temporalSplitStageReady=True
+temporalSplitReadbackReady=True
+temporalSplitPhasePoses=.../...
+temporalSplitPhaseCalls=.../...
+temporalSplitPhaseEpoch=...
+temporalSplitPhaseGapMs=...
 hostSwapchainReuseReady=True
 hostSwapchainReuseFramesLowerBound=...
 hostSwapchainUpdatesLowerBound=...
@@ -206,5 +241,12 @@ be nonzero, stable across the accepted L/R pair, and equal to the owner recorded
 for its own lane. No cross-lane thread equality or inequality is assumed.
 `endscene-entry` is precise: capture and validation happen at the matching
 `EndScene` hook entry, before GTA calls the real D3D9 `EndScene`.
+
+For the split gate, the current phase pose must be greater than the staged pose,
+the current producer call must be greater than the staged call, the producer
+epoch must be nonzero, and `0 < temporalSplitPhaseGapMs <= 250`. The corresponding
+mailbox line must contain `split=1`, `atomic=1`, and `pixelDistinct=1`. A phase-L
+marker alone or one accepted transaction cannot satisfy the later continuous
+world-frame gate.
 
 Mode 57 is temporal separate-eye stereo. Never relabel it as same-tick stereo.

@@ -817,6 +817,8 @@ $temporalPixelDistinct = $StereoMode -ne 57
 $temporalHostAccepted = $StereoMode -ne 57
 $temporalCapturePoseActive = $StereoMode -ne 57
 $temporalBuildReplayReceiptReady = $StereoMode -ne 57
+$temporalSplitStageReady = $StereoMode -ne 57
+$temporalSplitReadbackReady = $StereoMode -ne 57
 $temporalPairTransaction = [uint64]0
 $temporalPairOrdinal = [uint64]0
 $temporalBuildReplayProofPairOrdinal = [uint64]0
@@ -824,6 +826,12 @@ $temporalSourceFrameLeft = [uint64]0
 $temporalSourceFrameRight = [uint64]0
 $temporalPoseSequenceLeft = [uint64]0
 $temporalPoseSequenceRight = [uint64]0
+$temporalSplitPhaseGatePose = [uint64]0
+$temporalSplitPhaseCurrentPose = [uint64]0
+$temporalSplitPhaseGateCall = [uint64]0
+$temporalSplitPhaseCurrentCall = [uint64]0
+$temporalSplitPhaseEpoch = [uint64]0
+$temporalSplitPhaseGapMs = [double]0
 $stereoProofComplete =
   $stereoCameraDistanceReady -and
   $stereoPixelDistinct -and
@@ -833,7 +841,9 @@ $stereoProofComplete =
   $temporalPixelDistinct -and
   $temporalHostAccepted -and
   $temporalCapturePoseActive -and
-  $temporalBuildReplayReceiptReady
+  $temporalBuildReplayReceiptReady -and
+  $temporalSplitStageReady -and
+  $temporalSplitReadbackReady
 $controllerProofComplete = $false
 $deviceResetObserved = $false
 $deviceResetRecovered = $false
@@ -1600,6 +1610,73 @@ try {
           "MARKER: Mode57 mailbox contains temporal, pixel-distinct L/R eyes"
         )
       }
+      $temporalSplitStagePattern =
+        "OpenXRBridge: Mode57 CPU readback phase=L pair=(\d+) " +
+        "poseGate=(\d+) leftQueueMs=[0-9]+(?:\.[0-9]+)? " +
+        "transactionHeld=(\d+) replaced=[01] atomic=1"
+      if (-not $temporalSplitStageReady -and
+          $gameText -match $temporalSplitStagePattern) {
+        $stagePair = [uint64]$Matches[1]
+        $stagePose = [uint64]$Matches[2]
+        $stageTransaction = [uint64]$Matches[3]
+        if ($stagePair -gt 0 -and
+            $stagePose -gt 0 -and
+            $stageTransaction -gt 0) {
+          $temporalSplitStageReady = $true
+          Write-Status (
+            "MARKER: Mode57 deferred-left CPU readback stage PASS " +
+            "pair={0} pose={1} transactionHeld={2} atomic=1" -f
+            $stagePair,
+            $stagePose,
+            $stageTransaction
+          )
+        }
+      }
+      $temporalSplitReadbackPattern =
+        "OpenXRBridge: CPU mailbox transaction=(\d+) slot=\d+ " +
+        "pair=(\d+) presentation=world-temporal-stereo eyes=2 " +
+        "sameTick=0 temporal=1[^\r\n]*split=1[^\r\n]*" +
+        "phaseGapMs=([0-9]+(?:\.[0-9]+)?)[^\r\n]*" +
+        "phasePose=(\d+)/(\d+) phaseCall=(\d+)/(\d+) " +
+        "phaseEpoch=(\d+) atomic=1[^\r\n]*pixelDistinct=1"
+      foreach ($splitMatch in
+          [regex]::Matches($gameText, $temporalSplitReadbackPattern)) {
+        $candidatePhaseGapMs = [double]::Parse(
+          $splitMatch.Groups[3].Value,
+          [Globalization.CultureInfo]::InvariantCulture
+        )
+        $candidateGatePose = [uint64]$splitMatch.Groups[4].Value
+        $candidateCurrentPose = [uint64]$splitMatch.Groups[5].Value
+        $candidateGateCall = [uint64]$splitMatch.Groups[6].Value
+        $candidateCurrentCall = [uint64]$splitMatch.Groups[7].Value
+        $candidatePhaseEpoch = [uint64]$splitMatch.Groups[8].Value
+        if ($candidatePhaseGapMs -gt 0.0 -and
+            $candidatePhaseGapMs -le 250.0 -and
+            $candidateGatePose -gt 0 -and
+            $candidateCurrentPose -gt $candidateGatePose -and
+            $candidateCurrentCall -gt $candidateGateCall -and
+            $candidatePhaseEpoch -gt 0) {
+          $temporalSplitPhaseGatePose = $candidateGatePose
+          $temporalSplitPhaseCurrentPose = $candidateCurrentPose
+          $temporalSplitPhaseGateCall = $candidateGateCall
+          $temporalSplitPhaseCurrentCall = $candidateCurrentCall
+          $temporalSplitPhaseEpoch = $candidatePhaseEpoch
+          $temporalSplitPhaseGapMs = $candidatePhaseGapMs
+          if (-not $temporalSplitReadbackReady) {
+            $temporalSplitReadbackReady = $true
+            Write-Status (
+              "MARKER: Mode57 two-boundary atomic CPU readback PASS " +
+              "phasePose={0}/{1} phaseCall={2}/{3} epoch={4} gapMs={5:F2}" -f
+              $candidateGatePose,
+              $candidateCurrentPose,
+              $candidateGateCall,
+              $candidateCurrentCall,
+              $candidatePhaseEpoch,
+              $candidatePhaseGapMs
+            )
+          }
+        }
+      }
       $temporalHostProofPattern =
         "GameBridge: CPU mailbox acquired transaction=\d+" +
         "(?=[^\r\n]*presentation=world-temporal-stereo)" +
@@ -2183,6 +2260,8 @@ try {
               $temporalHostAccepted -and
               $temporalCapturePoseActive -and
               $temporalBuildReplayReceiptReady -and
+              $temporalSplitStageReady -and
+              $temporalSplitReadbackReady -and
               $continuousWorldFrames
               break
             }
@@ -2410,7 +2489,9 @@ try {
       $temporalPixelDistinct -and
       $temporalHostAccepted -and
       $temporalCapturePoseActive -and
-      $temporalBuildReplayReceiptReady
+      $temporalBuildReplayReceiptReady -and
+      $temporalSplitStageReady -and
+      $temporalSplitReadbackReady
     if ($StopWhenProofComplete -and
         ((-not $deviceResetObserved) -or $deviceResetRecovered) -and
         $postResetProducerFresh -and
@@ -2668,7 +2749,9 @@ finally {
     $temporalPixelDistinct -and
     $temporalHostAccepted -and
     $temporalCapturePoseActive -and
-    $temporalBuildReplayReceiptReady
+    $temporalBuildReplayReceiptReady -and
+    $temporalSplitStageReady -and
+    $temporalSplitReadbackReady
   $result = @(
     "outcome=$outcome"
     "failure=$failure"
@@ -2737,6 +2820,12 @@ finally {
     "temporalHostAccepted=$temporalHostAccepted"
     "temporalCapturePoseActive=$temporalCapturePoseActive"
     "temporalBuildReplayReceiptReady=$temporalBuildReplayReceiptReady"
+    "temporalSplitStageReady=$temporalSplitStageReady"
+    "temporalSplitReadbackReady=$temporalSplitReadbackReady"
+    "temporalSplitPhasePoses=$temporalSplitPhaseGatePose/$temporalSplitPhaseCurrentPose"
+    "temporalSplitPhaseCalls=$temporalSplitPhaseGateCall/$temporalSplitPhaseCurrentCall"
+    "temporalSplitPhaseEpoch=$temporalSplitPhaseEpoch"
+    "temporalSplitPhaseGapMs=$($temporalSplitPhaseGapMs.ToString('F2', [Globalization.CultureInfo]::InvariantCulture))"
     "temporalBuildReplayProofPairOrdinal=$temporalBuildReplayProofPairOrdinal"
     "temporalPairTransaction=$temporalPairTransaction"
     "temporalPairOrdinal=$temporalPairOrdinal"
