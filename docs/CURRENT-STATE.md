@@ -63,6 +63,16 @@ Origin was fetched immediately before this pass; `origin/master` remains
 `01f355b992d87b0b0dba47c3b78a302315b222cf` and is fully contained by this
 branch.
 
+The same fetch advertised a new non-release backup ref,
+`origin/backup/pre-gplasync-20260728` at `7a546f9`. It was audited and is
+intentionally **not merged**. Its own state file records Mode 168 causing repeated
+`VK_ERROR_DEVICE_LOST` and a hard freeze; Modes 163-167 retain the flicker-prone
+tiny-render-target gate; its HUD experiment scans/writes broad live-memory
+matches; and `pack-mode167-zip.ps1` would package Rockstar `hud.dat`, which this
+project must not distribute. It also replaces the main state history and would
+reject current OpenXR modes 54-57 unless hand-resolved. This is an experiment
+snapshot for selective future review, not newer working upstream.
+
 ## Latest producer pacing probe: batched DXVK readback (full-game proof PASS; GPU wait still dominant)
 
 The x86 CPU-mailbox producer now queues `GetRenderTargetData` for both Mode 57
@@ -271,11 +281,12 @@ commit at `origin/cursor/setup-dev-requirements-d131` (`5308417`), is now integr
 Its Modes 120–136 and supporting camera, late-latch, performance, and setup code remain
 available as the explicit OpenVR/Reverb G2 fallback.
 
-Every fetched origin ref was checked. The only origin ref not ancestral to this
-branch is `origin/backup/main-session-20260727` (`f31c10e`), the alternate Mode 88
+Every fetched origin ref was checked. Two origin refs are not ancestral to this
+branch. `origin/backup/main-session-20260727` (`f31c10e`) is the alternate Mode 88
 main-worktree A/B backup captured one second before the clean Mode 136 snapshot.
-It is retained remotely for comparison and is not the newer clean release or a
-merge target for this OpenXR branch.
+`origin/backup/pre-gplasync-20260728` (`7a546f9`) is the later experimental
+Modes 163-168 snapshot described above. Both remain remote comparison refs; neither
+is a clean release or a merge target for this OpenXR branch.
 
 The prior GPU bridge is not a usable gameplay route: its host release fence blocked
 the GTA/DXVK queue after a few world transactions, leaving the headset on stale
