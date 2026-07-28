@@ -463,12 +463,19 @@ void ReloadStereoMode() {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadStereoScale();
-    if (v == static_cast<int>(StereoMode::OursFpStableCarHud)) {
+    if (v == static_cast<int>(StereoMode::OursFpSafeFlicker)) {
       ApplyMode162SquareWideBase();
       EnsureVehicleCamOffDefaults();
       EnsureHudOffDefaults();
-      Log("Mode168: OURS+STABLE+CAR+HUD — Mode167 cam/HUD + flicker-stable dual "
-          "(everyN=1, atomic L/R, no skip-gate, hitch→live BB); kill=167/162");
+      Log("Mode169: OURS+SAFE-FLICKER — Mode167 cam/HUD + safe dual "
+          "(dualn=2, atomic L/R, no skip-gate, NO Flush, hitch→HOLD last stereo); "
+          "kill=167/162 (168=DEVICE_LOST)");
+    } else if (v == static_cast<int>(StereoMode::OursFpStableCarHud)) {
+      ApplyMode162SquareWideBase();
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      Log("Mode168: OURS+STABLE+CAR+HUD — FAILED DEVICE_LOST (everyN=1+Flush); "
+          "prefer Mode169; kill=167/162");
     } else if (v == static_cast<int>(StereoMode::OursFpCarHud)) {
       ApplyMode162SquareWideBase();
       EnsureVehicleCamOffDefaults();
@@ -1023,7 +1030,8 @@ bool IsHeadHideNativeWithFp(StereoMode mode) {
 static bool IsOursFpPost162(StereoMode mode) {
   return mode == StereoMode::OursFpFlashGate || mode == StereoMode::OursFpInCarHead ||
          mode == StereoMode::OursFpEnterCarFp || mode == StereoMode::OursFpHudLayout ||
-         mode == StereoMode::OursFpCarHud || mode == StereoMode::OursFpStableCarHud;
+         mode == StereoMode::OursFpCarHud || mode == StereoMode::OursFpStableCarHud ||
+         mode == StereoMode::OursFpSafeFlicker;
 }
 
 bool IsHeadHideNativeOurs(StereoMode mode) {
@@ -1110,23 +1118,37 @@ bool IsOursFpFlashStable(StereoMode mode) {
   return mode == StereoMode::OursFpStableCarHud;
 }
 
+bool IsOursFpSafeFlicker(StereoMode mode) {
+  return mode == StereoMode::OursFpSafeFlicker;
+}
+
+bool IsOursFpAtomicEyePair(StereoMode mode) {
+  return mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker;
+}
+
+bool IsOursFpAlwaysBbCapture(StereoMode mode) {
+  return mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker;
+}
+
 bool IsOursFpInCarHead(StereoMode mode) {
   return mode == StereoMode::OursFpInCarHead || mode == StereoMode::OursFpEnterCarFp ||
-         mode == StereoMode::OursFpCarHud || mode == StereoMode::OursFpStableCarHud;
+         mode == StereoMode::OursFpCarHud || mode == StereoMode::OursFpStableCarHud ||
+         mode == StereoMode::OursFpSafeFlicker;
 }
 
 bool IsOursFpEnterCarFp(StereoMode mode) {
   return mode == StereoMode::OursFpEnterCarFp || mode == StereoMode::OursFpCarHud ||
-         mode == StereoMode::OursFpStableCarHud;
+         mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker;
 }
 
 bool IsOursFpHudLayout(StereoMode mode) {
   return mode == StereoMode::OursFpHudLayout || mode == StereoMode::OursFpCarHud ||
-         mode == StereoMode::OursFpStableCarHud;
+         mode == StereoMode::OursFpStableCarHud || mode == StereoMode::OursFpSafeFlicker;
 }
 
 bool IsOursFpCarHud(StereoMode mode) {
-  return mode == StereoMode::OursFpCarHud || mode == StereoMode::OursFpStableCarHud;
+  return mode == StereoMode::OursFpCarHud || mode == StereoMode::OursFpStableCarHud ||
+         mode == StereoMode::OursFpSafeFlicker;
 }
 
 bool IsOursFpStableCarHud(StereoMode mode) {

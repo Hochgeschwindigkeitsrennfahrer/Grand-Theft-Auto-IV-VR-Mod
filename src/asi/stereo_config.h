@@ -438,8 +438,18 @@ enum class StereoMode : int {
   //   - always capture BB (no tiny-RT skip gate — that gate caused HOLDs/flashes)
   //   - atomic L+R pair update (never mix old L with new R)
   //   - hitch → live BB both eyes (not stale HOLD)
+  // FAILED headset 2026-07-28: everyN=1 + FlushRenderingCommands → DEVICE_LOST.
   // Kill: 167 / 162.
   OursFpStableCarHud = 168,
+  // Mode 169: SAFE flicker (learned from 168 DEVICE_LOST logs):
+  //   - Mode167 car+HUD
+  //   - dualn=2 HOLD (NOT everyN=1 — that overloaded the GPU)
+  //   - NO FlushRenderingCommands
+  //   - always capture BB (no tiny-RT skip gate)
+  //   - atomic L+R pair update
+  //   - hitch → HOLD last stereo (NOT LIVELOOK mono flash)
+  // Kill: 167 / 162.
+  OursFpSafeFlicker = 169,
 };
 
 // Mode 40–49: rapid HMD delta → temporary mono pair. Mode 50+ never flattens.
@@ -482,26 +492,29 @@ bool IsExternalFpHostLookMoveYaw(StereoMode mode); // 146
 bool IsExternalFpHostSoftMove(StereoMode mode);    // 147
 bool IsExternalFpHostSoftMoveStick(StereoMode mode); // 148
 bool IsHeadHideNativeWithFp(StereoMode mode);      // 150
-bool IsHeadHideNativeOurs(StereoMode mode);        // 151–168
+bool IsHeadHideNativeOurs(StereoMode mode);        // 151–169
 bool IsOursFpFovProfile(StereoMode mode);          // 152 only
 bool IsOursFpWideUnderPublish(StereoMode mode);    // 153 only (cover-lock)
-bool IsOursFpWideAspectFit(StereoMode mode);       // 154–168 (aspect-fit under-publish)
-bool IsOursFpEyeCenterCam(StereoMode mode);        // 155–168
-bool IsOursFpEyeCenterLow(StereoMode mode);        // 156–168 (lower pivot + F5 VR res)
-bool IsOursFpMildOverscan(StereoMode mode);        // 157–168 (family; 161+ uses 1.0)
-bool IsOursFpSquareRes(StereoMode mode);           // 158–168
+bool IsOursFpWideAspectFit(StereoMode mode);       // 154–169 (aspect-fit under-publish)
+bool IsOursFpEyeCenterCam(StereoMode mode);        // 155–169
+bool IsOursFpEyeCenterLow(StereoMode mode);        // 156–169 (lower pivot + F5 VR res)
+bool IsOursFpMildOverscan(StereoMode mode);        // 157–169 (family; 161+ uses 1.0)
+bool IsOursFpSquareRes(StereoMode mode);           // 158–169
 bool IsOursFpStrongOverscan(StereoMode mode);      // 159 only
 bool IsOursFpSquareLowOverscan(StereoMode mode);   // 160 only
-bool IsOursFpSquareZeroOverscan(StereoMode mode);  // 161–168 (0% overscan family)
-bool IsOursFpSquareWideFov(StereoMode mode);       // 162–168 (fpfov 100 family)
-bool IsOursFpFlashGate(StereoMode mode);           // 163–167 (tiny-RT skip; not 168)
-bool IsOursFpFlashStable(StereoMode mode);         // 168 flicker-stable dual
-bool IsOursFpInCarHead(StereoMode mode);           // 164–165, 167–168
-bool IsOursFpEnterCarFp(StereoMode mode);          // 165, 167–168
-bool IsOursFpHudLayout(StereoMode mode);           // 166–168
-bool IsOursFpCarHud(StereoMode mode);              // 167–168
+bool IsOursFpSquareZeroOverscan(StereoMode mode);  // 161–169 (0% overscan family)
+bool IsOursFpSquareWideFov(StereoMode mode);       // 162–169 (fpfov 100 family)
+bool IsOursFpFlashGate(StereoMode mode);           // 163–167 (tiny-RT skip; not 168/169)
+bool IsOursFpFlashStable(StereoMode mode);         // 168 only (FAILED DEVICE_LOST)
+bool IsOursFpSafeFlicker(StereoMode mode);         // 169 only (safe flicker redesign)
+bool IsOursFpAtomicEyePair(StereoMode mode);       // 168–169 (never mix old L + new R)
+bool IsOursFpAlwaysBbCapture(StereoMode mode);     // 168–169 (no tiny-RT skip gate)
+bool IsOursFpInCarHead(StereoMode mode);           // 164–165, 167–169
+bool IsOursFpEnterCarFp(StereoMode mode);          // 165, 167–169
+bool IsOursFpHudLayout(StereoMode mode);           // 166–169
+bool IsOursFpCarHud(StereoMode mode);              // 167–169
 bool IsOursFpStableCarHud(StereoMode mode);        // 168 only
-// Force HMD→ped heading (walk look-dir): 145–148, 150–168, clean dual.
+// Force HMD→ped heading (walk look-dir): 145–148, 150–169, clean dual.
 bool WantsExternalFpLookMove(StereoMode mode);
 bool WantsSoftPedHeading(StereoMode mode);
 bool WantsFpStickInvert(StereoMode mode);

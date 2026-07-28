@@ -1,5 +1,44 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
+## 2026-07-28 — Mode **169** + gplasync A/B (ready to headset-test)
+
+### Live setup (after AFK prep)
+- **stereo=`169`** / buildid `20260728-mode169+gplasync-ab`
+- **d3d9.dll** = Ph42oN weekly **`v3.0-gplasync`** x32 (interop + `enableAsync`)
+- Stock **3.0.2** saved as `d3d9.dll.stock-302` + `backups/dxvk-stock-302/`
+- `dxvk.conf`: `dxvk.enableAsync = true`
+- FusionFix cache: `GTAIV.dxvk-cache` next to EXE
+- GitHub backup: branch `backup/pre-gplasync-20260728` (+ follow-up Mode169 commit)
+
+### Mode 169 = safe flicker (from 168 logs)
+| Keep from 168 | Drop (caused DEVICE_LOST / flash) |
+|---------------|-------------------------------------|
+| atomic L+R pair | everyN=1 (back to dualn=2) |
+| no tiny-RT skip-gate | FlushRenderingCommands per eye |
+| Mode167 car + HUD | hitch → LIVELOOK mono (hitch → HOLD last stereo) |
+
+Kill: **`167`** / `162`. Do **not** re-enable 168.
+
+### Rollback (one click)
+```text
+powershell -ExecutionPolicy Bypass -File scripts\restore-stock-dxvk.ps1
+```
+Re-install gplasync later:
+```text
+powershell -ExecutionPolicy Bypass -File scripts\install-gplasync-ab.ps1
+```
+Docs: `docs/GPLASYNC_AB.md`
+
+### Test order when back
+1. SteamVR on, headset awake
+2. Launch GTA IV — flat window ~1 min (watch for crash / black)
+3. Enter world, look for `Mode169` / `SAFE` in `gtaiv_dxvk_vr.log`
+4. Check `GTAIV_d3d9.log` starts with gplasync / no DEVICE_LOST
+5. Drive near water — compare flicker vs 167
+6. If freeze/black → restore stock, set stereo=`167`, report log lines
+
+---
+
 ## 2026-07-28 afternoon — Mode **168** freeze (DEVICE_LOST)
 
 ### Log verdict

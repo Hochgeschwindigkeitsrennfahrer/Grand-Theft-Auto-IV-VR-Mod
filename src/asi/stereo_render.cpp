@@ -589,8 +589,8 @@ bool CopyBbToEye(IDirect3DDevice9* dev, IDirect3DTexture9* tex) {
     bb->Release();
     return false;
   }
-  // Mode 168: flush DXVK queue so StretchRect sees the finished DrawScene, not a
-  // half-written BB (common near water when GPU is still finishing the pass).
+  // Mode 168 ONLY: flush before StretchRect. Mode169 drops Flush — 168+Flush
+  // caused VK_ERROR_DEVICE_LOST under everyN=1 dual load (2026-07-28).
   if (IsOursFpFlashStable(GetStereoMode())) {
     ID3D9VkInteropDevice* interop = nullptr;
     if (SUCCEEDED(dev->QueryInterface(__uuidof(ID3D9VkInteropDevice),
@@ -909,7 +909,7 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
 bool CopyBbToEyeCanvas(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye eye) {
   if (!dev || !tex)
     return false;
-  // Mode 168: flush before reading BB so canvas StretchRect isn't mid-pass garbage.
+  // Mode 168 ONLY: flush before BB read. Mode169 keeps no-Flush (see DEVICE_LOST).
   if (IsOursFpFlashStable(GetStereoMode())) {
     ID3D9VkInteropDevice* interop = nullptr;
     if (SUCCEEDED(dev->QueryInterface(__uuidof(ID3D9VkInteropDevice),
@@ -928,10 +928,10 @@ bool CopyBbToEyeCanvas(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye
 }
 
 bool CopyBbToEyeCanvasGated(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye eye) {
-  // Mode 168: never skip — CopyBbToEyeCanvas reads the backbuffer, not RT0.
+  // Mode 168/169: never skip — CopyBbToEyeCanvas reads the backbuffer, not RT0.
   // Tiny-RT skip was designed for current-RT capture and caused HOLDs/flashes
   // whenever DrawScene exited on an env pass (common near water).
-  if (IsOursFpFlashStable(GetStereoMode()))
+  if (IsOursFpAlwaysBbCapture(GetStereoMode()))
     return CopyBbToEyeCanvas(dev, tex, eye);
   if (IsOursFpFlashGate(GetStereoMode()) && ShouldSkipFlashCapture(dev))
     return false;
@@ -4696,7 +4696,7 @@ bool RunMode120DrawSceneDualGuarded(void* drawSelf, void* edx) {
   if (!g_origBuild || !drawSelf || !g_device || !g_texL || !g_texR)
     return false;
   const bool fpHost = IsExternalFpHost(GetStereoMode());
-  const bool atomicPair = IsOursFpFlashStable(GetStereoMode());
+  const bool atomicPair = IsOursFpAtomicEyePair(GetStereoMode());
   __try {
     SetStereoEye(StereoEye::Left);
     RefreshLiveCamForStereoEye();
@@ -4712,7 +4712,7 @@ bool RunMode120DrawSceneDualGuarded(void* drawSelf, void* edx) {
     g_origBuild(drawSelf, edx);
     const bool okR = CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Right);
 
-    // Mode 168: only publish a fresh pair when BOTH eyes captured this tick.
+    // Mode 168/169: only publish a fresh pair when BOTH eyes captured this tick.
     // Partial update (old L + new R) looks like a full-screen flash.
     if (atomicPair) {
       if (okL && okR)
@@ -4721,8 +4721,8 @@ bool RunMode120DrawSceneDualGuarded(void* drawSelf, void* edx) {
         static uint32_t s_partial = 0;
         const uint32_t n = ++s_partial;
         if (n <= 8 || (n % 200) == 0)
-          Log("Mode168: dual capture partial okL=%d okR=%d — kept previous pair n=%u",
-              okL ? 1 : 0, okR ? 1 : 0, n);
+          Log("Mode%d: dual capture partial okL=%d okR=%d — kept previous pair n=%u",
+              static_cast<int>(GetStereoMode()), okL ? 1 : 0, okR ? 1 : 0, n);
       }
     } else {
       if (okL)
@@ -4776,7 +4776,8 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
     s_prev = now;
     if (gap >= StereoDualHitchMs()) {
       g_origBuild(self, edx);
-      // Mode 126/127/135/168 hitch: live BB (not stale HOLD). Mode 128–134: keep last L/R.
+      // Mode 126/127/135/168 hitch: live BB. Mode 169: HOLD last stereo (no LIVELOOK flash).
+      // Mode 128–134: keep last L/R.
       if (IsCleanDualAlwaysFresh(mode) || IsCleanDualFpsLiveLook(mode) ||
           IsOursFpFlashStable(mode))
         StereoDualMarkLiveLook();
@@ -4880,7 +4881,9 @@ void __fastcall HookBuildRenderList(void* self, void* edx) {
           "(%s; kill=167/162/120)",
           static_cast<int>(mode), n, g_haveL ? 1 : 0, g_haveR ? 1 : 0,
           GetStereoSepMeters() * 100.f, everyN,
-          IsOursFpFlashStable(mode) ? "STABLE everyN=1" : "HOLD off-tick");
+          IsOursFpFlashStable(mode)          ? "STABLE everyN=1"
+              : IsOursFpSafeFlicker(mode)    ? "SAFE dualn=2 atomic"
+                                             : "HOLD off-tick");
     return;
   }
 
@@ -5432,7 +5435,8 @@ bool InstallStereoRenderHooks() {
           mid, g_ok.load() ? 1 : 0);
       Log("StereoRender: kill-switch - 147 soft-move / 150 native-hide+FP / 151 ours+hide");
     } else if (IsHeadHideNativeOurs(mode)) {
-      const char* tag = IsOursFpStableCarHud(mode)    ? "+STABLE+CAR+HUD"
+      const char* tag = IsOursFpSafeFlicker(mode)     ? "+SAFE-FLICKER"
+                        : IsOursFpStableCarHud(mode)  ? "+STABLE+CAR+HUD"
                         : IsOursFpCarHud(mode)        ? "+CAR+HUD"
                         : IsOursFpHudLayout(mode)       ? "+HUD-LAYOUT"
                         : IsOursFpEnterCarFp(mode)      ? "+ENTER-CAR-FP"
@@ -5452,8 +5456,10 @@ bool InstallStereoRenderHooks() {
                         : IsOursFpFovProfile(mode)       ? "+FP-PRESENCE"
                                                          : "";
       const char* detail =
-          IsOursFpStableCarHud(mode)
-              ? "; Mode167 cam/HUD + everyN=1 atomic dual (no skip-gate; hitch→live BB)"
+          IsOursFpSafeFlicker(mode)
+              ? "; Mode167 cam/HUD + dualn=2 atomic (no skip-gate; NO Flush; hitch→HOLD)"
+          : IsOursFpStableCarHud(mode)
+              ? "; FAILED DEVICE_LOST — prefer 169; everyN=1+Flush killed GPU"
           : IsOursFpCarHud(mode)
               ? "; sit-cam + HUD inset + mission directions"
           : IsOursFpHudLayout(mode)

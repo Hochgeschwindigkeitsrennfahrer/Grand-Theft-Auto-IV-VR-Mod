@@ -35,11 +35,11 @@ void StereoDualClearLiveLook();
 void StereoDualMarkLiveLook();
 
 // Soft hitch gap (ms) — skip dual, keep last L/R. Mode 122/126: 40ms. Mode 127–135: 32ms.
-// Mode 168: 40ms hitch → live BB (not stale HOLD).
+// Mode 168: 40ms hitch → live BB (FAILED with everyN=1+Flush). Mode 169: HOLD last stereo.
 uint32_t StereoDualHitchMs();
 
 // Dual every N DrawScene calls. Mode 120: file gtaiv_dxvk_vr.dualn (2..4), default 2.
-// Mode 168: forced 1 (flicker-stable).
+// Mode 168: forced 1 (FAILED DEVICE_LOST). Mode 169: dualn=2 (safe).
 // Mode 121/127–134: forced 3. Mode 122: forced 4. Mode 126: file/default 2.
 // Mode 135: forced 1 (always same-tick dual; no off-tick HOLD).
 uint32_t StereoDualEveryN();
