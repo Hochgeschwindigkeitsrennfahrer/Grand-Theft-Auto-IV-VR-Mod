@@ -1,6 +1,57 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-28 06:01 PT
+**As of:** 2026-07-28 12:48 PT
+
+## Latest artifact: 10-second Elliott OpenXR SBS walk video (PASS)
+
+The first recorded full-game simulator artifact is:
+
+```text
+out-openxr/video-20260728-124617-vr-final/gtaiv-openxr-mode57-vr-sbs-10s.mp4
+```
+
+This is the Elliott runtime's actual composed side-by-side OpenXR preview, not the
+flat GTA desktop window and not a reconstructed pair. The simulator remained in
+headless/file-IPC mode. Its hidden preview HWND was shown without activation only
+for Windows Graphics Capture, then hidden again; no simulator input or focus was
+used. The video is `3840x1920`, H.264 Main/yuv420p, 10.000 seconds, 597 frames at
+approximately 60 fps, 9,037,091 bytes, with SHA-256
+`56C49178FA1868B7991F1200E1494C9BED848E82FA3F717EB0190F58750D772B`.
+Frames extracted at 1, 5, and 9 seconds have different hashes and visually show
+Niko moving across the apartment. Both composed eyes are present and visibly
+offset. This remains a simulator-compositor recording, not a Quest optical or
+Meta compositor mirror.
+
+The corresponding supervised proof is:
+
+```text
+out-openxr/runs/20260728-124618-steam-safe/
+```
+
+It reports `outcome=PROOF_COMPLETE`, Mode 57 temporal pixel-distinct L/R,
+`6.4 cm` camera separation, continuous world transactions, sRGB color, stationary
+UI, world -> pause UI -> world, exact Start/A/stick/neutral consumption, a
+20-second forward-stick hold, and the final pose sweep. SteamVR process count
+remained zero. Cleanup stopped GTA, the OpenXR host, and path-verified Rockstar
+launcher helpers; restoration returned the installation to `backend=off`,
+`stereo=0`, OpenVR DLL present, and no disable sentinel.
+
+`scripts/record-elliott-vr-preview.ps1` now waits on a one-shot atomic
+`elliott-walk-ready.marker` with `FileSystemWatcher`, captures only the host-owned
+preview HWND, GPU-resizes the simulator's 4926x2464 preview to an H.264-safe
+3840x1920 SBS frame, and records through NVENC. It does not read the live status
+log, poll SteamVR, activate a window, or control the simulator. The launcher has a
+bounded `-ElliottWalkSeconds` parameter and now removes path-verified orphaned
+Rockstar launcher helpers during final cleanup as well as preflight/retry.
+
+Two preceding launch attempts did start `GTAIV.exe` four times, but each process
+died before opening a window or creating either the ASI or DXVK log. Windows dumps
+show identical `0xc0000005` DEP execute-access violations in Rockstar's signed
+`MTLX.dll` startup path. The supervisor correctly reported no fresh ASI session
+and restored the installation. Clearing only the orphaned Rockstar
+launcher/helper processes and allowing the Rockstar service to complete its
+normal shutdown produced the clean passing run above with the same ASI and host
+hashes. Do not mislabel those attempts as SteamVR, OpenXR-host, or build failures.
 
 ## Latest launcher cleanup: audited Steam route, no continuous process polling
 

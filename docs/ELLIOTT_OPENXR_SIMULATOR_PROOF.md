@@ -181,6 +181,40 @@ The launcher:
 10. records `PROOF_COMPLETE`, stops the title and host, removes command files, and
     restores every saved game file.
 
+## Record the composed in-game VR view
+
+The recording wrapper runs the same locked proof and captures only after the
+world, stereo, continuity, pause/resume, and locomotion gates have passed:
+
+```powershell
+.\scripts\run-and-record-elliott-vr.ps1 `
+  -GameDir "D:\SteamLibrary\steamapps\common\Grand Theft Auto IV\GTAIV" `
+  -RuntimeManifest "D:\code\gta-iv\out-openxr\external\OpenXR-Simulator\bin\openxr_simulator.json" `
+  -WalkSeconds 20 `
+  -DurationSeconds 10 `
+  -FrameRate 60 `
+  -Authorized
+```
+
+It waits on the run's atomic `elliott-walk-ready.marker`; it does not read the
+live status log or poll SteamVR. The recorder exposes the hidden Elliott preview
+with `SW_SHOWNOACTIVATE`, captures its exact host-owned HWND, and immediately
+hides it afterward. Simulator input remains headless/file-IPC only. Windows
+Graphics Capture scales the runtime's 4926x2464 composed preview to 3840x1920
+side-by-side before H.264 NVENC, keeping the encoder within its 4096-pixel width
+limit.
+
+The wrapper accepts only a launcher `PROOF_COMPLETE` result plus a recorder
+receipt and non-empty video. It writes the latest control-directory path to
+`out-openxr/latest-vr-video-control.txt`. The first accepted artifact is:
+
+```text
+out-openxr/video-20260728-124617-vr-final/gtaiv-openxr-mode57-vr-sbs-10s.mp4
+```
+
+This is an OpenXR simulator-compositor preview, not a flat GTA capture and not a
+Quest optical/compositor recording.
+
 ## Acceptance markers
 
 Do not accept a run from a menu image, one stereo pair, or the superseded

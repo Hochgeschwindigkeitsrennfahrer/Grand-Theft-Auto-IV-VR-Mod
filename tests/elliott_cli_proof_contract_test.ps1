@@ -61,7 +61,18 @@ $requiredPatterns = [ordered]@{
   AtomicMove = 'Move-Item -LiteralPath \$temporaryPath -Destination \$Path -Force'
   SequencedAck = '-Command "controller_state"'
   ControllerLease = 'lease_ms = 750'
-  StickLease = 'lease_ms = 6000'
+  WalkSecondsParameter = '\[uint32\]\$ElliottWalkSeconds = 6'
+  WalkReadyMarker =
+    'Join-Path \$RunDirectory "elliott-walk-ready\.marker"'
+  WalkReadyTemporary = '\$walkReadyTemporary = "\$ElliottWalkReadyMarker\.tmp"'
+  WalkReadyAtomicMove =
+    'Move-Item\s+`\s+-LiteralPath \$walkReadyTemporary\s+`\s+-Destination \$ElliottWalkReadyMarker'
+  StickLeaseMargin =
+    'lease_ms = \[uint32\]\(\(\$ElliottWalkSeconds \+ 3\) \* 1000\)'
+  StickHoldDuration =
+    'AddSeconds\(\$ElliottWalkSeconds\)'
+  StickHoldResult =
+    '"elliottWalkSeconds=\$ElliottWalkSeconds"'
   StickForward = 'stickY = 0\.8'
   PrimaryButton = 'primary = \$true'
   MenuButton = 'menu = \$true'
@@ -105,6 +116,8 @@ $requiredPatterns = [ordered]@{
   RockstarPathScope = '\(Join-Path \$env:ProgramFiles "Rockstar Games"\)'
   RockstarTitleGuard = '"Refusing Rockstar launcher cleanup while GTAIV/PlayGTAIV is active\."'
   RockstarPreflight = 'Stop-StaleRockstarLauncherSession "stale preflight Rockstar session"'
+  RockstarFinalCleanup =
+    'Stop-StaleRockstarLauncherSession "end supervised GTA run"'
   PostResetProducer = '\$postResetProducerFresh'
   PostResetHost = '\$postResetHostFresh'
   SrgbSwapchainFormat = 'XRHost: swapchainFormat=\(29\|91\)'

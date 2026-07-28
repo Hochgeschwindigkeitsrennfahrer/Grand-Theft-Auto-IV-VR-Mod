@@ -103,6 +103,8 @@ $requiredPatterns = [ordered]@{
     'Test-CanonicalPathEqual \$processPath \$ExpectedPath'
   RockstarBoundaryHelper =
     'Test-PathEqualOrWithinRoot \$processPath \$rockstarRoot'
+  RockstarFinalCleanup =
+    'Stop-StaleRockstarLauncherSession "end supervised GTA run"'
   CleanupFailureResult =
     '"cleanupFailures=\$\(\$cleanupFailures -join '' \| ''\)"'
   ArchiveFailureResult =

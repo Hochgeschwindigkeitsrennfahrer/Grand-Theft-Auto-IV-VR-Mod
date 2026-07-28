@@ -8,7 +8,9 @@ param(
   [switch]$Authorized,
   [string]$RuntimeManifest = "",
   [switch]$ElliottCliProof,
-  [switch]$StopWhenProofComplete
+  [switch]$StopWhenProofComplete,
+  [ValidateRange(6, 30)]
+  [uint32]$ElliottWalkSeconds = 6
 )
 
 $ErrorActionPreference = "Stop"
@@ -48,6 +50,8 @@ $BackupDirectory = Join-Path $RunDirectory "backup"
 New-Item -ItemType Directory -Path $BackupDirectory -Force | Out-Null
 $StatusPath = Join-Path $RunDirectory "status.log"
 $ResultPath = Join-Path $RunDirectory "result.txt"
+$ElliottWalkReadyMarker =
+  Join-Path $RunDirectory "elliott-walk-ready.marker"
 $ElliottDataDirectory = Join-Path (
   [Environment]::GetFolderPath(
     [Environment+SpecialFolder]::LocalApplicationData
@@ -538,7 +542,7 @@ function Send-ElliottControllerSnapshot(
         [ordered]@{
           hand = 0
           sequence = $script:ElliottCommandSequence
-          lease_ms = 6000
+          lease_ms = [uint32](($ElliottWalkSeconds + 3) * 1000)
           neutral = $false
           stickX = 0.0
           stickY = 0.8
@@ -2389,11 +2393,22 @@ try {
             [void](Send-ElliottControllerSnapshot -Kind "StickForward")
             $elliottStickCommanded = $true
             $elliottProofState = "STICK_HOLD"
-            $elliottNextActionAt = [DateTime]::UtcNow.AddSeconds(6)
-            Write-Status (
+            $elliottNextActionAt =
+              [DateTime]::UtcNow.AddSeconds($ElliottWalkSeconds)
+            $walkReadyLine = (
               "ELLIOTT CLI: in-game world->pause UI->world round trip PASS; " +
-              "holding left stick Y=0.8 for 6 seconds"
+              "holding left stick Y=0.8 for $ElliottWalkSeconds seconds"
             )
+            Write-Status $walkReadyLine
+            $walkReadyTemporary = "$ElliottWalkReadyMarker.tmp"
+            Set-Content `
+              -LiteralPath $walkReadyTemporary `
+              -Value $walkReadyLine `
+              -Encoding UTF8
+            Move-Item `
+              -LiteralPath $walkReadyTemporary `
+              -Destination $ElliottWalkReadyMarker `
+              -Force
           }
           elseif ($proofNow -ge $elliottInputProofDeadline) {
             throw (
@@ -2606,6 +2621,17 @@ finally {
       $cleanupFailures += "PlayGTAIV cleanup: $($_.Exception.Message)"
       Write-StatusBestEffort (
         "CLEANUP WARNING: PlayGTAIV cleanup: " + $_.Exception.Message
+      )
+    }
+    try {
+      Stop-StaleRockstarLauncherSession "end supervised GTA run"
+    }
+    catch {
+      $cleanupFailures +=
+        "Rockstar launcher cleanup: $($_.Exception.Message)"
+      Write-StatusBestEffort (
+        "CLEANUP WARNING: Rockstar launcher cleanup: " +
+        $_.Exception.Message
       )
     }
     try {
@@ -2849,6 +2875,7 @@ finally {
     "pauseUiObserved=$pauseUiObserved"
     "pauseRoundTrip=$pauseRoundTrip"
     "elliottStickCommanded=$elliottStickCommanded"
+    "elliottWalkSeconds=$ElliottWalkSeconds"
     "elliottPoseSweepCompleted=$elliottPoseSweepCompleted"
     "elliottProofAutomationComplete=$elliottProofAutomationComplete"
     "elliottCleanupFailures=$($elliottCleanupFailures -join ' | ')"
