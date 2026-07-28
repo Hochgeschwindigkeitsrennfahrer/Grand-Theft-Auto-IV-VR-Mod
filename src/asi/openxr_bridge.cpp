@@ -1,6 +1,7 @@
 #include "openxr_bridge.h"
 
 #include "cam_matrix.h"
+#include "cpu_readback_batch.h"
 #include "hmd_pose.h"
 #include "log.h"
 #include "openxr_controller.h"
@@ -805,39 +806,47 @@ private:
         const bool auditEyeContent = distinctStereo;
         uint64_t eyeHashes[gtaiv_xr_bridge::EyeCount] {};
         LARGE_INTEGER start {};
+        LARGE_INTEGER afterEnqueue {};
         LARGE_INTEGER afterReadback {};
         LARGE_INTEGER finished {};
         QueryPerformanceCounter(&start);
-        for (uint32_t eye = 0u; eye < sourceEyeCount; ++eye)
+        const bool readbacksReady =
+            cpu_readback_batch::queueAllBeforeLock(
+                sourceEyeCount,
+                [&](uint32_t eye) {
+                    D3DSURFACE_DESC description {};
+                    return cpuReadbacks_[eye]
+                        && SUCCEEDED(pair.eyes[eye]->GetSurfaceLevel(
+                            0u, &sources[eye]))
+                        && sources[eye]
+                        && SUCCEEDED(sources[eye]->GetDesc(&description))
+                        && description.Width == width_
+                        && description.Height == height_
+                        && description.Format == cpuD3dFormat_
+                        && SUCCEEDED(gameDevice->GetRenderTargetData(
+                            sources[eye].Get(),
+                            cpuReadbacks_[eye].Get()));
+                },
+                [&]() {
+                    QueryPerformanceCounter(&afterEnqueue);
+                },
+                [&](uint32_t eye) {
+                    if (FAILED(cpuReadbacks_[eye]->LockRect(
+                            &locked[eye],
+                            nullptr,
+                            D3DLOCK_READONLY)))
+                    {
+                        return false;
+                    }
+                    isLocked[eye] = true;
+                    return locked[eye].pBits
+                        && locked[eye].Pitch
+                            >= static_cast<INT>(rowBytes);
+                });
+        if (!readbacksReady)
         {
-            D3DSURFACE_DESC description {};
-            if (!cpuReadbacks_[eye]
-                || FAILED(pair.eyes[eye]->GetSurfaceLevel(
-                    0u, &sources[eye]))
-                || !sources[eye]
-                || FAILED(sources[eye]->GetDesc(&description))
-                || description.Width != width_
-                || description.Height != height_
-                || description.Format != cpuD3dFormat_
-                || FAILED(gameDevice->GetRenderTargetData(
-                    sources[eye].Get(), cpuReadbacks_[eye].Get())))
-            {
-                unlockAll();
-                return false;
-            }
-            if (FAILED(cpuReadbacks_[eye]->LockRect(
-                    &locked[eye], nullptr, D3DLOCK_READONLY)))
-            {
-                unlockAll();
-                return false;
-            }
-            isLocked[eye] = true;
-            if (!locked[eye].pBits
-                || locked[eye].Pitch < static_cast<INT>(rowBytes))
-            {
-                unlockAll();
-                return false;
-            }
+            unlockAll();
+            return false;
         }
         if (auditEyeContent)
         {
@@ -936,7 +945,7 @@ private:
                 "pair=%llu presentation=%s eyes=%u "
                 "sameTick=%d temporal=%d "
                 "pose=%llu/%llu source=%llu/%llu capture=%ux%u "
-                "readbackMs=%.2f copyMs=%.2f "
+                "readbackMs=%.2f enqueueMs=%.2f waitMs=%.2f copyMs=%.2f "
                 "eyeHashL=%016llx eyeHashR=%016llx pixelDistinct=%d",
                 static_cast<unsigned long long>(transaction),
                 slot,
@@ -961,6 +970,12 @@ private:
                 height_,
                 static_cast<double>(
                     afterReadback.QuadPart - start.QuadPart)
+                    / ticksPerMs,
+                static_cast<double>(
+                    afterEnqueue.QuadPart - start.QuadPart)
+                    / ticksPerMs,
+                static_cast<double>(
+                    afterReadback.QuadPart - afterEnqueue.QuadPart)
                     / ticksPerMs,
                 static_cast<double>(
                     finished.QuadPart - afterReadback.QuadPart)

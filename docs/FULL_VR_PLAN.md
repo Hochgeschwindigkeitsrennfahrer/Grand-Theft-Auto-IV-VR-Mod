@@ -770,6 +770,11 @@ The 2026-07-28 Mode 57 headless profile separates the present bottlenecks:
   consumes consecutive L/R GTA frames; sampled eye-capture skew was about 16.7 ms;
 - synchronous two-eye CPU readback plus mailbox copy averaged about 6.2 ms in the
   sampled world path and reached about 10 ms;
+- queuing both DXVK readbacks before either `LockRect` passed a full game
+  regression, but did not materially change the sparse mean/p95
+  (`6.55/9.55 ms` versus `6.49/9.36 ms`). Enqueue rounded to zero and the cost
+  remained in GPU completion, so a duplicate submission flush was not the main
+  bottleneck;
 - the x64 host previously reacquired and redrew unchanged GTA transactions. It now
   reuses the most recently released OpenXR swapchain image while keeping
   `xrWaitFrame`, pose/input publication, and `xrEndFrame` live. The full-game

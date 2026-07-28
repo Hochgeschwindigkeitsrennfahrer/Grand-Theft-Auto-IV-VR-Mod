@@ -61,9 +61,11 @@ foreach ($requiredBridgeSource in @(
   "StereoMode::OpenXrDrawSceneStereo",
   "StereoMode::OpenXrTemporalStereo",
   "CpuFrameEyeCount",
+  "cpu_readback_batch::queueAllBeforeLock(",
   "sampleLockedBgraHash(",
   "rejected exact-mono L/R world readback",
-  "pixelDistinct=%d"
+  "pixelDistinct=%d",
+  "enqueueMs=%.2f waitMs=%.2f"
 )) {
   if (-not $openXrSource.Contains($requiredBridgeSource)) {
     throw "OpenXR stereo-mailbox source check failed: missing '$requiredBridgeSource'"
@@ -231,6 +233,10 @@ $libpath = "/LIBPATH:$Root\thirdparty\openvr\lib\win32"
 $cmd = @"
 call "$vcvars" x86
 cd /d "$Root"
+cl /nologo /EHsc /O2 /MD /W4 /WX /std:c++17 tests\gtaiv_cpu_readback_batch_test.cpp /Fo:"$outDir\gtaiv_cpu_readback_batch_test.obj" /Fe:"$outDir\gtaiv_cpu_readback_batch_test.exe"
+if errorlevel 1 exit /b 1
+"$outDir\gtaiv_cpu_readback_batch_test.exe"
+if errorlevel 1 exit /b 1
 cl /nologo /EHsc /O2 /MD /W4 /WX /std:c++17 tests\gtaiv_stereo_wvp_test.cpp /Fo:"$outDir\gtaiv_stereo_wvp_test.obj" /Fe:"$outDir\gtaiv_stereo_wvp_test.exe"
 if errorlevel 1 exit /b 1
 "$outDir\gtaiv_stereo_wvp_test.exe"

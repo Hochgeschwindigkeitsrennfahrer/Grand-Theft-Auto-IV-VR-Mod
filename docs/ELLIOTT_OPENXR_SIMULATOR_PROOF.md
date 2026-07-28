@@ -7,6 +7,24 @@ through its child `XR_RUNTIME_JSON` environment.
 
 ## Verification status
 
+The batched DXVK CPU-readback ordering passed a further complete full-game
+regression:
+
+```text
+out-openxr/runs/20260728-040944-steam-safe/
+```
+
+That run reports `outcome=PROOF_COMPLETE`, accepted Mode 57 pair 600, matching
+producer/host endpoints `1940 -> 2580`, all menu/input/color/pose/reuse gates,
+`steamVrProcessCount=0`, and no cleanup or restoration failure. The producer
+queued both eye readbacks before either lock and logged separate enqueue/wait
+times. Enqueue rounded to `0.00 ms`; total readback mean/p95 remained
+`6.55/9.55 ms`, statistically unchanged from the prior sparse baseline
+`6.49/9.36 ms`. This validates the ordering and shows that the GPU completion
+wait, rather than the second command submission, is the remaining CPU-mailbox
+spike. It is a correctness/performance diagnostic, not a headset-smoothness
+claim.
+
 The held-frame OpenXR swapchain-reuse change passed a second complete full-game
 regression:
 

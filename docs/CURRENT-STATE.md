@@ -1,6 +1,43 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-28 03:48 PT
+**As of:** 2026-07-28 04:11 PT
+
+## Latest producer pacing probe: batched DXVK readback (full-game proof PASS; GPU wait still dominant)
+
+The x86 CPU-mailbox producer now queues `GetRenderTargetData` for both Mode 57
+eyes before it locks either system-memory surface. Under stock DXVK 3.0.2,
+`GetRenderTargetData` queues the image-to-buffer work and `LockRect` performs the
+blocking completion wait. The old order was queue L -> wait L -> queue R -> wait R;
+the new order is queue L -> queue R -> wait/lock L -> lock R. The mailbox seqlock,
+two-eye hash gate, and descriptor are still touched only after both eyes are ready,
+so the host can never observe a half pair.
+
+The production-used scheduling helper has an x86 offline regression covering
+successful stereo ordering, queue failure, lock failure, and an empty batch.
+The ASI, controller, stereo/WVP, host/WARP mailbox, launcher-safety, runtime, and
+Elliott proof-contract suites all pass.
+
+The complete headless game regression passed in:
+
+```text
+out-openxr/runs/20260728-040944-steam-safe/
+```
+
+It reached receipt-proven Mode 57 pair 600 and matching producer/host endpoints
+`1940 -> 2580`; world load, stationary UI, pause/resume, color, Start/A,
+stick/neutral, pose sweep, host swapchain reuse, cleanup, and exact restoration
+all passed with `steamVrProcessCount=0`. The tested x86 ASI SHA-256 is
+`14F252FD196AB315721856F3858A3FD02C49D67871BFCA89965A030031B3F0CB`.
+
+This probe did not materially lower total readback time. On the rate-limited world
+samples, enqueue time rounded to `0.00 ms` and essentially the whole cost remained
+inside the first blocking lock. Compared with the accepted `035722` baseline,
+readback mean/p95 were `6.55/9.55 ms` versus `6.49/9.36 ms` (12 versus 11 sparse
+samples). The result is useful because it removes an avoidable second submission
+boundary and identifies GPU completion as the remaining spike, but it is not a
+smoothness claim. The next isolated mitigation is to distribute the L/R readbacks
+over successive fresh Mode 57 frame boundaries while retaining one atomic
+transaction; the product target remains same-frame stereo plus GPU-only transport.
 
 ## Latest smoothness pass: held-frame OpenXR swapchain reuse (headless full-game proof PASS)
 
