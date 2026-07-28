@@ -792,6 +792,9 @@ $producerTransaction = $false
 $hostConnected = $false
 $hostAcquired = $false
 $gamePoseMatched = $false
+$hostSwapchainReuseReady = $false
+$hostSwapchainReuseFramesLowerBound = [uint64]0
+$hostSwapchainUpdatesLowerBound = [uint64]0
 $stereoCameraDistanceReady = $StereoMode -eq 55
 $stereoCameraDistanceCm = [double]0
 $stereoPixelDistinct = $StereoMode -eq 55
@@ -966,7 +969,7 @@ try {
   }
   $selfTestText = Read-Text $HostLog
   if ($selfTestText -notmatch
-      "protocol=v6.*wvpProof=1.*drawSceneProof=1.*immersiveMono=1.*cpuMailbox=1.*cpuMailboxStereo=1.*cpuMailboxWorldUi=1.*stationaryUiQuad=1.*uiAspect=1.*routeSwitch=1.*srgbDecode=1.*runtimeUntouched=1") {
+      "protocol=v6.*wvpProof=1.*drawSceneProof=1.*immersiveMono=1.*cpuMailbox=1.*cpuMailboxStereo=1.*cpuMailboxWorldUi=1.*stationaryUiQuad=1.*uiAspect=1.*routeSwitch=1.*heldFrameReuse=1.*exactPoseCache=1.*strictSwapchainWait=1.*referenceSpaceReset=1.*srgbDecode=1.*runtimeUntouched=1") {
     throw "OpenXR host baseline gates were not proven by the offline self-test."
   }
   Write-Status "OFFLINE GATES: protocol v6, CPU mono/stereo mailbox, stationary UI, and sRGB decode PASS"
@@ -1665,6 +1668,49 @@ try {
       $hostAcquired = $true
       Write-Status "MARKER: host acquired $expectedProducerPresentation mailbox frame"
     }
+    $expectedHostReusePresentation = switch ($StereoMode) {
+      56 { "world-stereo"; break }
+      57 { "world-temporal-stereo"; break }
+      default { "world-headtracked-mono-projection" }
+    }
+    $hostSwapchainUpdateMatches = [regex]::Matches(
+      $hostText,
+      "XRHost: game swapchain updated transaction=\d+ " +
+      "presentation=[^\s]+ updates=(\d+)"
+    )
+    if ($hostSwapchainUpdateMatches.Count -gt 0) {
+      $hostSwapchainUpdatesLowerBound =
+        [uint64]$hostSwapchainUpdateMatches[
+        $hostSwapchainUpdateMatches.Count - 1
+      ].Groups[1].Value
+    }
+    $hostSwapchainReuseMatches = [regex]::Matches(
+      $hostText,
+      "XRHost: game swapchain reused transaction=(\d+) " +
+      "presentation=$expectedHostReusePresentation " +
+      "reusedHostFrames=(\d+)"
+    )
+    if ($hostSwapchainReuseMatches.Count -gt 0) {
+      $latestHostSwapchainReuse =
+        $hostSwapchainReuseMatches[
+        $hostSwapchainReuseMatches.Count - 1
+      ]
+      $hostSwapchainReuseTransaction =
+        [uint64]$latestHostSwapchainReuse.Groups[1].Value
+      $hostSwapchainReuseFramesLowerBound =
+        [uint64]$latestHostSwapchainReuse.Groups[2].Value
+      if (-not $hostSwapchainReuseReady -and
+          $hostSwapchainReuseFramesLowerBound -gt 0 -and
+          ($StereoMode -ne 57 -or $temporalCapturePoseActive)) {
+        $hostSwapchainReuseReady = $true
+        Write-Status (
+          "MARKER: unchanged OpenXR world swapchain reuse READY " +
+          "presentation=$expectedHostReusePresentation " +
+          "transaction=$hostSwapchainReuseTransaction " +
+          "globalReuseLowerBound=$hostSwapchainReuseFramesLowerBound"
+        )
+      }
+    }
     $hostPattern =
       "GameBridge: CPU mailbox acquired transaction=(\d+).*presentation=$expectedProducerPresentation"
     $hostMatches = [regex]::Matches($hostText, $hostPattern)
@@ -2102,12 +2148,15 @@ try {
         }
         "WAIT_MENU_INPUT_PROOF" {
           if ($controllerAConsumed -and $controllerStartConsumed) {
+            Send-ElliottPoseSweep -Enabled $true
+            $elliottPoseSweepEnabled = $true
             $elliottProofState = "WAIT_PRE_PAUSE_WORLD_PROOF"
             $elliottInputProofDeadline =
               [DateTime]::UtcNow.AddSeconds(90)
             Write-Status (
               "ELLIOTT CLI: exact startup A/Start proof PASS; " +
-              "waiting for uninterrupted pre-pause world proof"
+              "controlled pose sweep started for uninterrupted " +
+              "pre-pause world proof"
             )
           }
           elseif ($proofNow -ge $elliottInputProofDeadline) {
@@ -2145,6 +2194,10 @@ try {
               $colorPathReady -and
               $postResetProducerFresh -and
               $postResetHostFresh) {
+            if ($elliottPoseSweepEnabled) {
+              Send-ElliottPoseSweep -Enabled $false
+              $elliottPoseSweepEnabled = $false
+            }
             $pauseUiProducerBaselineCount = (
               [regex]::Matches(
                 $gameText,
@@ -2373,7 +2426,8 @@ try {
         $producerTransaction -and
         $hostConnected -and
         $hostAcquired -and
-        $gamePoseMatched) {
+        $gamePoseMatched -and
+        $hostSwapchainReuseReady) {
       $outcome = "PROOF_COMPLETE"
       Write-Status (
         "PROOF COMPLETE: reset, exact input, UI, continuous world frames, " +
@@ -2650,6 +2704,9 @@ finally {
     "hostConnected=$hostConnected"
     "hostAcquired=$hostAcquired"
     "gamePoseMatched=$gamePoseMatched"
+    "hostSwapchainReuseReady=$hostSwapchainReuseReady"
+    "hostSwapchainReuseFramesLowerBound=$hostSwapchainReuseFramesLowerBound"
+    "hostSwapchainUpdatesLowerBound=$hostSwapchainUpdatesLowerBound"
     "deviceResetObserved=$deviceResetObserved"
     "deviceResetRecovered=$deviceResetRecovered"
     "deviceResetHealthy=$((-not $deviceResetObserved) -or $deviceResetRecovered)"

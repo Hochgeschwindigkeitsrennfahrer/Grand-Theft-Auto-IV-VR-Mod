@@ -764,6 +764,22 @@ them in GTA or capture them to a dedicated quad/layer.
 Current evidence suggests a true second render costs roughly half of the 90 FPS mono
 rate. Do not hide that with a misleading FPS counter.
 
+The 2026-07-28 Mode 57 headless profile separates the present bottlenecks:
+
+- the world produced about 31 accepted temporal pairs per second because one pair
+  consumes consecutive L/R GTA frames; sampled eye-capture skew was about 16.7 ms;
+- synchronous two-eye CPU readback plus mailbox copy averaged about 6.2 ms in the
+  sampled world path and reached about 10 ms;
+- the x64 host previously reacquired and redrew unchanged GTA transactions. It now
+  reuses the most recently released OpenXR swapchain image while keeping
+  `xrWaitFrame`, pose/input publication, and `xrEndFrame` live. The full-game
+  regression observed at least 2700 such reuse frames.
+
+That host change removes redundant work and prevents exact temporal capture poses
+from aging out of the live lookup ring. It does not improve GTA motion rate. The
+remaining Gate 10 path is same-frame dual-eye rendering plus GPU-only transport; a
+CPU-mailbox scheduling change is diagnostic mitigation, not the shipping answer.
+
 Measure separately:
 
 - GTA simulation rate;

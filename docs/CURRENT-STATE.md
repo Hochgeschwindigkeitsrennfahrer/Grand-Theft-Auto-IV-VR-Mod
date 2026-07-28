@@ -1,6 +1,69 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-28 00:01 PT
+**As of:** 2026-07-28 03:48 PT
+
+## Latest smoothness pass: held-frame OpenXR swapchain reuse (headless full-game proof PASS)
+
+The x64 OpenXR host now redraws a game swapchain only when GTA publishes a new
+transaction or its presentation route/layout changes. On an unchanged transaction it
+continues `xrWaitFrame`, current pose/controller publication, and `xrEndFrame`, but
+submits the most recently released swapchain image instead of reacquiring and drawing
+the same pixels again. The cached presentation includes the exact per-eye capture
+poses/FOVs, so a held Mode 57 pair no longer loses its pose truth after the 256-entry
+live pose-history ring advances.
+
+The offline cache regression holds one transaction and its exact two pose stamps for
+600 host frames, requires one swapchain update plus 600 reuses, then requires exactly
+one further update for a new transaction. It runs under `--self-test` without opening
+OpenXR, GTA, Steam, or SteamVR.
+
+The complete Elliott full-game regression passed in:
+
+```text
+out-openxr/runs/20260728-035722-steam-safe/
+```
+
+Its `result.txt` reports:
+
+- `outcome=PROOF_COMPLETE`;
+- `hostSwapchainReuseReady=True`, asserted only after an exact-pose
+  `world-temporal-stereo` transaction was reused; the rate-limited log gives lower
+  bounds of 2700 reused host frames and 2400 new-transaction updates;
+- matching producer/host world endpoints `1940 -> 2580`;
+- accepted receipt-proven temporal pair 600, `6.40 cm` camera separation, exact
+  per-eye capture poses, and distributed raw L/R pixel differences;
+- stationary UI, world -> pause UI -> world, sRGB color, Start/A/stick/neutral,
+  and the final eight-second pose sweep all passing;
+- no SteamVR process and no proof, cleanup, archive, or restoration failure.
+
+The installed game state was then verified byte-for-byte against the run backup:
+the original ASI and `openvr_api.dll` were restored, `backend=off`, `stereo=0`, and
+the disable sentinel is absent. The tested x64 host SHA-256 is
+`27CE326A916F1078D780A48D226A0815FD647A32EDF37A92CA7867A78A71B55B`; the unchanged
+Mode 57 x86 ASI used by this run is
+`11D8697943A862E63DF55A76E2550CAB0B244C7304716D63E4E17FDDD1653213`.
+
+One earlier attempt, `20260728-034338-steam-safe`, correctly restored all files but
+ended on the launcher's ten-second transaction-stall gate. The game and host had
+actually advanced beyond the last sparse 60-transaction log marker; a nearly static
+scene simply stopped passing the raw motion/difference threshold two pairs before
+the continuity gate. The deterministic proof now starts its existing command-file
+pose sweep for that pre-pause continuity window and stops it before testing pause.
+The later `034648` pass proved the cache mechanism end to end but its first automated
+reuse marker came from the menu quad. The final `035722` launcher requires a
+route-tagged world reuse after the temporal capture-pose gate. The same host build
+also carries fail-closed swapchain-timeout handling and scheduled reference-space
+cache invalidation, but this simulator run produced neither a wait timeout nor a
+reference-space-change event; those two safety paths are compile/offline-guarded,
+not live-event-verified.
+
+This removes redundant host work and preserves compositor reprojection truth, but it
+does **not** make temporal Mode 57 a native-rate stereo renderer. The successful
+trace still shows roughly 30 accepted L/R pairs per second because each pair consumes
+two GTA frames, with the two eye captures about one 60 Hz frame apart. Sampled x86
+world readback plus mailbox copy cost averaged about 6.2 ms and reached about 10 ms.
+The next performance work must remove the two-frame temporal limitation and the
+synchronous CPU readback; do not label swapchain reuse alone as “butter smooth.”
 
 ## Current candidate: Mode 57 direct OpenXR temporal stereo (headless in-game proof PASS)
 

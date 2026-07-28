@@ -12,6 +12,7 @@
 #include "haptic_bridge.h"
 #include "menu_quad_pose.h"
 #include "pose_bridge.h"
+#include "presentation_cache.h"
 
 #include <algorithm>
 #include <array>
@@ -38,6 +39,7 @@ namespace
 using Microsoft::WRL::ComPtr;
 
 constexpr XrDuration SwapchainWaitTimeout = 2'000'000'000;
+constexpr uint32_t SwapchainWaitAttempts = 3u;
 constexpr uint32_t EyeCount = 2;
 constexpr uint32_t GameProjectionDimension = 1536u;
 std::atomic<bool> stopRequested { false };
@@ -530,6 +532,65 @@ struct LocatedViewSample
     };
 };
 
+struct PreparedGamePresentation
+{
+    std::array<XrView, EyeCount> submittedViews {
+        XrView { XR_TYPE_VIEW },
+        XrView { XR_TYPE_VIEW }
+    };
+    XrPosef uiPose {};
+    bool quadPresentation = false;
+};
+
+gtaiv_xr_host::GamePresentationKey makeGamePresentationKey(
+    const gtaiv_xr_host::GameFrameView& frame,
+    uint32_t referenceSpaceGeneration)
+{
+    gtaiv_xr_host::GamePresentationKey key {};
+    key.transactionId = frame.transactionId;
+    key.sourceFrameId[0] = frame.sourceFrameId[0];
+    key.sourceFrameId[1] = frame.sourceFrameId[1];
+    key.poseSequence[0] = frame.poseSequence[0];
+    key.poseSequence[1] = frame.poseSequence[1];
+    key.renderedDisplayTime[0] = frame.renderedDisplayTime[0];
+    key.renderedDisplayTime[1] = frame.renderedDisplayTime[1];
+    key.referenceSpaceGeneration = referenceSpaceGeneration;
+    key.width = frame.width;
+    key.height = frame.height;
+    key.contentWidth = frame.contentWidth;
+    key.contentHeight = frame.contentHeight;
+    key.presentationMode =
+        static_cast<uint32_t>(frame.presentationMode);
+    key.uiReasonFlags = frame.uiReasonFlags;
+    key.uiEye = frame.uiEye;
+    key.sameSimulationTick = frame.sameSimulationTick;
+    key.temporalStereo = frame.temporalStereo;
+    return key;
+}
+
+const char* gamePresentationRoute(
+    const gtaiv_xr_host::GamePresentationKey& key) noexcept
+{
+    const auto mode = static_cast<gtaiv_xr_bridge::PresentationMode>(
+        key.presentationMode);
+    if (mode == gtaiv_xr_bridge::PresentationMode::UiQuad)
+        return "stationary-ui-quad";
+    if (mode == gtaiv_xr_bridge::PresentationMode::WorldMono)
+        return "world-headtracked-mono-projection";
+    if (mode == gtaiv_xr_bridge::PresentationMode::WorldStereo)
+    {
+        return key.temporalStereo
+            ? "world-temporal-stereo"
+            : "world-stereo";
+    }
+    return "unknown";
+}
+
+bool swapchainImageWaitSucceeded(XrResult result) noexcept
+{
+    return result == XR_SUCCESS;
+}
+
 class CalibrationHost
 {
 public:
@@ -620,6 +681,16 @@ public:
             }
         }
 
+        if (gameMode_)
+        {
+            std::ostringstream message;
+            message
+                << "XRHost: game presentation pacing swapchainUpdates="
+                << gamePresentationCache_.updateCount()
+                << " reusedHostFrames="
+                << gamePresentationCache_.reuseCount();
+            logger_.write(message.str());
+        }
         logger_.write("XRHost: clean shutdown requested");
         return 0;
     }
@@ -639,6 +710,44 @@ private:
         if (resultText[0] != '\0')
             message << " (" << resultText << ')';
         throw std::runtime_error(message.str());
+    }
+
+    void waitForSwapchainImageReady(
+        XrSwapchain swapchain,
+        const char* operation)
+    {
+        XrSwapchainImageWaitInfo waitInfo {
+            XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+        waitInfo.timeout = SwapchainWaitTimeout;
+        for (uint32_t attempt = 1u;
+             attempt <= SwapchainWaitAttempts;
+             ++attempt)
+        {
+            const XrResult result =
+                xrWaitSwapchainImage(swapchain, &waitInfo);
+            if (swapchainImageWaitSucceeded(result))
+                return;
+            if (result == XR_TIMEOUT_EXPIRED)
+            {
+                std::ostringstream message;
+                message
+                    << "XRHost: " << operation
+                    << " timed out attempt=" << attempt
+                    << '/' << SwapchainWaitAttempts
+                    << "; waiting on the same acquired image";
+                logger_.write(message.str());
+                continue;
+            }
+            checkXr(result, operation);
+            std::ostringstream message;
+            message << operation
+                    << " returned unexpected non-success result="
+                    << static_cast<int32_t>(result);
+            throw std::runtime_error(message.str());
+        }
+        throw std::runtime_error(
+            std::string(operation)
+            + " timed out before the acquired image became ready.");
     }
 
     void createInstance()
@@ -1342,6 +1451,7 @@ private:
 
                 if (sessionState_ == XR_SESSION_STATE_READY && !sessionRunning_)
                 {
+                    resetReferenceSpacePresentation("session-start");
                     XrSessionBeginInfo beginInfo { XR_TYPE_SESSION_BEGIN_INFO };
                     beginInfo.primaryViewConfigurationType =
                         XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
@@ -1353,12 +1463,41 @@ private:
                 {
                     checkXr(xrEndSession(session_), "xrEndSession");
                     sessionRunning_ = false;
+                    gamePresentationCache_.invalidate();
+                    referenceSpaceChangePending_ = false;
                     logger_.write("XRHost: session stopped");
                 }
                 else if (sessionState_ == XR_SESSION_STATE_EXITING
                          || sessionState_ == XR_SESSION_STATE_LOSS_PENDING)
                 {
                     exitRequested_ = true;
+                }
+            }
+            else if (
+                event.type
+                    == XR_TYPE_EVENT_DATA_REFERENCE_SPACE_CHANGE_PENDING)
+            {
+                const auto* changed =
+                    reinterpret_cast<
+                        const XrEventDataReferenceSpaceChangePending*>(
+                            &event);
+                if (changed->session == session_
+                    && (changed->referenceSpaceType
+                            == XR_REFERENCE_SPACE_TYPE_LOCAL
+                        || changed->referenceSpaceType
+                            == XR_REFERENCE_SPACE_TYPE_VIEW))
+                {
+                    referenceSpaceChangePending_ = true;
+                    referenceSpaceChangeTime_ = changed->changeTime;
+                    std::ostringstream message;
+                    message
+                        << "XRHost: reference-space change pending type="
+                        << static_cast<int32_t>(
+                            changed->referenceSpaceType)
+                        << " changeTime="
+                        << static_cast<int64_t>(changed->changeTime)
+                        << "; old generation remains valid until changeTime";
+                    logger_.write(message.str());
                 }
             }
             else if (event.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING)
@@ -1846,11 +1985,65 @@ private:
         return true;
     }
 
+    void commitGamePresentation(
+        const gtaiv_xr_host::GamePresentationKey& key,
+        const PreparedGamePresentation& presentation)
+    {
+        gamePresentationCache_.commit(key, presentation);
+        const uint64_t updates = gamePresentationCache_.updateCount();
+        if (updates <= 4u || updates % 120u == 0u)
+        {
+            std::ostringstream message;
+            message
+                << "XRHost: game swapchain updated transaction="
+                << key.transactionId
+                << " presentation="
+                << gamePresentationRoute(key)
+                << " updates=" << updates
+                << " reusedHostFrames="
+                << gamePresentationCache_.reuseCount();
+            logger_.write(message.str());
+        }
+    }
+
+    void resetReferenceSpacePresentation(const char* reason)
+    {
+        ++referenceSpaceGeneration_;
+        if (referenceSpaceGeneration_ == 0u)
+            ++referenceSpaceGeneration_;
+        gamePresentationCache_.invalidate();
+        menuQuadLatch_.reset();
+        for (LocatedViewSample& sample : locatedViewHistory_)
+            sample = LocatedViewSample {};
+        referenceSpaceChangePending_ = false;
+        referenceSpaceChangeTime_ = 0;
+        std::ostringstream message;
+        message
+            << "XRHost: reference-space presentation reset generation="
+            << referenceSpaceGeneration_
+            << " reason=" << reason;
+        logger_.write(message.str());
+    }
+
+    void applyPendingReferenceSpaceChange(XrTime predictedDisplayTime)
+    {
+        if (!referenceSpaceChangePending_)
+            return;
+        if (referenceSpaceChangeTime_ > 0
+            && predictedDisplayTime < referenceSpaceChangeTime_)
+        {
+            return;
+        }
+        resetReferenceSpacePresentation("runtime-change");
+    }
+
     bool renderFrame()
     {
         XrFrameWaitInfo waitInfo { XR_TYPE_FRAME_WAIT_INFO };
         XrFrameState frameState { XR_TYPE_FRAME_STATE };
         checkXr(xrWaitFrame(session_, &waitInfo, &frameState), "xrWaitFrame");
+        applyPendingReferenceSpaceChange(
+            frameState.predictedDisplayTime);
 
         XrFrameBeginInfo beginInfo { XR_TYPE_FRAME_BEGIN_INFO };
         checkXr(xrBeginFrame(session_, &beginInfo), "xrBeginFrame");
@@ -1977,9 +2170,54 @@ private:
             }
 
             std::array<XrView, EyeCount> submittedViews = views;
+            gtaiv_xr_host::GamePresentationKey presentationKey {};
+            PreparedGamePresentation cachedPresentation {};
+            bool reusedGamePresentation = false;
+            if (gameMode_ && gameFrame_)
+            {
+                presentationKey = makeGamePresentationKey(
+                    gameFrame_,
+                    referenceSpaceGeneration_);
+                reusedGamePresentation =
+                    gamePresentationCache_.tryReuse(
+                        presentationKey,
+                        cachedPresentation);
+                if (reusedGamePresentation)
+                {
+                    if (cachedPresentation.quadPresentation)
+                        uiLayer.pose = cachedPresentation.uiPose;
+                    else
+                        submittedViews =
+                            cachedPresentation.submittedViews;
+                    const uint64_t reuseFrames =
+                        gamePresentationCache_.reuseCount();
+                    if (reuseFrames == 1u || reuseFrames % 300u == 0u)
+                    {
+                        std::ostringstream message;
+                        message
+                            << "XRHost: game swapchain reused transaction="
+                            << presentationKey.transactionId
+                            << " presentation="
+                            << gamePresentationRoute(presentationKey)
+                            << " reusedHostFrames=" << reuseFrames;
+                        logger_.write(message.str());
+                    }
+                }
+            }
+            else if (gameMode_)
+            {
+                gamePresentationCache_.invalidate();
+            }
+
             gameFramePoseMatched_ =
-                !gameMode_ || !gameFrame_ || quadPresentation;
-            if (gameMode_ && gameFrame_ && !quadPresentation)
+                reusedGamePresentation
+                || !gameMode_
+                || !gameFrame_
+                || quadPresentation;
+            if (!reusedGamePresentation
+                && gameMode_
+                && gameFrame_
+                && !quadPresentation)
             {
                 if (gameFrame_.temporalStereo)
                 {
@@ -2061,7 +2299,8 @@ private:
                     }
                 }
             }
-            if (gameMode_
+            if (!reusedGamePresentation
+                && gameMode_
                 && gameFrame_
                 && gameFrame_.presentationMode
                     == gtaiv_xr_bridge::PresentationMode::WorldMono)
@@ -2122,22 +2361,32 @@ private:
             {
                 if (quadPoseReady)
                 {
-                    const uint32_t contentWidth =
-                        gameFrame_.contentWidth != 0u
-                            ? gameFrame_.contentWidth
-                            : gameFrame_.width;
-                    const uint32_t contentHeight =
-                        gameFrame_.contentHeight != 0u
-                            ? gameFrame_.contentHeight
-                            : gameFrame_.height;
-                    const uint32_t sourceEye =
-                        uiQuad ? gameFrame_.uiEye : 0u;
-                    renderGameTexture(
-                        uiSwapchain_,
-                        gameFrame_.eyeViews[sourceEye],
-                        contentWidth,
-                        contentHeight,
-                        false);
+                    if (!reusedGamePresentation)
+                    {
+                        const uint32_t contentWidth =
+                            gameFrame_.contentWidth != 0u
+                                ? gameFrame_.contentWidth
+                                : gameFrame_.width;
+                        const uint32_t contentHeight =
+                            gameFrame_.contentHeight != 0u
+                                ? gameFrame_.contentHeight
+                                : gameFrame_.height;
+                        const uint32_t sourceEye =
+                            uiQuad ? gameFrame_.uiEye : 0u;
+                        renderGameTexture(
+                            uiSwapchain_,
+                            gameFrame_.eyeViews[sourceEye],
+                            contentWidth,
+                            contentHeight,
+                            false);
+                        PreparedGamePresentation prepared {};
+                        prepared.submittedViews = submittedViews;
+                        prepared.uiPose = uiLayer.pose;
+                        prepared.quadPresentation = true;
+                        commitGamePresentation(
+                            presentationKey,
+                            prepared);
+                    }
                     submittedLayer =
                         reinterpret_cast<const XrCompositionLayerBaseHeader*>(
                             &uiLayer);
@@ -2148,13 +2397,28 @@ private:
                      || !gameFrame_.temporalStereo
                      || gameFramePoseMatched_)
             {
+                if (!reusedGamePresentation)
+                {
+                    for (uint32_t eye = 0; eye < EyeCount; ++eye)
+                    {
+                        renderEye(
+                            eye,
+                            submittedViews[eye],
+                            static_cast<float>(frameCounter_ % 36000) / 90.0f);
+                    }
+                    if (gameMode_ && gameFrame_)
+                    {
+                        PreparedGamePresentation prepared {};
+                        prepared.submittedViews = submittedViews;
+                        prepared.quadPresentation = false;
+                        commitGamePresentation(
+                            presentationKey,
+                            prepared);
+                    }
+                }
+
                 for (uint32_t eye = 0; eye < EyeCount; ++eye)
                 {
-                    renderEye(
-                        eye,
-                        submittedViews[eye],
-                        static_cast<float>(frameCounter_ % 36000) / 90.0f);
-
                     projectionViews[eye].pose = submittedViews[eye].pose;
                     projectionViews[eye].fov = submittedViews[eye].fov;
                     projectionViews[eye].subImage.swapchain =
@@ -2201,10 +2465,8 @@ private:
             xrAcquireSwapchainImage(swapchain.handle, &acquireInfo, &imageIndex),
             "xrAcquireSwapchainImage(game)");
 
-        XrSwapchainImageWaitInfo waitInfo { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-        waitInfo.timeout = SwapchainWaitTimeout;
-        checkXr(
-            xrWaitSwapchainImage(swapchain.handle, &waitInfo),
+        waitForSwapchainImageReady(
+            swapchain.handle,
             "xrWaitSwapchainImage(game)");
 
         D3D11_VIEWPORT viewport {};
@@ -2309,9 +2571,9 @@ private:
             xrAcquireSwapchainImage(swapchain.handle, &acquireInfo, &imageIndex),
             "xrAcquireSwapchainImage");
 
-        XrSwapchainImageWaitInfo waitInfo { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
-        waitInfo.timeout = SwapchainWaitTimeout;
-        checkXr(xrWaitSwapchainImage(swapchain.handle, &waitInfo), "xrWaitSwapchainImage");
+        waitForSwapchainImageReady(
+            swapchain.handle,
+            "xrWaitSwapchainImage");
 
         const Vec3 right = rotate(view.pose.orientation, { 1.0f, 0.0f, 0.0f });
         const Vec3 up = rotate(view.pose.orientation, { 0.0f, 1.0f, 0.0f });
@@ -2524,6 +2786,8 @@ private:
     gtaiv_xr_host::HapticBridge hapticBridge_;
     gtaiv_xr_host::PoseBridgePublisher poseBridge_;
     gtaiv_xr_host::StationaryMenuQuadLatch menuQuadLatch_;
+    gtaiv_xr_host::GamePresentationCache<PreparedGamePresentation>
+        gamePresentationCache_;
     std::array<LocatedViewSample, 256u> locatedViewHistory_;
 
     std::vector<XrViewConfigurationView> viewConfigurationViews_;
@@ -2543,6 +2807,8 @@ private:
     std::array<bool, EyeCount> hapticActive_ {};
     uint32_t referenceSpaceGeneration_ = 1u;
     uint32_t recenterRequestId_ = 0u;
+    XrTime referenceSpaceChangeTime_ = 0;
+    bool referenceSpaceChangePending_ = false;
     bool sessionRunning_ = false;
     bool exitRequested_ = false;
     bool loggedFov_ = false;
@@ -2625,6 +2891,14 @@ int main(int argc, char** argv)
             compileShader("vsMain", "vs_5_0");
             compileShader("psMain", "ps_5_0");
             compileShader("psGame", "ps_5_0");
+            if (!swapchainImageWaitSucceeded(XR_SUCCESS)
+                || swapchainImageWaitSucceeded(XR_TIMEOUT_EXPIRED)
+                || swapchainImageWaitSucceeded(
+                    XR_ERROR_RUNTIME_FAILURE))
+            {
+                throw std::runtime_error(
+                    "Swapchain wait result classifier self-test failed.");
+            }
             std::string protocolFailure;
             if (!gtaiv_xr_host::GameBridgeProtocolSelfTest(protocolFailure))
             {
@@ -2656,12 +2930,22 @@ int main(int argc, char** argv)
                     "Game/menu texture routing self-test failed: "
                     + textureLayoutFailure);
             }
+            std::string presentationCacheFailure;
+            if (!gtaiv_xr_host::GamePresentationCacheSelfTest(
+                    presentationCacheFailure))
+            {
+                throw std::runtime_error(
+                    "Game presentation cache self-test failed: "
+                    + presentationCacheFailure);
+            }
             logger->write(
                 "SelfTest: PASS pointerBits=64 shaders=ok protocol=v6 "
                 "worldStrict=1 wvpProof=1 drawSceneProof=1 "
                 "temporalOptIn=1 immersiveMono=1 "
                 "cpuMailbox=1 cpuMailboxStereo=1 cpuMailboxWorldUi=1 "
                 "stationaryUiQuad=1 uiAspect=1 routeSwitch=1 "
+                "heldFrameReuse=1 exactPoseCache=1 "
+                "strictSwapchainWait=1 referenceSpaceReset=1 "
                 "srgbDecode=1 "
                 "runtimeUntouched=1");
             return 0;

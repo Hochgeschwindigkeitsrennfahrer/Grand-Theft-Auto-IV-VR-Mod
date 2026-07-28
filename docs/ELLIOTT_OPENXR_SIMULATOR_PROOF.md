@@ -7,6 +7,24 @@ through its child `XR_RUNTIME_JSON` environment.
 
 ## Verification status
 
+The held-frame OpenXR swapchain-reuse change passed a second complete full-game
+regression:
+
+```text
+out-openxr/runs/20260728-035722-steam-safe/
+```
+
+That run reports `outcome=PROOF_COMPLETE`,
+`hostSwapchainReuseReady=True`, lower-bound counters of 2700 unchanged host frames
+reused and 2400 new-transaction updates, accepted Mode 57 pair 600, matching
+producer/host world endpoints `1940 -> 2580`, complete menu/input/pose automation,
+no SteamVR, and exact installed-file restoration. The reuse gate is asserted only
+for `presentation=world-temporal-stereo` after exact temporal capture poses are
+active; menu reuse cannot satisfy it. The host continues tracking, input,
+`xrWaitFrame`, and `xrEndFrame` at runtime cadence; only redundant D3D11 rendering
+of an unchanged GTA transaction is skipped. Cached temporal submissions retain the
+original per-eye capture poses/FOVs even after the live pose-history ring advances.
+
 The corrected Mode 57 contract passed its first complete live simulator run:
 
 ```text
@@ -111,7 +129,9 @@ The launcher:
    bounded Rockstar handoff retry;
 8. drives Start/A/stick/neutral/pose through acknowledged JSON command files;
 9. waits for UI reasons zero plus three fresh shared world transactions sustained
-   for at least two seconds before testing pause and locomotion;
+   for at least two seconds, uses a bounded pre-pause pose sweep to make static-scene
+   continuity deterministic, and requires observed unchanged-swapchain reuse before
+   testing pause and locomotion;
 10. records `PROOF_COMPLETE`, stops the title and host, removes command files, and
     restores every saved game file.
 
@@ -127,6 +147,7 @@ Mode57 build-to-replay receipt PASS
 Mode57 mailbox contains temporal, pixel-distinct L/R eyes
 Mode57 temporal L/R transaction accepted by host
 Mode57 per-eye capture poses active in OpenXR host
+unchanged OpenXR world swapchain reuse READY
 in-game world->pause UI->world round trip PASS
 stick/neutral proof PASS
 command-file A/Start/stick/neutral/pose automation COMPLETE
@@ -143,6 +164,9 @@ stereoProofComplete=True
 worldLoadFullyReady=True
 pauseRoundTrip=True
 temporalBuildReplayReceiptReady=True
+hostSwapchainReuseReady=True
+hostSwapchainReuseFramesLowerBound=...
+hostSwapchainUpdatesLowerBound=...
 restoreFailures=
 ```
 

@@ -144,6 +144,13 @@ public:
         return pose_;
     }
 
+    void reset() noexcept
+    {
+        active_ = false;
+        generation_ = 0u;
+        pose_ = {};
+    }
+
 private:
     XrPosef pose_ {};
     uint32_t generation_ = 0u;
@@ -195,6 +202,12 @@ inline bool StationaryMenuQuadPoseSelfTest(std::string& failure)
         || std::fabs(latch.pose().position.x - first.position.x) < 1.0f)
     {
         failure = "stationary menu quad did not relatch after closing";
+        return false;
+    }
+    latch.reset();
+    if (latch.active())
+    {
+        failure = "stationary menu quad reset remained active";
         return false;
     }
     failure.clear();
