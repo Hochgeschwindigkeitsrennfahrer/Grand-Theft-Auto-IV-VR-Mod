@@ -59,6 +59,22 @@ All important external links for this project.
 | Luke Ross R.E.A.L. VR pack | `inspiration/real vr all mods/` (gitignored) | FOV=HMD, square+FOV, AER lessons, pitch/view overrides — **techniques only**, no binary redistribution |
 | Notes | `docs/INSPIRATION_NOTES.md` | Do **not** adopt FOV 111 / FusionFix FOV / canvas-zoom claimed-FOV warp |
 
+## Decoupled aiming / GTA IV RE sources (research 2026-07-29)
+
+| Item | Link | What we take |
+|------|------|--------------|
+| **Holydh UEVR_GTASADE `WeaponManager.cpp`** | https://github.com/Holydh/UEVR_GTASADE/blob/main/WeaponManager.cpp | THE pattern: weapon→controller attach, barrel-ray from 2 points, overwrite aim forward/cam pos in memory, restore when not aiming, vehicles excluded |
+| Holydh `MemoryManager.cpp` | https://github.com/Holydh/UEVR_GTASADE/blob/main/MemoryManager.cpp | NOP game writer instructions + write own values; HW-breakpoint shot detection (DR0 + vectored handler) |
+| IV-Network reversing notes | https://github.com/GTA-Network/IV-Network/blob/master/Documents/Development_ReverseEngineering/IV-Reversing.txt | `CPed+0xBC0 = CPedIKManager*`, `+0x70 vecAimTarget` (1.0.7-era — UNVERIFIED CE), CWeapon/CWeaponInfo layout |
+| IV-Network natives list | https://github.com/GTA-Network/IV-Network/blob/master/Documents/Development_ReverseEngineering/IV-Natives.txt | `TASK_AIM_GUN_AT_COORD`, `TASK_SHOOT_AT_COORD`, `FIRE_SINGLE_BULLET`, `GET_PED_BONE_POSITION`, `FIRE_PED_WEAPON` (arg counts) |
+| Zolika1351 / ClonkAndre IV-SDK | https://github.com/Zolika1351/iv-sdk | IV class/function addresses 1.0.7/1.0.8 (NOT CE — porting reference only) |
+| IV-SDK .NET (CE-aware) | https://github.com/ClonkAndre/IV-SDK-DotNet | Native signatures incl. Vector3 overloads; TLS main-thread native calling lesson |
+| GTAMods memory addresses (IV) | https://gtamods.com/wiki/Memory_Addresses_(GTA4) | Classic-version addresses for cross-checking CE finds |
+
+Plan docs: `docs/DECOUPLED_AIM_PLAN.md` (plans A-D, CE recipes, checklist),
+`docs/CAMERA_ATTACH_REVIEW.md` (attach redesign), `docs/HANDOFF_HOME_AIM_CAMERA.md`,
+`docs/STEREO_TRUETICK_REVIEW.md` (TrueStereo 230–234).
+
 ## VR rendering / flat→VR docs (web research 2026-07-24)
 
 | Topic | Link | Takeaway for us |

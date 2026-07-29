@@ -1,4 +1,5 @@
 #include "openvr_mono.h"
+#include "aim_decouple.h"
 #include "cam_matrix.h"
 #include "hmd_look.h"
 #include "hmd_pose.h"
@@ -242,6 +243,7 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
     PerfDebugVrNote("WaitGetPoses err=%d", static_cast<int>(poseErr));
   }
   UpdateHmdPose(poses, vr::k_unMaxTrackedDeviceCount);
+  AimDecoupleOnPoses(poses, vr::k_unMaxTrackedDeviceCount);
 
   StereoRenderOnDevice(device);
   UpdateGameFovFromDevice(device);
@@ -309,6 +311,7 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   if (n > kLookAfter) {
     ApplyHmdMouseLook(poses, vr::k_unMaxTrackedDeviceCount);
     UpdateLookMove();  // stick yaw + optional HMD→ped heading (Mode120 forces ON)
+    UpdateAimDecouple();  // aimmode=0 inert; =1 probe log only
   }
   if (n == kCamAfter) {
     if (InstallCamMatrixHooks()) {

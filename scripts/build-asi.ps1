@@ -1,4 +1,4 @@
-﻿# Build gtaiv_dxvk_vr.asi (Win32 / x86) + OpenVR
+# Build gtaiv_dxvk_vr.asi (Win32 / x86) + OpenVR
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
 Set-Location $Root
@@ -28,6 +28,7 @@ $src = @(
   "src\asi\hmd_look.cpp",
   "src\asi\hmd_pose.cpp",
   "src\asi\aob.cpp",
+  "src\asi\aim_decouple.cpp",
   "src\asi\cam_matrix.cpp",
   "src\asi\ped_hide.cpp",
   "src\asi\native_invoke.cpp",
@@ -39,6 +40,7 @@ $src = @(
   "src\asi\stereo_dual.cpp",
   "src\asi\stereo_render.cpp",
   "src\asi\stereo_proj.cpp",
+  "src\asi\stereo_calib.cpp",
   "src\asi\hud_layout.cpp",
   "src\asi\game_timer.cpp",
   "thirdparty\minhook\src\buffer.c",

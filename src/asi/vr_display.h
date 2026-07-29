@@ -35,6 +35,10 @@ bool IsGameFovFromCCamActive();
 // Monotonic counter bumped when gameTan changes from CCam (StereoCanvas re-logs).
 uint32_t GetGameFovPublishGeneration();
 
+// Mode 231+: publish half-tangents measured from the live viewProj (StereoCalib).
+// Bypasses kEng + under-publish fit. Bars allowed when game < eye cover.
+void PublishGameFovMeasured(float tanHalfH, float tanHalfV);
+
 // Last backbuffer aspect (W/H); updated by UpdateGameFovFromDevice / EndScene.
 void SetBackbufferAspect(float aspectWH);
 float GetBackbufferAspect();
@@ -57,5 +61,11 @@ void LatchGameFovForPair();
 void ClearGameFovPairLatch();
 // True when a Mode 37 pair latch is active (CopySurf uses these, not size calc).
 bool GetLatchedGameFovTangents(float* tanHalfH, float* tanHalfV);
+
+// Mode 233 DIRECT (§4.4): float UV bounds for Submit on a 1:1 BB eye texture.
+// Returns false → fall back to Mode 232 canvas path (meas under cover / bad bounds).
+bool TryGetTrueStereoDirectBounds(vr::EVREye eye, vr::VRTextureBounds_t* out);
+// True when Mode 233 should use 1:1 BB copy (not canvas StretchRect).
+bool TrueStereoDirectPathOk();
 
 }  // namespace asi

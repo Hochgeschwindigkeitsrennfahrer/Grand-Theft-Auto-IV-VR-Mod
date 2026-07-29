@@ -611,6 +611,54 @@ enum class StereoMode : int {
   // Mode 216: Mode204 stereo (@0x4DE020) + deferred HEAD bone sample (EndScene only;
   // cam bake reads cache — never GetBonePos mid-DrawScene). Kill: 204.
   OursFpSameTickParentDual204DeferredHead = 216,
+
+  // ---- TrueStereo (docs/STEREO_TRUETICK_REVIEW.md) — 203-seam retry ------------
+  // Mode 230: PROBE. Mode203 dual + read-only projection measure. Kill: 203.
+  TrueStereoCalibProbe = 230,
+  // Mode 231: EXACT. Publish measured gameTan; sep=HMD IPD; stereoscale 1.00;
+  // no toe-in; worldscale not × baseline. Bars OK. Kill: 203.
+  TrueStereoExact = 231,
+  // Mode 232: COVER (§4.3). Exact + raise fpfov until measTan >= coverTan.
+  // Kill: 231.
+  TrueStereoCover = 232,
+  // Mode 233: DIRECT (§4.4). Cover + 1:1 BB→eye, float VRTextureBounds from
+  // measured tangents; under-cover falls back to canvas. Kill: 232.
+  TrueStereoDirect = 233,
+  // Mode 234: SAME-STATE (§4.5). Direct + CTimer step=0 across pair (exposure dt
+  // proxy) + latch controller/vehicle yaw + ped eye-center. Kill: 233.
+  // REJECTED headset (203+204): jump / no walk / no audio — do not re-enable freeze.
+  TrueStereoSameState = 234,
+  // Mode 235: STABLE PUBLISH — Direct + reject wild measTan (keep last good gameTan).
+  // Unblocks aspect/FOV flap that broke Direct fuse. Kill: 233.
+  TrueStereoStablePublish = 235,
+  // Mode 236: LEFT PUBLISH — 235 gate + publish measured gameTan from Left eye only
+  // (Right logged but not published — stops L↔R ~3% flip-flop of Direct bounds). Kill: 235.
+  TrueStereoLeftPublish = 236,
+  // Mode 237: LATERAL IPD — 236 + zero per-eye EyeZ forward shift. Eyes share one pivot
+  // (left/right only). Fixes joystick sweet-spot / jacket near double. Kill: 236.
+  // Headset: still sweet-spot — IPD was along HMD-right while stick yaw rotates view.
+  TrueStereoLateralIpd = 237,
+  // Mode 238: UEVR IPD — 236 + EyeToHead translation in CAMERA local frame (after stick
+  // yaw), like praydog calculate_stereo_view_offset. No L4D2 HMD-right / EyeZ hacks. Kill: 237.
+  // REJECTED headset: way worse — do not retry full EyeToHead on this path.
+  TrueStereoUevrIpd = 238,
+  // Mode 239: CAM-RIGHT IPD — 236 + ± ±half sep along post-yaw CAMERA right only.
+  // (Not HMD-right=237 stick mismatch; not full EyeToHead=238.) Parallel cams, one pivot. Kill: 237.
+  TrueStereoCamRightIpd = 239,
+  // Mode 240: CAM-RIGHT IPD FLIP — 239 with swapped ±half (239 pivot OK, fuse inverted?). Kill: 239.
+  // Headset: fuse improved; aspect/FOV still spazzes (TrueStereo measured publish).
+  TrueStereoCamRightIpdFlip = 240,
+
+  // Mode 241: stock Mode203 + cam-right IPD flip only (no TrueStereo measure/Direct/publish).
+  // Isolates the L/R fuse win without gameTan flap. Kill: 203.
+  // CHECKPOINT 2026-07-29: 100% 3D stereo VR (see prebuilt/mode241).
+  OursFpSameTickParentDual203CamRightFlip = 241,
+  // Mode 242: Mode204 seam (@0x4DE020) + same cam-right IPD flip as 241. Kill: 204 / 241.
+  OursFpSameTickParentDual204CamRightFlip = 242,
+  // Mode 243: Mode241 stereo (203 + cam-right flip) + late-latch Submit_TextureWithPose.
+  // One shared HMD pose stamped on L+R at Submit (Mode136 lesson) — head feel without
+  // losing 241 fusion. Kill: 241 / 203.
+  OursFpSameTickParentDual203CamRightFlipLateLatch = 243,
 };
 
 // Mode 40–49: rapid HMD delta → temporary mono pair. Mode 50+ never flattens.
@@ -710,6 +758,25 @@ bool IsOursFpSameTickParentDual203CloseIpdHalf(StereoMode mode); // 213–215 IP
 bool IsOursFpSameTickParentDual203CloseIpdQtr(StereoMode mode);  // 214–215 IPD 0.25cm
 bool IsOursFpSameTickParentDual203CloseIpdToeIn(StereoMode mode); // 215 IPD0.25+toe-in
 bool IsOursFpDeferredHeadBone(StereoMode mode);     // 216 deferred HEAD sample (not 193)
+// TrueStereo — docs/STEREO_TRUETICK_REVIEW.md; 230–239 on 203 seam.
+bool IsTrueStereoFamily(StereoMode mode);           // 230–239 (203 seam)
+bool IsStereoCalibProbe(StereoMode mode);           // 230 measure-only, no behavior change
+bool IsTrueStereoExact(StereoMode mode);            // 231+ measured tangents, IPD = HMD
+bool IsTrueStereoCover(StereoMode mode);            // 232+ raise fpfov until meas>=cover
+bool IsTrueStereoDirect(StereoMode mode);           // 233+ 1:1 BB + float Submit bounds
+bool IsTrueStereoSameState(StereoMode mode);        // 234 exposure + yaw/eye pair latch
+bool IsTrueStereoStablePublish(StereoMode mode);    // 235+ reject wild measTan publish
+bool IsTrueStereoLeftPublish(StereoMode mode);      // 236+ publish Left eye only
+bool IsTrueStereoLateralIpd(StereoMode mode);       // 237 zero per-eye EyeZ forward
+bool IsTrueStereoUevrIpd(StereoMode mode);          // 238 camera-local EyeToHead (REJECTED)
+bool IsTrueStereoCamRightIpd(StereoMode mode);      // 239–240 ±half on post-yaw camera right
+bool IsTrueStereoCamRightIpdFlip(StereoMode mode);  // 240 swapped L/R sign
+bool IsOursFp203CamRightFlip(StereoMode mode);      // 241–243 Mode203 + cam-right flip (no TrueStereo)
+bool IsOursFp204CamRightFlip(StereoMode mode);      // 242 Mode204 + cam-right flip
+bool IsOursFp203LateLatch(StereoMode mode);         // 243 = 241 + TextureWithPose late (shared L/R)
+bool UsesCamRightIpd(StereoMode mode);              // 239–243
+bool UsesCamRightIpdFlip(StereoMode mode);          // 240–243
+bool UsesLateLatchSubmit(StereoMode mode);          // 136 or 243
 bool IsOursFpUiLift(StereoMode mode);              // 172–173 canvas phone lift (not 174+)
 bool IsOursFpAtomicEyePair(StereoMode mode);       // 168–173, 176, 178–180, 183–192
 bool IsOursFpAlwaysBbCapture(StereoMode mode);     // 168–173, 176, 178–180, 183–192
@@ -747,6 +814,8 @@ float GetFpFootFovDegrees();
 float GetFpMouseSensScale();     // MouseSens/50 → 1.0 default
 float GetFpJoySensScale();       // JoySensLev1/20 → 1.0 default
 void EnsureFpProfileDefaults();  // write missing fpfov/camoff/sens files
+// Write gtaiv_dxvk_vr.fpfov + reload cache (Mode 162 / TrueStereo Cover raise).
+void ForceFpFovDegrees(int forward, int rear, int foot);
 
 // Mode 123: once cover FOV known, set fovadd so fillH≈100% (no SoftInset).
 void TryApplyCoverMatchedFovAdd();

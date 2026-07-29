@@ -36,6 +36,10 @@ void RefreshLiveCamForStereoEye();
 void BeginStereoDualCamFreeze();
 void EndStereoDualCamFreeze();
 
+// Mode 234 SAME-STATE (§4.5): latch controller+vehicle yaw and ped eye-center for L/R.
+void BeginTrueStereoSameStateLatch();
+void EndTrueStereoSameStateLatch();
+
 // Last position written by ApplyHmdToCam (for L/R delta logs).
 bool GetLastStereoCamPos(float* x, float* y, float* z);
 

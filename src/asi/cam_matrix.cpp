@@ -3,6 +3,7 @@
 #include "hmd_pose.h"
 #include "log.h"
 #include "ped_hide.h"
+#include "stereo_calib.h"
 #include "stereo_config.h"
 #include "stereo_eye.h"
 #include "stereo_render.h"
@@ -427,6 +428,12 @@ float g_deferredSmoothRootX = 0.f;
 float g_deferredSmoothRootY = 0.f;
 bool g_haveDeferredSmoothRootZ = false;
 
+// Mode 234 SAME-STATE: one yaw + one ped eye-center for the L/R dual pair.
+std::atomic<bool> g_sameStateLatch{false};
+float g_sameStateYawOff = 0.f;
+Vec4 g_sameStatePedEye{};
+bool g_haveSameStatePedEye = false;
+
 bool TryGetPedHeadBoneEye(Vec4* outEye) {
   if (!outEye || !g_FindPlayerPed || g_boneThiscallDead)
     return false;
@@ -657,17 +664,32 @@ float AdaptiveFollowAlpha(float errAbs, float aBob, float aMove, float bobThresh
 bool TryGetPedEyeCenterBase(Vec4* outEye) {
   if (!g_FindPlayerPed || !outEye)
     return false;
+  // Mode 234: first computed eye of the pair wins (plan §4.5 pair latch).
+  if (g_sameStateLatch.load() && g_haveSameStatePedEye) {
+    *outEye = g_sameStatePedEye;
+    outEye->w = 1.f;
+    return SaneWorldPos(*outEye);
+  }
   void* ped = g_FindPlayerPed(0);
   if (!ped)
     return false;
   const StereoMode sm = GetStereoMode();
   const bool inVeh = IsPlayerInVehicleSticky();
 
+  auto storeSameState = [&]() {
+    if (g_sameStateLatch.load() && !g_haveSameStatePedEye && SaneWorldPos(*outEye)) {
+      g_sameStatePedEye = *outEye;
+      g_haveSameStatePedEye = true;
+    }
+  };
+
   // Mode 216: always model-centered HEAD (foot + car + enter/exit soft scenes).
   // Never skip for vehicle — keep bone pivot through jack/enter/exit when ped exists.
   if (IsOursFpDeferredHeadBone(sm)) {
-    if (TryGetDeferredHeadBoneEyeCached(outEye))
+    if (TryGetDeferredHeadBoneEyeCached(outEye)) {
+      storeSameState();
       return true;
+    }
     // Height fallback: root + eyeH only (no foot/car forward nudge).
     const float kEyeH = 0.65f;
     auto* pMat = *reinterpret_cast<Matrix44**>(reinterpret_cast<uint8_t*>(ped) + 0x20);
@@ -683,13 +705,18 @@ bool TryGetPedEyeCenterBase(Vec4* outEye) {
       outEye->z = pMat->pos.z + pMat->at.z * kEyeH;
       outEye->w = 1.f;
     }
-    return SaneWorldPos(*outEye);
+    const bool ok = SaneWorldPos(*outEye);
+    if (ok)
+      storeSameState();
+    return ok;
   }
 
   // Mode 193: stick to HEAD bone via CE thiscall (crouch/sprint) — mid-draw path.
   if (IsOursFpHeadBoneCam(sm) && !inVeh) {
-    if (TryGetPedHeadBoneEye(outEye))
+    if (TryGetPedHeadBoneEye(outEye)) {
+      storeSameState();
       return true;
+    }
     if (!g_boneThiscallLoggedFail) {
       g_boneThiscallLoggedFail = true;
       Log("CamMatrix: HEAD thiscall eye FAILED — fallback root+height");
@@ -712,7 +739,10 @@ bool TryGetPedEyeCenterBase(Vec4* outEye) {
     outEye->z = pMat->pos.z + pMat->at.z * kEyeH + pMat->up.z * kPedFwd;
     outEye->w = 1.f;
   }
-  return SaneWorldPos(*outEye);
+  const bool ok = SaneWorldPos(*outEye);
+  if (ok)
+    storeSameState();
+  return ok;
 }
 
 void ApplyHmdToCam(Matrix44* mat) {
@@ -796,8 +826,11 @@ void ApplyHmdToCam(Matrix44* mat) {
 
   // Right-stick yaw offset (controller camera L/R) + optional vehicle follow, on top of HMD.
   // Rotate every HMD axis together so Mode 46 retains physical pitch and roll.
+  // Mode 234: latched yaw for both eyes of the dual pair (§4.5).
   {
-    const float yawOff = GetControllerYawOffset() + ComputeVehicleYawOffset();
+    const float yawOff = g_sameStateLatch.load()
+                             ? g_sameStateYawOff
+                             : (GetControllerYawOffset() + ComputeVehicleYawOffset());
     const float c = std::cos(yawOff);
     const float s = std::sin(yawOff);
     const float nfx = fx * c - fy * s;
@@ -982,50 +1015,95 @@ void ApplyHmdToCam(Matrix44* mat) {
     }
   }
 
-  // Stereo eye origin — L4D2VR GetViewOriginLeft/Right:
-  //   origin + forward*(-eyeZ*scale) + right*(±IPD*ipdScale*scale/2)
-  // Cover FOV + TextureBounds (Submit) handle fusion; IPD alone is not enough.
+  // Stereo eye origin.
+  // Default/L4D2: HMD-right × ±half + optional EyeZ (stick-yaw ≠ HMD-right → dual pivot).
+  // Mode 238 UEVR/praydog: EyeToHead in CAMERA local frame AFTER stick yaw.
   float ipdX = 0.f, ipdY = 0.f, ipdZ = 0.f;
   const bool rightEye = (GetStereoEye() == StereoEye::Right);
   // Mode 172 mono-pair: center cam only (no ±IPD) — one DrawScene feeds both eyes.
   if (GetStereoMode() >= StereoMode::DualIpd && !IsOursFpMonoPair(GetStereoMode())) {
-    float hrx, hry, hrz;
-    OvrToGta(h.m[0][0], h.m[1][0], h.m[2][0], &hrx, &hry, &hrz);
-    float hrlen = std::sqrt(hrx * hrx + hry * hry + hrz * hrz);
-    if (hrlen > 1e-4f) {
-      hrx /= hrlen;
-      hry /= hrlen;
-      hrz /= hrlen;
-    } else {
-      hrx = rx;
-      hry = ry;
-      hrz = rz;
-    }
-    // Same-frame full freeze: IPD uses frozen right axis (not a later HMD sample).
-    if (g_dualCamFreeze.load() && g_freezeFullBasis && g_haveFrozenCenter) {
-      hrx = rx;
-      hry = ry;
-      hrz = rz;
-    }
-
-    // Optional EyeToHead forward (OpenVR col2 translation) like L4D2 m_EyeZ.
-    float eyeZ = 0.f;
-    if (vr::VRSystem()) {
-      const vr::HmdMatrix34_t e2h =
-          vr::VRSystem()->GetEyeToHeadTransform(rightEye ? vr::Eye_Right : vr::Eye_Left);
-      eyeZ = e2h.m[2][3];
-    }
-
-    // WorldScale: 6DoF lean always. Mode187+: also × stereo baseline (UEVR size).
-    // Do NOT clamp half-sep — old ≤4cm made F11 100→200% identical at stereoscale~130%.
     const float ws =
         IsOursFpTrueWorldScale(GetStereoMode()) ? GetWorldScale() : 1.f;
-    const float half = 0.5f * GetStereoSepMeters() * GetStereoScale() * ws;
-    const float s = rightEye ? half : -half;
-    const float fzOff = -eyeZ * ws;
-    ipdX = hrx * s + fx * fzOff;
-    ipdY = hry * s + fy * fzOff;
-    ipdZ = hrz * s + fz * fzOff;
+    float half = 0.5f * GetStereoSepMeters() * GetStereoScale() * ws;
+
+    if (UsesCamRightIpd(GetStereoMode())) {
+      // Parallel stereo: ±half IPD on post-yaw CAMERA right only (follows stick).
+      // Flip: Mode 240 TrueStereo / Mode 241 stock-203 (inverted sign fixed fuse).
+      float s = rightEye ? half : -half;
+      if (UsesCamRightIpdFlip(GetStereoMode()))
+        s = -s;
+      ipdX = rx * s;
+      ipdY = ry * s;
+      ipdZ = rz * s;
+      static bool s_camRLogged = false;
+      if (!s_camRLogged) {
+        s_camRLogged = true;
+        Log("Mode%d: CAM-RIGHT-IPD %shalf=%.2fcm on post-yaw camera right eye=%s "
+            "(no HMD-right, no EyeToHead)",
+            static_cast<int>(GetStereoMode()),
+            UsesCamRightIpdFlip(GetStereoMode()) ? "FLIP " : "", half * 100.f,
+            rightEye ? "R" : "L");
+      }
+    } else if (IsTrueStereoUevrIpd(GetStereoMode()) && vr::VRSystem()) {
+      // OpenVR EyeToHead: +X right, +Y up, +Z back. Apply on post-yaw cam basis
+      // (RAGE: right / forward=mat.up / up=mat.at) — matches UEVR view_rotation * eye_offset.
+      const vr::HmdMatrix34_t e2h =
+          vr::VRSystem()->GetEyeToHeadTransform(rightEye ? vr::Eye_Right : vr::Eye_Left);
+      const float localR = e2h.m[0][3];
+      const float localU = e2h.m[1][3];
+      const float localB = e2h.m[2][3];
+      const float scale = ws * GetStereoScale();
+      ipdX = (rx * localR + ux * localU + fx * (-localB)) * scale;
+      ipdY = (ry * localR + uy * localU + fy * (-localB)) * scale;
+      ipdZ = (rz * localR + uz * localU + fz * (-localB)) * scale;
+      half = 0.5f * std::sqrt(localR * localR + localU * localU + localB * localB) * scale;
+      static bool s_uevrLogged = false;
+      if (!s_uevrLogged) {
+        s_uevrLogged = true;
+        Log("Mode238: UEVR-IPD EyeToHead in CAMERA frame local=(%.4f,%.4f,%.4f) eye=%s "
+            "scale=%.2f (no HMD-right, no L4D2 EyeZ)",
+            localR, localU, localB, rightEye ? "R" : "L", scale);
+      }
+    } else {
+      float hrx, hry, hrz;
+      OvrToGta(h.m[0][0], h.m[1][0], h.m[2][0], &hrx, &hry, &hrz);
+      float hrlen = std::sqrt(hrx * hrx + hry * hry + hrz * hrz);
+      if (hrlen > 1e-4f) {
+        hrx /= hrlen;
+        hry /= hrlen;
+        hrz /= hrlen;
+      } else {
+        hrx = rx;
+        hry = ry;
+        hrz = rz;
+      }
+      // Same-frame full freeze: IPD uses frozen right axis (not a later HMD sample).
+      if (g_dualCamFreeze.load() && g_freezeFullBasis && g_haveFrozenCenter) {
+        hrx = rx;
+        hry = ry;
+        hrz = rz;
+      }
+
+      // Optional EyeToHead forward (OpenVR col2) like L4D2 m_EyeZ. Mode 237: force 0.
+      float eyeZ = 0.f;
+      if (!IsTrueStereoLateralIpd(GetStereoMode()) && vr::VRSystem()) {
+        const vr::HmdMatrix34_t e2h =
+            vr::VRSystem()->GetEyeToHeadTransform(rightEye ? vr::Eye_Right : vr::Eye_Left);
+        eyeZ = e2h.m[2][3];
+      }
+
+      const float s = rightEye ? half : -half;
+      const float fzOff = -eyeZ * ws;
+      ipdX = hrx * s + fx * fzOff;
+      ipdY = hry * s + fy * fzOff;
+      ipdZ = hrz * s + fz * fzOff;
+      static bool s_latLogged = false;
+      if (IsTrueStereoLateralIpd(GetStereoMode()) && !s_latLogged) {
+        s_latLogged = true;
+        Log("Mode237: EyeZ forward forced 0 (lateral IPD only) half=%.2fcm eye=%s", half * 100.f,
+            rightEye ? "R" : "L");
+      }
+    }
     if (std::isfinite(ipdX) && std::isfinite(ipdY) && std::isfinite(ipdZ) &&
         std::fabs(ipdX) < 20.f && std::fabs(ipdY) < 20.f && std::fabs(ipdZ) < 20.f) {
       eye.x += ipdX;
@@ -1565,6 +1643,23 @@ void EndStereoDualCamFreeze() {
   g_haveFrozenCenter = false;
 }
 
+void BeginTrueStereoSameStateLatch() {
+  if (!IsTrueStereoSameState(GetStereoMode()))
+    return;
+  g_sameStateYawOff = GetControllerYawOffset() + ComputeVehicleYawOffset();
+  g_haveSameStatePedEye = false;
+  g_sameStateLatch.store(true);
+  static uint32_t s_n = 0;
+  const uint32_t n = ++s_n;
+  if (n <= 6 || (n % 600) == 0)
+    Log("Mode234: same-state latch begin #%u yawOff=%.4f", n, g_sameStateYawOff);
+}
+
+void EndTrueStereoSameStateLatch() {
+  g_sameStateLatch.store(false);
+  g_haveSameStatePedEye = false;
+}
+
 // Mode 22: world-space delta from LEFT eye to RIGHT eye = hmdRight * sep * scale
 // (the -eyeZ forward term in ApplyHmdToCam is identical for both eyes).
 bool GetStereoEyeRightDeltaWorld(float* dx, float* dy, float* dz) {
@@ -1693,7 +1788,18 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         s_lastWritten = -1.f;
         after = before;
       }
-      if (IsOursFpWideAspectFit(sm))
+      // Mode 231: do NOT under-publish / cover-lock. Canvas tangents come from the
+      // live StereoCalib measurement; until the first sample, fall back to kEng.
+      if (IsTrueStereoExact(sm)) {
+        if (!StereoCalibHasMeasurement()) {
+          PublishGameFovFromCCamDegrees(after, GetBackbufferAspect());
+          static bool s_kengFb = false;
+          if (!s_kengFb) {
+            s_kengFb = true;
+            Log("Mode231: gameTan source=kEng FALLBACK (waiting for StereoCalib measure)");
+          }
+        }
+      } else if (IsOursFpWideAspectFit(sm))
         PublishGameFovUnderPublishFit(after, GetBackbufferAspect(), GetUnderPublishOverscan());
       else
         PublishGameFovFromCover();

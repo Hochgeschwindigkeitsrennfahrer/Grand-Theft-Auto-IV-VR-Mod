@@ -455,10 +455,15 @@ void ReloadStereoMode() {
   int prev = g_mode.load();
   if (v >= 0 && (v <= 53 || IsCleanDualLookMove(static_cast<StereoMode>(v)) ||
                  IsExternalFpHost(static_cast<StereoMode>(v)) ||
-                 IsHeadHideNativeOurs(static_cast<StereoMode>(v)))) {
+                 IsHeadHideNativeOurs(static_cast<StereoMode>(v)) ||
+                 IsTrueStereoFamily(static_cast<StereoMode>(v)))) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
+  } else if (v >= 0) {
+    Log("StereoMode: REJECTED %d from file (kept %d) — this ASI build does not accept "
+        "that mode. Deploy the matching out-asi build, or use a known mode (203/204).",
+        v, prev);
   }
 
   // hud.dat is global — Mode 166/167 write VR inset; other modes restore stock.
@@ -474,7 +479,192 @@ void ReloadStereoMode() {
     ApplyGeometryCanvasDefaults();
     ReloadIpdScale();
     ReloadStereoScale();
-    if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual204DeferredHead)) {
+    if (v == static_cast<int>(StereoMode::TrueStereoCamRightIpdFlip)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      {
+        const float ipdCm = ReadHmdIpdMeters() * 100.f;
+        SetSepCmFloat(ipdCm);
+        SaveIpdFileFloat(ipdCm);
+      }
+      SetStereoScalePercent(100);
+      SaveStereoScaleFile(100);
+      Log("Mode240: TRUESTEREO CAM-RIGHT-IPD-FLIP on 203 seam (@0x4D8BF0) — Mode239 + "
+          "swapped ±half sign (pivot OK on 239, fuse dead both ways = likely inverted). "
+          "kill=239");
+    } else if (v == static_cast<int>(StereoMode::TrueStereoCamRightIpd)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      {
+        const float ipdCm = ReadHmdIpdMeters() * 100.f;
+        SetSepCmFloat(ipdCm);
+        SaveIpdFileFloat(ipdCm);
+      }
+      SetStereoScalePercent(100);
+      SaveStereoScaleFile(100);
+      Log("Mode239: TRUESTEREO CAM-RIGHT-IPD on 203 seam (@0x4D8BF0) — Mode236 + ±half "
+          "sep along post-yaw CAMERA right only (parallel; no HMD-right, no EyeToHead). "
+          "kill=237");
+    } else if (v == static_cast<int>(StereoMode::TrueStereoUevrIpd)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      {
+        const float ipdCm = ReadHmdIpdMeters() * 100.f;
+        SetSepCmFloat(ipdCm);
+        SaveIpdFileFloat(ipdCm);
+      }
+      SetStereoScalePercent(100);
+      SaveStereoScaleFile(100);
+      Log("Mode238: TRUESTEREO UEVR-IPD on 203 seam (@0x4D8BF0) — Mode236 + EyeToHead in "
+          "CAMERA local frame after stick yaw (praydog-style; no L4D2 HMD-right/EyeZ). "
+          "kill=237");
+    } else if (v == static_cast<int>(StereoMode::TrueStereoLateralIpd)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      {
+        const float ipdCm = ReadHmdIpdMeters() * 100.f;
+        SetSepCmFloat(ipdCm);
+        SaveIpdFileFloat(ipdCm);
+      }
+      SetStereoScalePercent(100);
+      SaveStereoScaleFile(100);
+      Log("Mode237: TRUESTEREO LATERAL-IPD on 203 seam (@0x4D8BF0) — Mode236 LeftPublish + "
+          "zero per-eye EyeZ forward (L/R share one pivot; left/right only). Jacket / "
+          "stick-yaw sweet-spot fix. kill=236");
+    } else if (v == static_cast<int>(StereoMode::TrueStereoLeftPublish)) {
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      {
+        const float ipdCm = ReadHmdIpdMeters() * 100.f;
+        SetSepCmFloat(ipdCm);
+        SaveIpdFileFloat(ipdCm);
+      }
+      SetStereoScalePercent(100);
+      SaveStereoScaleFile(100);
+      Log("Mode236: TRUESTEREO LEFT-PUBLISH on 203 seam (@0x4D8BF0) — Mode235 gate + "
+          "publish gameTan from Left eye only (Right = REJECT eyeR). Stops L/R ~3%% "
+          "Direct bounds flip-flop. kill=235");
+    } else if (v == static_cast<int>(StereoMode::TrueStereoStablePublish)) {
+      // Mode 235: Direct geometry + gated measured publish (no CTimer / no SameState latch).
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      {
+        const float ipdCm = ReadHmdIpdMeters() * 100.f;
+        SetSepCmFloat(ipdCm);
+        SaveIpdFileFloat(ipdCm);
+      }
+      SetStereoScalePercent(100);
+      SaveStereoScaleFile(100);
+      Log("Mode235: TRUESTEREO STABLE-PUBLISH on 203 seam (@0x4D8BF0) — Mode233 Direct + "
+          "reject wild measTan (near-square, [0.5,2.5], center, 25%% jump); keep last "
+          "good gameTan; no fpfov raise on REJECT. kill=233");
+    } else if (v == static_cast<int>(StereoMode::TrueStereoSameState)) {
+      // §4.5: Direct geometry + pair yaw/eye latch + CTimer step=0 (exposure dt proxy).
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      {
+        const float ipdCm = ReadHmdIpdMeters() * 100.f;
+        SetSepCmFloat(ipdCm);
+        SaveIpdFileFloat(ipdCm);
+      }
+      SetStereoScalePercent(100);
+      SaveStereoScaleFile(100);
+      Log("Mode234: TRUESTEREO SAME-STATE on 203 seam (@0x4D8BF0) — Mode233 Direct + "
+          "pair latch (controller/vehicle yaw + ped eye) + CTimer step=0 across dual "
+          "(exposure dt proxy). kill=233 — watch walk/audio like prior 234 on 204");
+    } else if (v == static_cast<int>(StereoMode::TrueStereoDirect)) {
+      // §4.4: Cover geometry + 1:1 BB→eye + float Submit bounds (canvas dead weight).
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      {
+        const float ipdCm = ReadHmdIpdMeters() * 100.f;
+        SetSepCmFloat(ipdCm);
+        SaveIpdFileFloat(ipdCm);
+      }
+      SetStereoScalePercent(100);
+      SaveStereoScaleFile(100);
+      Log("Mode233: TRUESTEREO DIRECT on 203 seam (@0x4D8BF0) — 1:1 BB→eye (no canvas "
+          "StretchRect), Submit float VRTextureBounds from measured tangents; "
+          "under-cover falls back to 232 canvas. kill=232");
+    } else if (v == static_cast<int>(StereoMode::TrueStereoCover)) {
+      // §4.3: Exact geometry + raise fpfov until measTan >= cover (canvas crops only).
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      {
+        const float ipdCm = ReadHmdIpdMeters() * 100.f;
+        SetSepCmFloat(ipdCm);
+        SaveIpdFileFloat(ipdCm);
+      }
+      SetStereoScalePercent(100);
+      SaveStereoScaleFile(100);
+      Log("Mode232: TRUESTEREO COVER on 203 seam (@0x4D8BF0) — Mode231 Exact + raise "
+          "fpfov until measTan>=cover (StereoCalib); canvas crops only. kill=231");
+    } else if (v == static_cast<int>(StereoMode::TrueStereoExact)) {
+      // 203 seam + honest geometry: measured gameTan, HMD IPD, stereoscale 1.00.
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      {
+        const float ipdCm = ReadHmdIpdMeters() * 100.f;
+        SetSepCmFloat(ipdCm);
+        SaveIpdFileFloat(ipdCm);
+      }
+      SetStereoScalePercent(100);
+      SaveStereoScaleFile(100);
+      Log("Mode231: TRUESTEREO EXACT on 203 seam (@0x4D8BF0) — measured gameTan "
+          "(StereoCalib PUBLISH), sep=HMD IPD, stereoscale forced 1.00, no toe-in, "
+          "worldscale not×baseline; black bars OK. kill=203");
+    } else if (v == static_cast<int>(StereoMode::TrueStereoCalibProbe)) {
+      // Mode 203 entry state — probe measures what 203 renders (203-seam retry).
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode230: TRUESTEREO PROBE on 203 seam (@0x4D8BF0) — Mode203 behavior + "
+          "READ-ONLY projection measurement (log 'StereoCalib:'). Run 60s, read "
+          "errH/errV. kill=203");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual204DeferredHead)) {
       ApplyMode162SquareWideBase();
       ForceFpFovDegrees(110, 110, 110);
       EnsureModelCenteredCamOffsets();
@@ -595,6 +785,37 @@ void ReloadStereoMode() {
       // Preserve user IPD (203 milestone proved IPD alone is not the near-double fix).
       Log("Mode204: OURS+PARENT-DUAL-TRY2 — Mode203 pose-latch dual on Mode198 parent "
           "fn=0x4DE020 (ret 0x4DE0DC thiscall-56); kill=203 MILESTONE");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual204CamRightFlip)) {
+      // Mode204 fused seam + cam-right flip (same IPD win as 241 checkpoint).
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode242: Mode204 + CAM-RIGHT-IPD FLIP (@0x4DE020) — same L/R as checkpoint 241; "
+          "kill=204 / 241");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual203CamRightFlipLateLatch)) {
+      // Mode241 stereo + Mode136-style late-latch Submit (shared pose for L+R).
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode243: Mode241 + LATE-LATCH Submit_TextureWithPose (shared L/R pose at "
+          "Submit; @0x4D8BF0 cam-right flip). kill=241 / 203");
+    } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual203CamRightFlip)) {
+      // Stock 203 geometry + cam-right flipped IPD only (no TrueStereo measure/Direct).
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode241: Mode203 + CAM-RIGHT-IPD FLIP only (@0x4D8BF0) — no TrueStereo "
+          "measure/Direct/publish (stops gameTan FOV spazz). Fuse L/R from Mode240. "
+          "kill=203");
     } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDualPose)) {
       ApplyMode162SquareWideBase();
       ForceFpFovDegrees(110, 110, 110);
@@ -1607,7 +1828,11 @@ bool IsOursFpSameTickBuildDual(StereoMode mode) {
          mode == StereoMode::OursFpSameTickParentDual203CloseIpdHalf ||
          mode == StereoMode::OursFpSameTickParentDual203CloseIpdQtr ||
          mode == StereoMode::OursFpSameTickParentDual203CloseIpdToeIn ||
-         mode == StereoMode::OursFpSameTickParentDual204DeferredHead;
+         mode == StereoMode::OursFpSameTickParentDual204DeferredHead ||
+         mode == StereoMode::OursFpSameTickParentDual203CamRightFlip ||
+         mode == StereoMode::OursFpSameTickParentDual204CamRightFlip ||
+         mode == StereoMode::OursFpSameTickParentDual203CamRightFlipLateLatch ||
+         IsTrueStereoFamily(mode);  // 230 on 203 seam inherits Post162 / ped-hide / accept
 }
 
 bool IsOursFpSameTickPhaseRight(StereoMode mode) {
@@ -1651,7 +1876,11 @@ bool IsOursFpSameTickParentDual(StereoMode mode) {
          mode == StereoMode::OursFpSameTickParentDual203CloseIpdHalf ||
          mode == StereoMode::OursFpSameTickParentDual203CloseIpdQtr ||
          mode == StereoMode::OursFpSameTickParentDual203CloseIpdToeIn ||
-         mode == StereoMode::OursFpSameTickParentDual204DeferredHead;
+         mode == StereoMode::OursFpSameTickParentDual204DeferredHead ||
+         mode == StereoMode::OursFpSameTickParentDual203CamRightFlip ||
+         mode == StereoMode::OursFpSameTickParentDual204CamRightFlip ||
+         mode == StereoMode::OursFpSameTickParentDual203CamRightFlipLateLatch ||
+         IsTrueStereoFamily(mode);
 }
 
 bool IsOursFpSameTickParentDualFreeze(StereoMode mode) {
@@ -1676,12 +1905,19 @@ bool IsOursFpSameTickParentDualPose(StereoMode mode) {
          mode == StereoMode::OursFpSameTickParentDual203CloseIpdHalf ||
          mode == StereoMode::OursFpSameTickParentDual203CloseIpdQtr ||
          mode == StereoMode::OursFpSameTickParentDual203CloseIpdToeIn ||
-         mode == StereoMode::OursFpSameTickParentDual204DeferredHead;
+         mode == StereoMode::OursFpSameTickParentDual204DeferredHead ||
+         mode == StereoMode::OursFpSameTickParentDual203CamRightFlip ||
+         mode == StereoMode::OursFpSameTickParentDual204CamRightFlip ||
+         mode == StereoMode::OursFpSameTickParentDual203CamRightFlipLateLatch ||
+         IsTrueStereoFamily(mode);  // 203 seam + pose latch (NOT Try2/204)
 }
 
 bool IsOursFpSameTickParentDualTry2(StereoMode mode) {
+  // Do NOT include TrueStereo — that would force the 204 @0x4DE020 seam.
+  // Mode 242 IS the 204 seam + cam-right flip.
   return mode == StereoMode::OursFpSameTickParentDualTry2 ||
-         mode == StereoMode::OursFpSameTickParentDual204DeferredHead;
+         mode == StereoMode::OursFpSameTickParentDual204DeferredHead ||
+         mode == StereoMode::OursFpSameTickParentDual204CamRightFlip;
 }
 
 bool IsOursFpSameTickParentDualTry3(StereoMode mode) {
@@ -1740,11 +1976,109 @@ bool IsOursFpDeferredHeadBone(StereoMode mode) {
   return mode == StereoMode::OursFpSameTickParentDual204DeferredHead;
 }
 
+bool IsTrueStereoFamily(StereoMode mode) {
+  return mode == StereoMode::TrueStereoCalibProbe || mode == StereoMode::TrueStereoExact ||
+         mode == StereoMode::TrueStereoCover || mode == StereoMode::TrueStereoDirect ||
+         mode == StereoMode::TrueStereoSameState || mode == StereoMode::TrueStereoStablePublish ||
+         mode == StereoMode::TrueStereoLeftPublish || mode == StereoMode::TrueStereoLateralIpd ||
+         mode == StereoMode::TrueStereoUevrIpd || mode == StereoMode::TrueStereoCamRightIpd ||
+         mode == StereoMode::TrueStereoCamRightIpdFlip;
+}
+
+bool IsStereoCalibProbe(StereoMode mode) {
+  return mode == StereoMode::TrueStereoCalibProbe;
+}
+
+bool IsTrueStereoExact(StereoMode mode) {
+  return mode == StereoMode::TrueStereoExact || mode == StereoMode::TrueStereoCover ||
+         mode == StereoMode::TrueStereoDirect || mode == StereoMode::TrueStereoSameState ||
+         mode == StereoMode::TrueStereoStablePublish || mode == StereoMode::TrueStereoLeftPublish ||
+         mode == StereoMode::TrueStereoLateralIpd || mode == StereoMode::TrueStereoUevrIpd ||
+         mode == StereoMode::TrueStereoCamRightIpd || mode == StereoMode::TrueStereoCamRightIpdFlip;
+}
+
+bool IsTrueStereoCover(StereoMode mode) {
+  return mode == StereoMode::TrueStereoCover || mode == StereoMode::TrueStereoDirect ||
+         mode == StereoMode::TrueStereoSameState || mode == StereoMode::TrueStereoStablePublish ||
+         mode == StereoMode::TrueStereoLeftPublish || mode == StereoMode::TrueStereoLateralIpd ||
+         mode == StereoMode::TrueStereoUevrIpd || mode == StereoMode::TrueStereoCamRightIpd ||
+         mode == StereoMode::TrueStereoCamRightIpdFlip;
+}
+
+bool IsTrueStereoDirect(StereoMode mode) {
+  return mode == StereoMode::TrueStereoDirect || mode == StereoMode::TrueStereoSameState ||
+         mode == StereoMode::TrueStereoStablePublish || mode == StereoMode::TrueStereoLeftPublish ||
+         mode == StereoMode::TrueStereoLateralIpd || mode == StereoMode::TrueStereoUevrIpd ||
+         mode == StereoMode::TrueStereoCamRightIpd || mode == StereoMode::TrueStereoCamRightIpdFlip;
+}
+
+bool IsTrueStereoSameState(StereoMode mode) {
+  return mode == StereoMode::TrueStereoSameState;
+}
+
+bool IsTrueStereoStablePublish(StereoMode mode) {
+  return mode == StereoMode::TrueStereoStablePublish || mode == StereoMode::TrueStereoLeftPublish ||
+         mode == StereoMode::TrueStereoLateralIpd || mode == StereoMode::TrueStereoUevrIpd ||
+         mode == StereoMode::TrueStereoCamRightIpd || mode == StereoMode::TrueStereoCamRightIpdFlip;
+}
+
+bool IsTrueStereoLeftPublish(StereoMode mode) {
+  return mode == StereoMode::TrueStereoLeftPublish || mode == StereoMode::TrueStereoLateralIpd ||
+         mode == StereoMode::TrueStereoUevrIpd || mode == StereoMode::TrueStereoCamRightIpd ||
+         mode == StereoMode::TrueStereoCamRightIpdFlip;
+}
+
+bool IsTrueStereoLateralIpd(StereoMode mode) {
+  return mode == StereoMode::TrueStereoLateralIpd;
+}
+
+bool IsTrueStereoUevrIpd(StereoMode mode) {
+  return mode == StereoMode::TrueStereoUevrIpd;
+}
+
+bool IsTrueStereoCamRightIpd(StereoMode mode) {
+  return mode == StereoMode::TrueStereoCamRightIpd || mode == StereoMode::TrueStereoCamRightIpdFlip;
+}
+
+bool IsTrueStereoCamRightIpdFlip(StereoMode mode) {
+  return mode == StereoMode::TrueStereoCamRightIpdFlip;
+}
+
+bool IsOursFp203CamRightFlip(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDual203CamRightFlip ||
+         mode == StereoMode::OursFpSameTickParentDual203CamRightFlipLateLatch;
+}
+
+bool IsOursFp204CamRightFlip(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDual204CamRightFlip;
+}
+
+bool IsOursFp203LateLatch(StereoMode mode) {
+  return mode == StereoMode::OursFpSameTickParentDual203CamRightFlipLateLatch;
+}
+
+bool UsesCamRightIpd(StereoMode mode) {
+  return IsTrueStereoCamRightIpd(mode) || IsOursFp203CamRightFlip(mode) ||
+         IsOursFp204CamRightFlip(mode);
+}
+
+bool UsesCamRightIpdFlip(StereoMode mode) {
+  return IsTrueStereoCamRightIpdFlip(mode) || IsOursFp203CamRightFlip(mode) ||
+         IsOursFp204CamRightFlip(mode);
+}
+
+bool UsesLateLatchSubmit(StereoMode mode) {
+  return IsCleanDualLateLatch(mode) || IsOursFp203LateLatch(mode);
+}
+
 bool IsOursFpHeadBoneCam(StereoMode mode) {
   return mode == StereoMode::OursFpHeadBoneThiscall;
 }
 
 bool IsOursFpTrueWorldScale(StereoMode mode) {
+  // Mode 231+: worldscale stays 6DoF-lean only — must NOT multiply the stereo baseline.
+  if (IsTrueStereoExact(mode))
+    return false;
   return mode == StereoMode::OursFpTrueWorldScale || IsOursFpHeadBoneCam(mode) ||
          IsOursFpSameTickDual(mode) || IsOursFpSameTickBuildDual(mode);
 }
@@ -2239,6 +2573,9 @@ float GetWorldScale() {
 }
 
 float GetStereoScale() {
+  // Mode 231+: ignore stereoscale file — always 1.00 (real IPD disparity).
+  if (IsTrueStereoExact(GetStereoMode()))
+    return 1.f;
   return g_stereoScale.load();
 }
 

@@ -423,6 +423,27 @@ void UpdateGameFovFromDevice(IDirect3DDevice9* device) {
   }
 }
 
+void PublishGameFovMeasured(float tanHalfH, float tanHalfV) {
+  if (!(tanHalfH > 0.1f) || !(tanHalfV > 0.1f) || !(tanHalfH < 8.f) || !(tanHalfV < 8.f) ||
+      !std::isfinite(tanHalfH) || !std::isfinite(tanHalfV))
+    return;
+  const float curH = g_gameTanH.load();
+  // Same ~2.5% gate as true-CCam publish — keep zoom/cutscene updates, ignore noise.
+  const bool changed = !(curH > 0.05f) || std::fabs(tanHalfH - curH) > 0.025f * curH;
+  if (!changed && g_fovFromCCam.load())
+    return;
+  g_gameTanH.store(tanHalfH);
+  g_gameTanV.store(tanHalfV);
+  g_fovFromCCam.store(true);
+  if (changed) {
+    const uint32_t gen = ++g_fovPublishGen;
+    if (gen <= 8 || (gen % 120) == 0)
+      Log("VrDisplay: gameTan from MEASURED tan=(%.3f,%.3f) gen=%u "
+          "(Mode231+ TrueStereo Exact — no kEng / no under-publish)",
+          tanHalfH, tanHalfV, gen);
+  }
+}
+
 bool GetEyeRawProjection(vr::EVREye eye, float* left, float* right, float* top, float* bottom) {
   if (!left || !right || !top || !bottom)
     return false;
@@ -477,6 +498,47 @@ bool GetLatchedGameFovTangents(float* tanHalfH, float* tanHalfV) {
     *tanHalfH = tanH;
   if (tanHalfV)
     *tanHalfV = tanV;
+  return true;
+}
+
+bool TrueStereoDirectPathOk() {
+  if (!IsTrueStereoDirect(GetStereoMode()))
+    return false;
+  float measH = 0.f, measV = 0.f;
+  GetGameFovTangents(&measH, &measV);
+  float coverH = 0.f, coverV = 0.f;
+  if (!GetCoverFovTangents(&coverH, &coverV))
+    return false;
+  // Plan §4.4 guard: meas must cover the eye or bounds leave 0..1.
+  return measH >= coverH && measV >= coverV && measH < 8.f && measV < 8.f;
+}
+
+bool TryGetTrueStereoDirectBounds(vr::EVREye eye, vr::VRTextureBounds_t* out) {
+  if (!out || !TrueStereoDirectPathOk())
+    return false;
+  float measH = 0.f, measV = 0.f;
+  GetGameFovTangents(&measH, &measV);
+  float l = 0.f, r = 0.f, t = 0.f, b = 0.f;
+  if (!GetEyeRawProjection(eye, &l, &r, &t, &b) || !(r > l) || !(b > t))
+    return false;
+  // Same convention as EnsureBoundsCache — meas replaces cover tan (§4.4).
+  vr::VRTextureBounds_t bnd{};
+  bnd.uMin = 0.5f + 0.5f * l / measH;
+  bnd.uMax = 0.5f + 0.5f * r / measH;
+  bnd.vMin = 0.5f - 0.5f * b / measV;
+  bnd.vMax = 0.5f - 0.5f * t / measV;
+  if (!(bnd.uMin >= -0.001f) || !(bnd.uMax <= 1.001f) || !(bnd.vMin >= -0.001f) ||
+      !(bnd.vMax <= 1.001f) || !(bnd.uMax > bnd.uMin) || !(bnd.vMax > bnd.vMin))
+    return false;
+  if (bnd.uMin < 0.f)
+    bnd.uMin = 0.f;
+  if (bnd.vMin < 0.f)
+    bnd.vMin = 0.f;
+  if (bnd.uMax > 1.f)
+    bnd.uMax = 1.f;
+  if (bnd.vMax > 1.f)
+    bnd.vMax = 1.f;
+  *out = bnd;
   return true;
 }
 

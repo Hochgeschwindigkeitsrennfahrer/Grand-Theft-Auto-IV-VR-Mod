@@ -1,6 +1,7 @@
 #include "stereo_proj.h"
 #include "cam_matrix.h"
 #include "log.h"
+#include "stereo_calib.h"
 #include "stereo_config.h"
 #include "stereo_eye.h"
 #include "stereo_render.h"
@@ -210,6 +211,8 @@ HRESULT STDMETHODCALLTYPE HookSetVSConstF(IDirect3DDevice9* self, UINT startReg,
     StereoMode41CollectVsRetChain(_ReturnAddress(), _AddressOfReturnAddress());
   if (StereoMode198WantsSample())
     StereoMode198CollectVsRet(_ReturnAddress(), _AddressOfReturnAddress());
+  if (StereoCalibWantsVsProbe())
+    StereoCalibOnVsConst(startReg, data, cnt);
   float cam[3], d[3];
   if (!data || cnt < 4 || cnt > 256 || !StereoVsGetPatchParams(cam, d))
     return g_origSetVSConstF(self, startReg, data, cnt);

@@ -5,6 +5,7 @@
 #include "hmd_pose.h"
 #include "log.h"
 #include "perf_debug.h"
+#include "stereo_calib.h"
 #include "stereo_config.h"
 #include "stereo_dual.h"
 #include "stereo_eye.h"
@@ -568,6 +569,13 @@ uint32_t ParentDualTargetRva() {
   return kMode200TargetRva;
 }
 int ParentDualKillStereo() {
+  // TrueStereo kill chain on 203-seam retry: 233→232→231→203 (plan §4; hard 0).
+  if (IsTrueStereoDirect(GetStereoMode()))
+    return 232;
+  if (IsTrueStereoCover(GetStereoMode()))
+    return 231;
+  if (IsTrueStereoExact(GetStereoMode()) || IsStereoCalibProbe(GetStereoMode()))
+    return 203;
   if (IsOursFpDeferredHeadBone(GetStereoMode()))
     return 204;
   if (IsOursFpSameTickParentDual203CloseIpdToeIn(GetStereoMode()))
@@ -765,16 +773,19 @@ bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
   if (!dev || w < 16 || h < 16)
     return false;
   const bool mode44 = UsesRtLockFovGate(GetStereoMode());
+  const bool directLock = IsTrueStereoDirect(GetStereoMode());
   const bool haveRts =
       g_texL && g_texR && g_holdL && g_holdR && g_device == dev && g_rtW > 0 && g_rtH > 0;
-  if (mode44 && haveRts) {
+  if ((mode44 || directLock) && haveRts) {
     // Keep all four default-pool eye textures through harmless FOV publish
     // noise. A lost/replaced device still falls through to allocate again.
+    // Mode 233: also lock against EndScene canvas-size requests (§4.4).
     if (w != g_rtW || h != g_rtH)
       ++g_mode44RtSuppressed;
     const uint32_t checks = ++g_mode44RtChecks;
     if ((checks % 600) == 0)
-      Log("Mode44: RT lock %ux%u checks=%u recreates=%u suppressed=%u", g_rtW, g_rtH, checks,
+      Log("%s: RT lock %ux%u checks=%u recreates=%u suppressed=%u",
+          directLock ? "Mode233" : "Mode44", g_rtW, g_rtH, checks,
           g_mode44RtRecreates.load(), g_mode44RtSuppressed.load());
     return true;
   }
@@ -805,10 +816,11 @@ bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
   g_rtW = w;
   g_rtH = h;
   Log("StereoRender: eye RTs %ux%u OK (submit+hold)", w, h);
-  if (mode44) {
+  if (mode44 || directLock) {
     if (replacingRts)
       ++g_mode44RtRecreates;
-    Log("Mode44: RT lock %ux%u initialized recreates=%u", w, h, g_mode44RtRecreates.load());
+    Log("%s: RT lock %ux%u initialized recreates=%u", directLock ? "Mode233" : "Mode44", w, h,
+        g_mode44RtRecreates.load());
   }
   return true;
 }
@@ -1013,6 +1025,11 @@ constexpr uint32_t kCanvasMaxDimComfort = 1536;
 void ComputeCanvasSize(uint32_t bbW, uint32_t bbH, uint32_t* outW, uint32_t* outH) {
   *outW = bbW;
   *outH = bbH;
+  // Mode 233 DIRECT (§4.4): canvas is dead weight — eye RT stays BB-sized.
+  // EndScene calling ComputeCanvasSize → comfort 2048 while DrawWalk used 2560 BB
+  // would recreate RTs every frame → haveL/R cleared → MonoSubmit stereo=0.
+  if (IsTrueStereoDirect(GetStereoMode()))
+    return;
   float coverH = 0.f, coverV = 0.f;
   if (!GetCoverFovTangents(&coverH, &coverV))
     return;
@@ -2285,7 +2302,10 @@ void __fastcall HookDrawWalk(void* self, void* edx) {
         bb->GetDesc(&desc);
         bb->Release();
         uint32_t rtW = desc.Width, rtH = desc.Height;
-        ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
+        // Mode 233 DIRECT: always BB size (§4.4). PathOk only gates capture/Submit
+        // bounds — never resize RTs or EndScene will flap and clear haveL/R.
+        if (!IsTrueStereoDirect(GetStereoMode()))
+          ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
         EnsureEyeRts(g_device, rtW, rtH);
       }
     }
@@ -2300,15 +2320,25 @@ void __fastcall HookDrawWalk(void* self, void* edx) {
     const bool freeze = IsOursFpSameTickParentDualFreeze(GetStereoMode());
     const bool vsDual = IsOursFpSameTickParentDualVs(GetStereoMode());
     const bool poseLatch = IsOursFpSameTickParentDualPose(GetStereoMode());
+    // Mode 234: latch yaw + ped eye; CTimer step=0 for pair (exposure dt proxy §4.5).
+    const bool sameState = IsTrueStereoSameState(GetStereoMode());
     if (freeze)
       BeginStereoDualCamFreeze();
     if (poseLatch)
       BeginDualHmdPoseLatch();
+    if (sameState) {
+      BeginTrueStereoSameStateLatch();
+      BeginDualTimeFreeze();
+    }
     g_inDrawWalkDual.store(true);
     // 202 = VS-translate (REJECT). 200/201/203 = full CCam±IPD L/R.
     const bool ok =
         vsDual ? RunMode202ParentDualVsGuarded(self, edx) : RunMode200ParentDualGuarded(self, edx);
     g_inDrawWalkDual.store(false);
+    if (sameState) {
+      EndDualTimeFreeze();
+      EndTrueStereoSameStateLatch();
+    }
     if (poseLatch)
       EndDualHmdPoseLatch();
     if (freeze)
@@ -2325,9 +2355,9 @@ void __fastcall HookDrawWalk(void* self, void* edx) {
     const uint32_t n = ++g_mode200DualN;
     if (n <= 6 || (n % 300) == 0)
       Log("Mode%d: parent dual #%u haveL=%d haveR=%d sep=%.0fcm freeze=%d poseLatch=%d "
-          "vsPatch=%u vsCallsR=%u target=0x%X",
+          "sameState=%d vsPatch=%u vsCallsR=%u target=0x%X",
           static_cast<int>(GetStereoMode()), n, g_haveL ? 1 : 0, g_haveR ? 1 : 0,
-          GetStereoSepMeters() * 100.f, freeze ? 1 : 0, poseLatch ? 1 : 0,
+          GetStereoSepMeters() * 100.f, freeze ? 1 : 0, poseLatch ? 1 : 0, sameState ? 1 : 0,
           StereoVsTranslateCount(), StereoVsRightPassCalls(), ParentDualTargetRva());
     if (g_haveL && g_haveR && (n == 5 || (n % 300) == 0))
       CompareEyeCanvases(g_device);
@@ -2569,7 +2599,15 @@ bool RunMode200ParentDualGuarded(void* self, void* edx) {
     g_execViewStage = 2;
     g_origDrawWalk(self, edx);
     g_execViewStage = 3;
-    const bool okL = CopyBbToEyeCanvasGated(g_device, g_texL, vr::Eye_Left);
+    const bool direct = IsTrueStereoDirect(GetStereoMode()) && TrueStereoDirectPathOk();
+    static bool s_pathLogged = false;
+    if (IsTrueStereoDirect(GetStereoMode()) && !s_pathLogged) {
+      s_pathLogged = true;
+      Log("Mode233: capture path=%s (plan §4.4)", direct ? "DIRECT 1:1 BB" : "canvas fallback");
+    }
+    const bool okL =
+        direct ? CopyBbToEye(g_device, g_texL)
+               : CopyBbToEyeCanvasGated(g_device, g_texL, vr::Eye_Left);
     g_execViewStage = 4;
     SetStereoEye(StereoEye::Right);
     RefreshLiveCamForStereoEye();
@@ -2578,7 +2616,9 @@ bool RunMode200ParentDualGuarded(void* self, void* edx) {
     g_execViewStage = 5;
     g_origDrawWalk(self, edx);
     g_execViewStage = 6;
-    const bool okR = CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Right);
+    const bool okR =
+        direct ? CopyBbToEye(g_device, g_texR)
+               : CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Right);
     g_execViewStage = 7;
     if (IsOursFpAtomicEyePair(GetStereoMode())) {
       if (okL && okR)
@@ -2747,6 +2787,8 @@ void Mode200OnEndScene() {
     sprintf_s(buf, "entriesThisFrame=%ld > 8 after warm (206 HOT lesson)", frame);
     Mode200Kill(buf);
   }
+  StereoCalibOnEndScene();
+  StereoCalibSampleEyeLuma(g_device, g_texL, g_texR);
 }
 
 void BuildWrapTryList() {
@@ -5391,18 +5433,25 @@ bool SubmitEyeTexture(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye 
   t.eColorSpace = vr::ColorSpace_Gamma;
 
   // Mode 38: Luke Ross AER — stamp capture-time HMD pose so SteamVR can
-  // reproject the stale eye (OpenVR #1253). Mode 136: late-latch — sample pose
+  // reproject the stale eye (OpenVR #1253). Mode 136/243: late-latch — sample pose
   // immediately before Submit (not capture-time). Fall back to Submit_Default
-  // if pose missing.
+  // if pose missing. Mode 243: one shared pose for L+R (pair sync).
   vr::EVRCompositorError err = vr::VRCompositorError_None;
   const StereoMode curMode = GetStereoMode();
-  const bool lateLatch = IsCleanDualLateLatch(curMode);
+  const bool lateLatch = UsesLateLatchSubmit(curMode);
+  const bool pairLate = IsOursFp203LateLatch(curMode);
   const bool wantPose = UsesAerPoseSubmit(curMode) || lateLatch;
   vr::HmdMatrix34_t latePose{};
   bool poseOk = false;
-  if (lateLatch)
-    poseOk = SampleLateLatchHmdPose(&latePose);
-  else if (wantPose)
+  if (lateLatch) {
+    if (pairLate && g_submitPoseLValid) {
+      // StereoTrySubmitEyes sampled once for the pair — same pose both eyes.
+      latePose = g_submitPoseL;
+      poseOk = true;
+    } else {
+      poseOk = SampleLateLatchHmdPose(&latePose);
+    }
+  } else if (wantPose)
     poseOk = (eye == vr::Eye_Left) ? g_submitPoseLValid : g_submitPoseRValid;
   if (wantPose && poseOk) {
     vr::VRTextureWithPose_t tp{};
@@ -5425,8 +5474,8 @@ bool SubmitEyeTexture(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye 
     static uint32_t s_aer = 0;
     if ((++s_aer) <= 8 || (s_aer % 300) == 0) {
       if (lateLatch)
-        Log("LateLatch: eye=%s TextureWithPose=1 err=%d",
-            eye == vr::Eye_Left ? "L" : "R", static_cast<int>(err));
+        Log("LateLatch: eye=%s TextureWithPose=1 pair=%d err=%d",
+            eye == vr::Eye_Left ? "L" : "R", pairLate ? 1 : 0, static_cast<int>(err));
       else
         Log("AERPose: eye=%s submitWithPose=1 err=%d", eye == vr::Eye_Left ? "L" : "R",
             static_cast<int>(err));
@@ -5448,9 +5497,20 @@ bool SubmitEyeTexture(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye 
     }
     // Fusion baseline: nullptr bounds + temporal IPD only.
     // Mode 175/176: keep phone framing (same UV both eyes).
+    // Mode 233 DIRECT: float bounds from measured tangents on 1:1 BB texture.
     const vr::VRTextureBounds_t* bounds = nullptr;
     vr::VRTextureBounds_t phoneLift{};
-    if (IsOursFpPhoneBounds(curMode)) {
+    vr::VRTextureBounds_t directBnd{};
+    if (IsTrueStereoDirect(curMode) && TryGetTrueStereoDirectBounds(eye, &directBnd)) {
+      bounds = &directBnd;
+      static bool s_directOnce = false;
+      if (!s_directOnce) {
+        s_directOnce = true;
+        Log("Mode233: DIRECT Submit bounds eye=%s u=%.3f..%.3f v=%.3f..%.3f (1:1 BB, no canvas)",
+            eye == vr::Eye_Left ? "L" : "R", directBnd.uMin, directBnd.uMax, directBnd.vMin,
+            directBnd.vMax);
+      }
+    } else if (IsOursFpPhoneBounds(curMode)) {
       phoneLift.uMin = 0.14f;
       phoneLift.uMax = 1.f;
       phoneLift.vMin = 0.42f;
@@ -6783,6 +6843,32 @@ bool InstallStereoRenderHooks() {
           detail, g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
       if (IsOursFpDeferredHeadBone(mode))
         Log("StereoRender: kill-switch - stereo=204 (fusion LKG) / 203 / 0");
+      else if (IsOursFp203LateLatch(mode))
+        Log("StereoRender: kill-switch - stereo=241 (CHECKPOINT) / 203 / 0 — Mode243 late-latch");
+      else if (IsOursFp204CamRightFlip(mode))
+        Log("StereoRender: kill-switch - stereo=204 (fusion LKG) / 241 / 203 / 0 — Mode242");
+      else if (IsOursFp203CamRightFlip(mode))
+        Log("StereoRender: kill-switch - stereo=203 (MILESTONE) / 0 — Mode241 cam-right flip");
+      else if (IsTrueStereoCamRightIpdFlip(mode))
+        Log("StereoRender: kill-switch - stereo=239 (CamRight) / 237 / 203 / 0 — TrueStereo CamRightFlip");
+      else if (IsTrueStereoCamRightIpd(mode))
+        Log("StereoRender: kill-switch - stereo=237 (LateralIpd) / 236 / 203 / 0 — TrueStereo CamRightIpd");
+      else if (IsTrueStereoUevrIpd(mode))
+        Log("StereoRender: kill-switch - stereo=237 (LateralIpd) / 236 / 203 / 0 — TrueStereo UevrIpd");
+      else if (IsTrueStereoLateralIpd(mode))
+        Log("StereoRender: kill-switch - stereo=236 (LeftPublish) / 235 / 203 / 0 — TrueStereo LateralIpd");
+      else if (IsTrueStereoLeftPublish(mode))
+        Log("StereoRender: kill-switch - stereo=235 (StablePublish) / 233 / 203 / 0 — TrueStereo LeftPublish");
+      else if (IsTrueStereoStablePublish(mode))
+        Log("StereoRender: kill-switch - stereo=233 (Direct) / 232 / 203 / 0 — TrueStereo StablePublish");
+      else if (IsTrueStereoSameState(mode))
+        Log("StereoRender: kill-switch - stereo=233 (Direct) / 232 / 203 / 0 — TrueStereo SameState");
+      else if (IsTrueStereoDirect(mode))
+        Log("StereoRender: kill-switch - stereo=232 (Cover) / 231 / 203 / 0 — TrueStereo Direct");
+      else if (IsTrueStereoCover(mode))
+        Log("StereoRender: kill-switch - stereo=231 (Exact) / 203 / 0 — TrueStereo Cover");
+      else if (IsTrueStereoFamily(mode))
+        Log("StereoRender: kill-switch - stereo=203 (MILESTONE) / 0 — TrueStereo 230/231");
       else if (IsOursFpSameTickParentDual203CloseIpdToeIn(mode))
         Log("StereoRender: kill-switch - stereo=214 (IPD 0.25 no toe-in) / 203 / 0");
       else if (IsOursFpSameTickParentDual203CloseIpdQtr(mode))
@@ -7703,6 +7789,24 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
     return false;
   if (!g_haveL || !g_haveR)
     return false;
+
+  // Mode 243: sample ONE late HMD pose for both eyes before Submit (pair sync).
+  if (IsOursFp203LateLatch(mode)) {
+    vr::HmdMatrix34_t pairPose{};
+    if (SampleLateLatchHmdPose(&pairPose)) {
+      g_submitPoseL = pairPose;
+      g_submitPoseR = pairPose;
+      g_submitPoseLValid = g_submitPoseRValid = true;
+      static uint32_t s_pair = 0;
+      if ((++s_pair) <= 4 || (s_pair % 300) == 0)
+        Log("Mode243: pair late-latch pose OK (shared L/R for TextureWithPose)");
+    } else {
+      g_submitPoseLValid = g_submitPoseRValid = false;
+      static uint32_t s_miss = 0;
+      if ((++s_miss) <= 4 || (s_miss % 300) == 0)
+        Log("Mode243: pair late-latch pose MISSING");
+    }
+  }
 
   interop->FlushRenderingCommands();
   interop->LockSubmissionQueue();
