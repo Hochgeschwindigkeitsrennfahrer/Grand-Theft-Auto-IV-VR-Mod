@@ -29,6 +29,7 @@ $src = @(
   "src\asi\hmd_pose.cpp",
   "src\asi\aob.cpp",
   "src\asi\aim_decouple.cpp",
+  "src\asi\vr_pad.cpp",
   "src\asi\cam_matrix.cpp",
   "src\asi\ped_hide.cpp",
   "src\asi\native_invoke.cpp",

@@ -13,6 +13,7 @@
 #include "hud_layout.h"
 #include "vr_display.h"
 #include "vr_move.h"
+#include "vr_pad.h"
 
 #include "../../thirdparty/dxvk/d3d9_vk_interop.h"
 
@@ -244,6 +245,7 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   }
   UpdateHmdPose(poses, vr::k_unMaxTrackedDeviceCount);
   AimDecoupleOnPoses(poses, vr::k_unMaxTrackedDeviceCount);
+  UpdateVrPadFromPoses(poses, vr::k_unMaxTrackedDeviceCount);
 
   StereoRenderOnDevice(device);
   UpdateGameFovFromDevice(device);
@@ -311,7 +313,7 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   if (n > kLookAfter) {
     ApplyHmdMouseLook(poses, vr::k_unMaxTrackedDeviceCount);
     UpdateLookMove();  // stick yaw + optional HMD→ped heading (Mode120 forces ON)
-    UpdateAimDecouple();  // aimmode=0 inert; =1 probe log only
+    UpdateAimDecouple();  // probe only; Plan A natives = TickAimFromGameThread
   }
   if (n == kCamAfter) {
     if (InstallCamMatrixHooks()) {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 struct IDirect3DDevice9;
 
 namespace asi {
@@ -55,6 +57,15 @@ void NotifyHeadBoneSoftSkip(unsigned ms, const char* why);
 // Mode216: sample HEAD bone once outside DrawScene/CopyMat (EndScene). Cam bake
 // only reads the cache — never calls GetBonePos mid-dual.
 void SampleDeferredHeadBoneEye();
+
+// Any bone tag (GTAMods Ped_Bones). Uses same PedGetBonePos thiscall as HEAD.
+// Safe SEH; does not kill Mode216 head path on a single miss. Game-thread only.
+bool TryGetPedBoneWorldPos(uint32_t boneId, float* outXyz);
+
+// Write live global bone matrix translation (+ optional basis). Game-thread only.
+// Returns false if skeleton/index missing. Kill visual: don't call / handfollow=0.
+bool TryWritePedBoneWorldPos(uint32_t boneId, const float* posXyz, const float* fwdXyz,
+                             const float* upXyz);
 
 // Row-major 4x4 D3D LH view from live Rage cam. Returns false if no cam.
 bool BuildLiveViewMatrix16(float* out16);

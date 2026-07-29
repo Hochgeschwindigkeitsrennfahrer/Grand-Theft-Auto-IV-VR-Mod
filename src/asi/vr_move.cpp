@@ -4,6 +4,7 @@
 #include "hmd_pose.h"
 #include "log.h"
 #include "stereo_config.h"
+#include "vr_pad.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -103,6 +104,11 @@ void SendMouseDx(int dx) {
 }
 
 float ReadRightStickX() {
+  if (IsVrPadEnabled()) {
+    const float vx = GetVrPadRightStickX();
+    if (vx != 0.f)
+      return -vx;
+  }
   XINPUT_STATE st{};
   if (XInputGetState(0, &st) != ERROR_SUCCESS)
     return 0.f;
@@ -113,7 +119,6 @@ float ReadRightStickX() {
     x = -1.f;
   if (std::fabs(x) < kStickDead)
     return 0.f;
-  // Rescale after deadzone. Negate: XInput right-stick X is inverted vs GTA look.
   const float s = (std::fabs(x) - kStickDead) / (1.f - kStickDead);
   return -(x < 0.f ? -s : s);
 }

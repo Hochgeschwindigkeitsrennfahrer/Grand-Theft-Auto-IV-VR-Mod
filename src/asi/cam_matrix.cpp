@@ -1,4 +1,5 @@
 #include "cam_matrix.h"
+#include "aim_decouple.h"
 #include "aob.h"
 #include "hmd_pose.h"
 #include "log.h"
@@ -967,6 +968,8 @@ void ApplyHmdToCam(Matrix44* mat) {
   // CopyMat) — hide thrash on the 204 dual path looked like model spazz.
   if (!IsOursFpDeferredHeadBone(sm))
     UpdatePedHeadHide();
+  // Plan A aim natives — same game-thread site as PedHide (never EndScene).
+  TickAimFromGameThread();
 
   // Mode 178+: freeze FULL pre-IPD cam (basis+center) across L→R; only ±IPD differs.
   if (g_dualCamFreeze.load() && g_freezeFullBasis) {
@@ -1346,6 +1349,227 @@ bool HookOneCall(const char* name, const char* pattern) {
 
 }  // namespace
 
+bool TryGetPedBoneWorldPos(uint32_t boneId, float* outXyz) {
+  if (!outXyz || !g_FindPlayerPed || g_boneThiscallDead)
+    return false;
+  if (!ResolvePedGetBonePos() || !g_pedGetBonePos)
+    return false;
+  void* ped = g_FindPlayerPed(0);
+  if (!ped)
+    return false;
+  alignas(16) float xyz[8] = {};
+  __try {
+    g_pedGetBonePos(ped, xyz, boneId);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+  if (!SaneWorldPos(Vec4{xyz[0], xyz[1], xyz[2], 1.f}))
+    return false;
+  outXyz[0] = xyz[0];
+  outXyz[1] = xyz[1];
+  outXyz[2] = xyz[2];
+  return true;
+}
+
+// From live CE GetBonePos @ PedGetBonePos: BoneIdToIndex cdecl, then
+// matrix* = *(frag+0x14) + index*64 (see GetBoneMtx success path).
+using BoneIdToIndex_t = uint32_t(__cdecl*)(void* boneMap, uint32_t boneId);
+
+BoneIdToIndex_t g_boneIdToIndex = nullptr;
+bool g_boneWriteResolved = false;
+bool g_boneWriteDead = false;
+
+bool ResolveBoneWriteHelpers() {
+  if (g_boneWriteDead)
+    return false;
+  if (g_boneWriteResolved)
+    return g_boneIdToIndex != nullptr;
+  g_boneWriteResolved = true;
+  if (!ResolvePedGetBonePos() || !g_pedGetBonePos) {
+    g_boneWriteDead = true;
+    return false;
+  }
+  // GetBonePos: E8 BoneIdToIndex at +0x36 (54 decimal) — verified live 0x9E7320.
+  auto* base = reinterpret_cast<uint8_t*>(g_pedGetBonePos);
+  if (base[54] != 0xE8) {
+    g_boneWriteDead = true;
+    Log("CamMatrix: BoneIdToIndex E8 miss at GetBonePos+54 — hand write OFF");
+    return false;
+  }
+  const int32_t rel = *reinterpret_cast<int32_t*>(base + 55);
+  g_boneIdToIndex = reinterpret_cast<BoneIdToIndex_t>(base + 54 + 5 + rel);
+  Log("CamMatrix: BoneIdToIndex @ %p (hand matrix write enabled)",
+      reinterpret_cast<void*>(g_boneIdToIndex));
+  return true;
+}
+
+void* PedGetFragment(void* ped) {
+  if (!ped)
+    return nullptr;
+  void* frag = nullptr;
+  __try {
+    auto* vt = *reinterpret_cast<void***>(ped);
+    using Fn = void*(__thiscall*)(void*);
+    auto getA = reinterpret_cast<Fn>(vt[0xA0 / 4]);
+    void* a = getA(ped);
+    if (!a) {
+      frag = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(ped) + 0x100);
+    } else {
+      void* b = getA(ped);
+      if (!b)
+        return nullptr;
+      auto* vt2 = *reinterpret_cast<void***>(b);
+      auto getE = reinterpret_cast<Fn>(vt2[0xE0 / 4]);
+      frag = getE(b);
+    }
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return nullptr;
+  }
+  return frag;
+}
+
+float* PedGetBoneMatrixPtr(void* ped, uint32_t boneId) {
+  if (!ped || !ResolveBoneWriteHelpers() || !g_boneIdToIndex)
+    return nullptr;
+  void* frag = PedGetFragment(ped);
+  if (!frag)
+    return nullptr;
+  void* boneMap = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(frag) + 4);
+  if (!boneMap)
+    return nullptr;
+  uint32_t idx = 0xFFFFFFFFu;
+  __try {
+    idx = g_boneIdToIndex(boneMap, boneId);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return nullptr;
+  }
+  if (idx == 0xFFFFFFFFu || idx > 512u)
+    return nullptr;
+  float* base = nullptr;
+  __try {
+    base = *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(frag) + 0x14);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return nullptr;
+  }
+  if (!base)
+    return nullptr;
+  return base + idx * 16;  // 64-byte matrices
+}
+
+// frag+0x14 = global (GetBonePos). Skinning often uses locals at +0x10.
+// Log once; write BOTH global and local (local = inv(parentGlobal)*desiredWorld).
+constexpr uint32_t kBoneRHandTag = 0x4D0;
+constexpr uint32_t kBoneRForearmTag = 0x4C9;
+
+void Mat4SetBasisPos(float* m, float rx, float ry, float rz, float fx, float fy, float fz,
+                     float ux, float uy, float uz, float px, float py, float pz) {
+  m[0] = rx;
+  m[1] = ry;
+  m[2] = rz;
+  m[3] = 0.f;
+  m[4] = fx;
+  m[5] = fy;
+  m[6] = fz;
+  m[7] = 0.f;
+  m[8] = ux;
+  m[9] = uy;
+  m[10] = uz;
+  m[11] = 0.f;
+  m[12] = px;
+  m[13] = py;
+  m[14] = pz;
+  m[15] = 1.f;
+}
+
+// Rigid inverse: R^T, t' = -R^T * t  (row-major RAGE layout).
+void Mat4RigidInverse(const float* m, float* out) {
+  // rotation transpose
+  out[0] = m[0];
+  out[1] = m[4];
+  out[2] = m[8];
+  out[3] = 0.f;
+  out[4] = m[1];
+  out[5] = m[5];
+  out[6] = m[9];
+  out[7] = 0.f;
+  out[8] = m[2];
+  out[9] = m[6];
+  out[10] = m[10];
+  out[11] = 0.f;
+  const float px = m[12], py = m[13], pz = m[14];
+  out[12] = -(out[0] * px + out[4] * py + out[8] * pz);
+  out[13] = -(out[1] * px + out[5] * py + out[9] * pz);
+  out[14] = -(out[2] * px + out[6] * py + out[10] * pz);
+  out[15] = 1.f;
+}
+
+void Mat4Mul(const float* a, const float* b, float* out) {
+  float t[16];
+  for (int r = 0; r < 4; ++r) {
+    for (int c = 0; c < 4; ++c) {
+      t[r * 4 + c] = a[r * 4 + 0] * b[0 * 4 + c] + a[r * 4 + 1] * b[1 * 4 + c] +
+                     a[r * 4 + 2] * b[2 * 4 + c] + a[r * 4 + 3] * b[3 * 4 + c];
+    }
+  }
+  for (int i = 0; i < 16; ++i)
+    out[i] = t[i];
+}
+
+bool ResolveBoneIndex(void* frag, uint32_t boneId, uint32_t* outIdx) {
+  if (!frag || !outIdx || !g_boneIdToIndex)
+    return false;
+  void* boneMap = *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(frag) + 4);
+  if (!boneMap)
+    return false;
+  uint32_t idx = 0xFFFFFFFFu;
+  __try {
+    idx = g_boneIdToIndex(boneMap, boneId);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return false;
+  }
+  if (idx == 0xFFFFFFFFu || idx > 512u)
+    return false;
+  *outIdx = idx;
+  return true;
+}
+
+float* FragMatArray(void* frag, int off) {
+  float* p = nullptr;
+  __try {
+    p = *reinterpret_cast<float**>(reinterpret_cast<uint8_t*>(frag) + off);
+  } __except (EXCEPTION_EXECUTE_HANDLER) {
+    return nullptr;
+  }
+  return p;
+}
+
+void LogFragArraysOnce(void* frag, uint32_t handIdx) {
+  static std::atomic<bool> s_done{false};
+  if (s_done.exchange(true))
+    return;
+  for (int off : {0x0C, 0x10, 0x14, 0x18, 0x1C, 0x20}) {
+    float* base = FragMatArray(frag, off);
+    if (!base) {
+      Log("HandWrite: frag+0x%02X = null", off);
+      continue;
+    }
+    float* m = base + handIdx * 16;
+    Log("HandWrite: frag+0x%02X=%p handPos=(%.2f,%.2f,%.2f) |r0|=%.2f", off, base, m[12], m[13],
+        m[14], std::sqrt(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]));
+  }
+}
+
+bool TryWritePedBoneWorldPos(uint32_t boneId, const float* posXyz, const float* fwdXyz,
+                             const float* upXyz) {
+  // DISABLED 2026-07-30: writing frag matrix arrays crashed after load screen.
+  // Global (frag+0x14) write was safe-ish but invisible to mesh; local poke was fatal.
+  (void)boneId;
+  (void)posXyz;
+  (void)fwdXyz;
+  (void)upXyz;
+  return false;
+}
+
 void NotifyHeadBoneSoftSkip(unsigned ms, const char* why) {
   // Kept for dual-AV path; bone no longer uses timed soft-skip (jumped cam).
   (void)ms;
@@ -1455,6 +1679,7 @@ void SampleDeferredHeadBoneEye() {
 
     // One hide pulse per sample (Mode216) — avoids CopyMat×hide thrash on 204 dual.
     UpdatePedHeadHide();
+    TickAimFromGameThread();
 
     const uint32_t n = ++g_deferredSampleOk;
     if (n <= 6 || (n % 600) == 0) {
