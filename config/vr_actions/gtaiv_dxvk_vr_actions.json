@@ -1,0 +1,71 @@
+{
+  "default_bindings": [
+    {
+      "controller_type": "hpmotioncontroller",
+      "binding_url": "gtaiv_dxvk_vr_bindings_hpmotioncontroller.json"
+    },
+    {
+      "controller_type": "holographic_controller",
+      "binding_url": "gtaiv_dxvk_vr_bindings_hpmotioncontroller.json"
+    }
+  ],
+  "actions": [
+    { "name": "/actions/gtaivvr/in/RightTipPose", "type": "pose" },
+    { "name": "/actions/gtaivvr/in/LeftTipPose", "type": "pose" },
+    { "name": "/actions/gtaivvr/in/RightGripPose", "type": "pose" },
+    { "name": "/actions/gtaivvr/in/LeftGripPose", "type": "pose" },
+
+    { "name": "/actions/gtaivvr/in/RightStick", "type": "vector2" },
+    { "name": "/actions/gtaivvr/in/LeftStick", "type": "vector2" },
+    { "name": "/actions/gtaivvr/in/RightTrigger", "type": "vector1" },
+    { "name": "/actions/gtaivvr/in/LeftTrigger", "type": "vector1" },
+    { "name": "/actions/gtaivvr/in/RightSqueeze", "type": "vector1" },
+    { "name": "/actions/gtaivvr/in/LeftSqueeze", "type": "vector1" },
+
+    { "name": "/actions/gtaivvr/in/RightPrimary", "type": "boolean" },
+    { "name": "/actions/gtaivvr/in/RightSecondary", "type": "boolean" },
+    { "name": "/actions/gtaivvr/in/LeftPrimary", "type": "boolean" },
+    { "name": "/actions/gtaivvr/in/LeftSecondary", "type": "boolean" },
+    { "name": "/actions/gtaivvr/in/RightStickClick", "type": "boolean" },
+    { "name": "/actions/gtaivvr/in/LeftStickClick", "type": "boolean" },
+    { "name": "/actions/gtaivvr/in/Menu", "type": "boolean" },
+    { "name": "/actions/gtaivvr/in/VrMenu", "type": "boolean" },
+
+    { "name": "/actions/gtaivvr/in/SkeletonRightHand", "type": "skeleton", "skeleton": "/skeleton/hand/right" },
+    { "name": "/actions/gtaivvr/in/SkeletonLeftHand", "type": "skeleton", "skeleton": "/skeleton/hand/left" },
+
+    { "name": "/actions/gtaivvr/out/HapticRight", "type": "vibration" },
+    { "name": "/actions/gtaivvr/out/HapticLeft", "type": "vibration" }
+  ],
+  "action_sets": [
+    { "name": "/actions/gtaivvr", "usage": "single" }
+  ],
+  "localization": [
+    {
+      "language_tag": "en_US",
+      "/actions/gtaivvr": "GTA IV VR",
+      "/actions/gtaivvr/in/RightTipPose": "Right hand aim (tip) pose",
+      "/actions/gtaivvr/in/LeftTipPose": "Left hand aim (tip) pose",
+      "/actions/gtaivvr/in/RightGripPose": "Right hand grip pose",
+      "/actions/gtaivvr/in/LeftGripPose": "Left hand grip pose",
+      "/actions/gtaivvr/in/RightStick": "Look",
+      "/actions/gtaivvr/in/LeftStick": "Move",
+      "/actions/gtaivvr/in/RightTrigger": "Shoot / accelerate (in car)",
+      "/actions/gtaivvr/in/LeftTrigger": "Brake / reverse (in car)",
+      "/actions/gtaivvr/in/RightSqueeze": "Aim (LT, on foot)",
+      "/actions/gtaivvr/in/LeftSqueeze": "Enter / exit vehicle (Y+F)",
+      "/actions/gtaivvr/in/RightPrimary": "Sprint (A)",
+      "/actions/gtaivvr/in/RightSecondary": "Melee / punch (B)",
+      "/actions/gtaivvr/in/LeftPrimary": "Jump (X)",
+      "/actions/gtaivvr/in/LeftSecondary": "Reload (R)",
+      "/actions/gtaivvr/in/RightStickClick": "Next weapon",
+      "/actions/gtaivvr/in/LeftStickClick": "Previous weapon",
+      "/actions/gtaivvr/in/Menu": "Pause menu",
+      "/actions/gtaivvr/in/VrMenu": "Cycle VR render profile",
+      "/actions/gtaivvr/in/SkeletonRightHand": "Right hand skeleton",
+      "/actions/gtaivvr/in/SkeletonLeftHand": "Left hand skeleton",
+      "/actions/gtaivvr/out/HapticRight": "Right haptics",
+      "/actions/gtaivvr/out/HapticLeft": "Left haptics"
+    }
+  ]
+}

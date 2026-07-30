@@ -1,6 +1,11 @@
 #include "aim_decouple.h"
 #include "cam_matrix.h"
 #include "hmd_pose.h"
+#include "ik_aim.h"
+#include "ik_copy.h"
+#include "ik_ray.h"
+#include "ik_pin.h"
+#include "ik_read.h"
 #include "log.h"
 #include "native_invoke.h"
 #include "vr_pad.h"
@@ -570,12 +575,14 @@ int GetAimMode() {
   static std::atomic<int> s_mode{-1};
   int m = s_mode.load();
   if (m < 0) {
-    m = ReadIntFileOnce("gtaiv_dxvk_vr.aimmode", 0, 0, 2);
+    // max=3: Session 3 controller-origin (disk 3 was silent-0 when max was 2)
+    m = ReadIntFileOnce("gtaiv_dxvk_vr.aimmode", 0, 0, 3);
     s_mode.store(m);
     if (m != 0)
       Log("AimDecouple: aimmode=%d (%s) — kill: write 0 to gtaiv_dxvk_vr.aimmode", m,
-          m == 1 ? "probe + AimNative resolve"
-                 : "Plan A TASK_AIM_GUN_AT_COORD while grip/trigger held");
+          m == 1   ? "probe + AimNative resolve"
+          : m == 3 ? "controller-origin ray + once-per-frame natives"
+                   : "Plan A TASK_AIM_GUN_AT_COORD while grip/trigger held");
   }
   return m;
 }
@@ -593,8 +600,9 @@ int GetAimHand() {
 }
 
 void AimDecoupleOnPoses(const vr::TrackedDevicePose_t* poses, uint32_t poseCount) {
-  if (GetAimMode() == 0)
-    return;
+  // Always latch controller pose when OpenVR delivers poses — IkRay needs
+  // src=ctrl even if aimmode=0 (disk aimmode=3 was clamped to max=2 → silent 0
+  // and killed pose latch → 40× src=cam). Plan A natives stay gated on aimmode==2.
   if (!poses || poseCount == 0) {
     g_ctrlValid.store(false);
     g_gripHeld.store(false);
@@ -630,7 +638,8 @@ bool GetControllerAimPose(float* posXyz, float* fwdXyz, float* upXyz) {
     std::lock_guard<std::mutex> lock(g_mu);
     m = g_ctrlMat;
   }
-  // NOTE: position is tracking-space meters. Aim point uses cam + forward.
+  // Position is tracking-space meters (OvrToGta axes only). World tip =
+  // ComputeAimOrigin / EstimateControllerWorld (cam + ctrlTrk − hmdTrk).
   if (posXyz) {
     OvrToGta(m.m[0][3], m.m[1][3], m.m[2][3], &posXyz[0], &posXyz[1], &posXyz[2]);
   }
@@ -683,20 +692,56 @@ void SetMouseShoot(bool down) {
   SendInput(1, &in, sizeof(INPUT));
 }
 
-// Full 3D controller forward (keep pitch). Horizon-flatten (fwd[2]=0 / az=camZ)
-// made FIRE_PED_WEAPON / aim ignore controller pitch — removed for motion aim.
-bool ComputeAimPoint(float* ax, float* ay, float* az) {
-  float fwd[3]{};
-  if (!ComputeAimForward(fwd))
+// Game-world origin for aim / IkRay. Controller tip = cam + (ctrlTrk − hmdTrk)
+// after OvrToGta — same world space as stereo cam / C20. Never return raw
+// tracking-space meters as a "world" point (that made IkRay ref Z≈42 vs cam≈18).
+bool ComputeAimOrigin(float* ox, float* oy, float* oz, bool* fromCtrl) {
+  if (!ox || !oy || !oz)
     return false;
-  if (!Normalize3(&fwd[0], &fwd[1], &fwd[2]))
-    return false;
+  if (fromCtrl)
+    *fromCtrl = false;
+  float ctrlW[3]{};
+  if (EstimateControllerWorld(ctrlW)) {
+    *ox = ctrlW[0];
+    *oy = ctrlW[1];
+    *oz = ctrlW[2];
+    if (fromCtrl)
+      *fromCtrl = true;
+    return true;
+  }
   float camX = 0.f, camY = 0.f, camZ = 0.f;
   if (!GetLastStereoCamPos(&camX, &camY, &camZ))
     return false;
-  *ax = camX + fwd[0] * kAimRayMeters;
-  *ay = camY + fwd[1] * kAimRayMeters;
-  *az = camZ + fwd[2] * kAimRayMeters;
+  *ox = camX;
+  *oy = camY;
+  *oz = camZ;
+  return true;
+}
+
+// Full 3D controller forward (keep pitch). Horizon-flatten (fwd[2]=0 / az=camZ)
+// made FIRE_PED_WEAPON / aim ignore controller pitch — removed for motion aim.
+// Origin is ComputeAimOrigin (ctrl world / cam), not cam-only — Session 3.
+bool ComputeAimPoint(float* ax, float* ay, float* az, bool* fromCtrl) {
+  if (fromCtrl)
+    *fromCtrl = false;
+  float fwd[3]{};
+  bool haveCtrlFwd = false;
+  if (GetControllerAimPose(nullptr, fwd, nullptr)) {
+    haveCtrlFwd = true;
+  } else if (!ComputeAimForward(fwd)) {
+    return false;
+  }
+  if (!Normalize3(&fwd[0], &fwd[1], &fwd[2]))
+    return false;
+  float ox = 0.f, oy = 0.f, oz = 0.f;
+  bool fromOriginCtrl = false;
+  if (!ComputeAimOrigin(&ox, &oy, &oz, &fromOriginCtrl))
+    return false;
+  if (fromCtrl)
+    *fromCtrl = haveCtrlFwd || fromOriginCtrl;
+  *ax = ox + fwd[0] * kAimRayMeters;
+  *ay = oy + fwd[1] * kAimRayMeters;
+  *az = oz + fwd[2] * kAimRayMeters;
   return true;
 }
 
@@ -811,6 +856,23 @@ bool ApplyAimOverride() {
 }
 
 void TickAimFromGameThread() {
+  const bool aimHeld = g_gripHeld.load() || IsVrPadAimHeld();
+  // IkAim (ikaim=1 + ikoffs): every-frame write *(CPed+mgr)+vec while aim held.
+  // Plan B test: ikoffs "D58 90" + ComputeAimOrigin (tip world), not far ray.
+  // IkPin (ikpin=1): LOG ONLY d= vs same origin. Keep ikread=0.
+  float ox = 0.f, oy = 0.f, oz = 0.f;
+  if (aimHeld && ComputeAimOrigin(&ox, &oy, &oz))
+    TickIkAim(ox, oy, oz, true);
+  else
+    TickIkAim(0.f, 0.f, 0.f, false);
+  TickIkProbe();
+  TickIkWriter(aimHeld, g_ctrlValid.load());
+  TickIkEsi();
+  TickIkCopy(aimHeld);
+  TickIkPin(aimHeld);
+  TickIkRay(aimHeld);
+  // PAGE_GUARD reader probe — keep ikread=0 (crashed on aim in Session 6).
+  TickIkRead(aimHeld);
   TryGiveTestWeapons();
   if (GetAimMode() != 2)
     return;
@@ -824,7 +886,8 @@ void TickAimFromGameThread() {
 }
 
 void UpdateAimDecouple() {
-  if (GetAimMode() == 0)
+  // AimProbe when aimmode on OR ikray/ikpin (confirm ctrl=1 cheaply).
+  if (GetAimMode() == 0 && !IsIkRayEnabled() && !IsIkPinEnabled())
     return;
 
   LogAimNativeHandlersOnce();

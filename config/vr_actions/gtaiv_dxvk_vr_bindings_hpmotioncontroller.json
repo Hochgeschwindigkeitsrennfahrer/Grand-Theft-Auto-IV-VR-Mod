@@ -1,0 +1,92 @@
+{
+  "name": "GTA IV VR (HP Reverb G2)",
+  "description": "G2: L-stick move, R-stick look, R-grip aim, R-trigger shoot, L-grip enter/exit (Y+F not B), R-A sprint, L-X jump, R-B melee, L-Y reload, stick-clicks weapons, L-menu pause, R-menu VR profile.",
+  "controller_type": "hpmotioncontroller",
+  "action_manifest_version": 0,
+  "bindings": {
+    "/actions/gtaivvr": {
+      "poses": [
+        { "output": "/actions/gtaivvr/in/RightTipPose", "path": "/user/hand/right/pose/tip" },
+        { "output": "/actions/gtaivvr/in/LeftTipPose", "path": "/user/hand/left/pose/tip" },
+        { "output": "/actions/gtaivvr/in/RightGripPose", "path": "/user/hand/right/pose/grip" },
+        { "output": "/actions/gtaivvr/in/LeftGripPose", "path": "/user/hand/left/pose/grip" }
+      ],
+      "skeleton": [
+        { "output": "/actions/gtaivvr/in/SkeletonRightHand", "path": "/user/hand/right/input/skeleton/right" },
+        { "output": "/actions/gtaivvr/in/SkeletonLeftHand", "path": "/user/hand/left/input/skeleton/left" }
+      ],
+      "haptics": [
+        { "output": "/actions/gtaivvr/out/HapticRight", "path": "/user/hand/right/output/haptic" },
+        { "output": "/actions/gtaivvr/out/HapticLeft", "path": "/user/hand/left/output/haptic" }
+      ],
+      "sources": [
+        {
+          "path": "/user/hand/right/input/joystick",
+          "mode": "joystick",
+          "inputs": {
+            "position": { "output": "/actions/gtaivvr/in/RightStick" },
+            "click": { "output": "/actions/gtaivvr/in/RightStickClick" }
+          }
+        },
+        {
+          "path": "/user/hand/left/input/joystick",
+          "mode": "joystick",
+          "inputs": {
+            "position": { "output": "/actions/gtaivvr/in/LeftStick" },
+            "click": { "output": "/actions/gtaivvr/in/LeftStickClick" }
+          }
+        },
+        {
+          "path": "/user/hand/right/input/trigger",
+          "mode": "trigger",
+          "inputs": { "pull": { "output": "/actions/gtaivvr/in/RightTrigger" } }
+        },
+        {
+          "path": "/user/hand/left/input/trigger",
+          "mode": "trigger",
+          "inputs": { "pull": { "output": "/actions/gtaivvr/in/LeftTrigger" } }
+        },
+        {
+          "path": "/user/hand/right/input/grip",
+          "mode": "trigger",
+          "inputs": { "pull": { "output": "/actions/gtaivvr/in/RightSqueeze" } }
+        },
+        {
+          "path": "/user/hand/left/input/grip",
+          "mode": "trigger",
+          "inputs": { "pull": { "output": "/actions/gtaivvr/in/LeftSqueeze" } }
+        },
+        {
+          "path": "/user/hand/right/input/a",
+          "mode": "button",
+          "inputs": { "click": { "output": "/actions/gtaivvr/in/RightPrimary" } }
+        },
+        {
+          "path": "/user/hand/right/input/b",
+          "mode": "button",
+          "inputs": { "click": { "output": "/actions/gtaivvr/in/RightSecondary" } }
+        },
+        {
+          "path": "/user/hand/left/input/x",
+          "mode": "button",
+          "inputs": { "click": { "output": "/actions/gtaivvr/in/LeftPrimary" } }
+        },
+        {
+          "path": "/user/hand/left/input/y",
+          "mode": "button",
+          "inputs": { "click": { "output": "/actions/gtaivvr/in/LeftSecondary" } }
+        },
+        {
+          "path": "/user/hand/left/input/menu",
+          "mode": "button",
+          "inputs": { "click": { "output": "/actions/gtaivvr/in/Menu" } }
+        },
+        {
+          "path": "/user/hand/right/input/menu",
+          "mode": "button",
+          "inputs": { "click": { "output": "/actions/gtaivvr/in/VrMenu" } }
+        }
+      ]
+    }
+  }
+}

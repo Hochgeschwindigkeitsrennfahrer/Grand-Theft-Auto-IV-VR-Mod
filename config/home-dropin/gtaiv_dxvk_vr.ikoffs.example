@@ -1,0 +1,4 @@
+# REPLACE with CE values from docs/CE_CLICK_RECIPE.md §Plan B.
+# Format: <ikManagerOffHex> <vecAimTargetOffHex>
+# 1.0.7 HINT ONLY (will almost certainly be wrong on CE — DO NOT enable ikaim with this):
+# BC0 70
