@@ -121,6 +121,7 @@ Copy-Item $d3d9 (Join-Path $Drop "d3d9.dll") -Force
 
 # Mode 204 preset.
 $configs = @{
+  "gtaiv_dxvk_vr.backend"     = "openvr"
   "gtaiv_dxvk_vr.stereo"      = "204"
   "gtaiv_dxvk_vr.vres"        = "2048"
   "gtaiv_dxvk_vr.eyefwd"      = "0"

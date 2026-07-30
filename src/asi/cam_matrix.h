@@ -21,6 +21,12 @@ struct StereoCamBuildReceipt {
   float basis[9] = {};
 };
 
+struct Mode58EngineFovReceipt {
+  uint32_t generation = 0u;
+  uint64_t renderFrameSequence = 0u;
+  float ccamDegrees = 0.f;
+};
+
 // AOB-hook CE follow-cam CopyMat; hard-lock pos to player ped + HMD orient.
 // Safe to call repeatedly; installs once.
 bool InstallCamMatrixHooks();
@@ -80,6 +86,17 @@ bool BuildLiveViewMatrix16(float* out16);
 // Mode 36 also publishes the post-ADD FOV to the angle-correct canvas.
 // Safe to call repeatedly; installs once. Returns true if AOB+hook OK.
 bool InstallFovRecomputeSiteHook();
+
+// Mode58 fail-closed proof that the live CCam hook successfully wrote and
+// read back the required 110-degree engine FOV. A tangent publication alone
+// must never authorize a world pair.
+void ResetMode58EngineFovReceipt();
+bool GetMode58EngineFovWriteReceipt(
+    uint64_t expectedRenderFrameSequence,
+    Mode58EngineFovReceipt* receipt);
+bool IsMode58EngineFovWriteReceiptCurrent(
+    uint64_t expectedRenderFrameSequence,
+    const Mode58EngineFovReceipt& receipt);
 
 }  // namespace asi
 

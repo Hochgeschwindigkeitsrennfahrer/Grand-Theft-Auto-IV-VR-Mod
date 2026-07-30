@@ -4,6 +4,7 @@
 #include "cpu_readback_batch.h"
 #include "cpu_temporal_readback.h"
 #include "hmd_pose.h"
+#include "hud_layout.h"
 #include "log.h"
 #include "look_move.h"
 #include "openxr_controller.h"
@@ -363,7 +364,9 @@ public:
         uint64_t poseProducerEpoch,
         uint64_t poseFrameId,
         uint32_t referenceSpaceGeneration,
-        bool renderPoseValid)
+        bool renderPoseValid,
+        const gtaiv_xr_bridge::PoseBridge* mode204RenderPose,
+        uint64_t mode204SourceFrame)
     {
         if (permanentlyDisabled_ || !gameDevice)
             return;
@@ -377,7 +380,16 @@ public:
         const bool temporalStereoMode =
             !uiState
             && stereoMode == StereoMode::OpenXrTemporalStereo;
-        const bool fusedFirstPersonMode =
+        const bool mode204OpenXrAdapter =
+            stereoMode ==
+                StereoMode::OursFpSameTickParentDualTry2;
+        const bool mode204RenderPoseValid =
+            mode204RenderPose
+            && mode204RenderPose->producerEpoch != 0u
+            && mode204RenderPose->frameId != 0u
+            && mode204RenderPose->predictedDisplayTime != 0
+            && IsOpenXrPoseRenderable(*mode204RenderPose);
+        const bool strictMode58 =
             !uiState
             && stereoMode
                 == StereoMode::OpenXrFusedFirstPerson;
@@ -398,8 +410,36 @@ public:
             publishHeartbeat();
             return;
         }
+        if (mode204OpenXrAdapter
+            && (!mode204RenderPoseValid
+                || mode204SourceFrame == 0u))
+        {
+            cancelPendingCpuTemporalReadback(
+                "literal Mode204 exact render pose unavailable",
+                true);
+            logRateLimited(
+                "OpenXRBridge: literal Mode204 waits for the exact prior "
+                "OpenXR render pose/source frame",
+                lastPairWaitLogTick_);
+            publishHeartbeat();
+            return;
+        }
         PairLease lease;
-        if (!StereoAcquireOpenXrPair(&lease.pair))
+        const bool acquiredPair =
+            mode204OpenXrAdapter
+                ? uiState
+                    ? captureMode204UiPair(
+                        gameDevice,
+                        *mode204RenderPose,
+                        mode204SourceFrame,
+                        uiState,
+                        &lease.pair)
+                    : acquireMode204WorldPair(
+                        *mode204RenderPose,
+                        mode204SourceFrame,
+                        &lease.pair)
+                : StereoAcquireOpenXrPair(&lease.pair);
+        if (!acquiredPair)
         {
             cancelPendingCpuTemporalReadback(
                 "completed stereo pair unavailable",
@@ -409,7 +449,10 @@ public:
             return;
         }
         if (!lease.pair.poseStamped
-            || lease.pair.eyes[0] == lease.pair.eyes[1])
+            || !lease.pair.eyes[0]
+            || (!uiState
+                && (!lease.pair.eyes[1]
+                    || lease.pair.eyes[0] == lease.pair.eyes[1])))
         {
             cancelPendingCpuTemporalReadback(
                 "captured pair identity invalid",
@@ -468,16 +511,14 @@ public:
             publishHeartbeat();
             return;
         }
-        if (!uiState
-            && (fusedFirstPersonMode
-                != lease.pair.verifiedParentDualStereo
+        if (strictMode58
+            && (!lease.pair.verifiedParentDualStereo
                 || lease.pair.verifiedParentDualStereo
                     != lease.pair.firstPersonCamera
                 || lease.pair.verifiedParentDualStereo
                     != lease.pair.nativeHeadHidden
-                || (fusedFirstPersonMode
-                    && (!lease.pair.sameSimulationTick
-                        || lease.pair.verifiedTemporalStereo))))
+                || !lease.pair.sameSimulationTick
+                || lease.pair.verifiedTemporalStereo))
         {
             cancelPendingCpuTemporalReadback(
                 "Mode58 parent-dual/first-person proof changed",
@@ -489,13 +530,46 @@ public:
             publishHeartbeat();
             return;
         }
+        if (!uiState
+            && mode204OpenXrAdapter
+            && (!lease.pair.verifiedParentDualStereo
+                || !lease.pair.sameSimulationTick
+                || lease.pair.verifiedTemporalStereo))
+        {
+            cancelPendingCpuTemporalReadback(
+                "literal Mode204 submit proof changed",
+                true);
+            logRateLimited(
+                "OpenXRBridge: literal Mode204 world pair lacks the completed "
+                "same-tick parent-dual submit seam; transaction withheld",
+                lastPairWaitLogTick_);
+            publishHeartbeat();
+            return;
+        }
+        if (!uiState
+            && !strictMode58
+            && !mode204OpenXrAdapter
+            && (lease.pair.verifiedParentDualStereo
+                || lease.pair.firstPersonCamera
+                || lease.pair.nativeHeadHidden))
+        {
+            cancelPendingCpuTemporalReadback(
+                "parent-dual telemetry appeared on another route",
+                true);
+            logRateLimited(
+                "OpenXRBridge: parent-dual telemetry appeared outside the "
+                "Mode58/Mode204 routes; transaction withheld",
+                lastPairWaitLogTick_);
+            publishHeartbeat();
+            return;
+        }
         if (uiState
             && (lease.pair.verifiedParentDualStereo
                 || lease.pair.firstPersonCamera
                 || lease.pair.nativeHeadHidden))
         {
             cancelPendingCpuTemporalReadback(
-                "Mode58 proof appeared on UI quad",
+                "parent-dual proof appeared on UI quad",
                 true);
             logRateLimited(
                 "OpenXRBridge: parent-dual first-person proof rejected "
@@ -561,8 +635,16 @@ public:
         cancelPendingCpuTemporalReadback(
             "CPU mailbox route inactive",
             true);
+        const bool singleEyeTransport =
+            uiState || lease.pair.immersiveMono;
+        const uint32_t copyEyeCount =
+            singleEyeTransport ? 1u : gtaiv_xr_bridge::EyeCount;
         std::array<SourceEye, gtaiv_xr_bridge::EyeCount> source;
-        if (!querySourceEyes(gameDevice, lease.pair, source))
+        if (!querySourceEyes(
+                gameDevice,
+                lease.pair,
+                copyEyeCount,
+                source))
         {
             disable("DXVK eye-image query failed");
             return;
@@ -595,10 +677,6 @@ public:
             return;
         }
 
-        const bool singleEyeTransport =
-            uiState || lease.pair.immersiveMono;
-        const uint32_t copyEyeCount =
-            singleEyeTransport ? 1u : gtaiv_xr_bridge::EyeCount;
         const uint64_t transaction = nextTransaction_ + 1u;
         if (transaction == 0u
             || !submitCopy(
@@ -633,11 +711,32 @@ public:
                 : 0u;
         publishDescriptor();
 
+        if (mode204OpenXrAdapter && !uiState)
+        {
+            ++mode204WorldPublishCount_;
+            if (mode204WorldPublishCount_ <= 8u
+                || mode204WorldPublishCount_ % 120u == 0u)
+            {
+                Log(
+                    "OpenXRSubmitAdapter: Mode204 passive exact textures "
+                    "pair=%llu source=%llu pose=%llu transport=%ux%u "
+                    "transaction=%llu",
+                    static_cast<unsigned long long>(lease.pair.pairId),
+                    static_cast<unsigned long long>(
+                        lease.pair.sourceFrameId[0]),
+                    static_cast<unsigned long long>(
+                        lease.pair.poseSequence[0]),
+                    lease.pair.width,
+                    lease.pair.height,
+                    static_cast<unsigned long long>(transaction));
+            }
+        }
         if (transaction == 1u || transaction % 120u == 0u)
         {
             Log(
                 "OpenXRBridge: frame transaction=%llu slot=%u pair=%llu "
                 "presentation=%s sameTick=%d wvpProof=%d "
+                "parentDual=%d fp=%d headHide=%d "
                 "pose=%llu/%llu source=%llu/%llu",
                 static_cast<unsigned long long>(transaction),
                 slotIndex,
@@ -649,6 +748,9 @@ public:
                         : "world-stereo",
                 lease.pair.sameSimulationTick ? 1 : 0,
                 lease.pair.verifiedWvpStereo ? 1 : 0,
+                lease.pair.verifiedParentDualStereo ? 1 : 0,
+                lease.pair.firstPersonCamera ? 1 : 0,
+                lease.pair.nativeHeadHidden ? 1 : 0,
                 static_cast<unsigned long long>(lease.pair.poseSequence[0]),
                 static_cast<unsigned long long>(lease.pair.poseSequence[1]),
                 static_cast<unsigned long long>(lease.pair.sourceFrameId[0]),
@@ -698,11 +800,217 @@ public:
 
     void notifyDeviceLost()
     {
+        // This bridge-owned default-pool texture must be released before the
+        // game's IDirect3DDevice9::Reset call, exactly like renderer-owned
+        // default-pool resources. It is recreated lazily from the post-reset
+        // Mode204 transport description.
+        mode204UiTexture_.Reset();
+        mode204UiDevice_.Reset();
+        mode204UiWidth_ = 0u;
+        mode204UiHeight_ = 0u;
+        mode204UiFormat_ = D3DFMT_UNKNOWN;
         deviceResetNotification_.fetch_add(
             1u, std::memory_order_release);
     }
 
 private:
+    bool stampMode204Pair(
+        OpenXrStereoPair* pair,
+        const gtaiv_xr_bridge::PoseBridge& renderPose,
+        uint64_t sourceFrame,
+        bool uiQuad,
+        uint32_t contentWidth,
+        uint32_t contentHeight)
+    {
+        if (!pair
+            || !pair->eyes[0]
+            || (!uiQuad
+                && (!pair->eyes[1]
+                    || pair->eyes[0] == pair->eyes[1]))
+            || pair->width == 0u
+            || pair->height == 0u
+            || sourceFrame == 0u
+            || renderPose.frameId == 0u
+            || renderPose.predictedDisplayTime == 0)
+        {
+            return false;
+        }
+
+        const uint64_t priorPair =
+            (std::max)(mode204PairId_, lastHandledPairId_);
+        if (priorPair == (std::numeric_limits<uint64_t>::max)())
+            return false;
+        mode204PairId_ = priorPair + 1u;
+
+        pair->pairId = mode204PairId_;
+        pair->contentWidth =
+            contentWidth != 0u ? contentWidth : pair->width;
+        pair->contentHeight =
+            contentHeight != 0u ? contentHeight : pair->height;
+        for (uint32_t eye = 0u;
+             eye < gtaiv_xr_bridge::EyeCount;
+             ++eye)
+        {
+            pair->sourceFrameId[eye] = sourceFrame;
+            pair->poseSequence[eye] = renderPose.frameId;
+            pair->renderedDisplayTime[eye] =
+                renderPose.predictedDisplayTime;
+        }
+        pair->sameSimulationTick = true;
+        pair->poseStamped = true;
+        pair->verifiedWvpStereo = false;
+        pair->verifiedDrawSceneStereo = false;
+        pair->verifiedParentDualStereo = !uiQuad;
+        pair->firstPersonCamera = false;
+        pair->nativeHeadHidden = false;
+        pair->verifiedTemporalStereo = false;
+        pair->uiQuad = uiQuad;
+        pair->immersiveMono = false;
+        return true;
+    }
+
+    bool acquireMode204WorldPair(
+        const gtaiv_xr_bridge::PoseBridge& renderPose,
+        uint64_t sourceFrame,
+        OpenXrStereoPair* output)
+    {
+        if (!output)
+            return false;
+        *output = {};
+        if (!StereoAcquireMode204SubmitPair(output))
+            return false;
+        if (!stampMode204Pair(
+                output,
+                renderPose,
+                sourceFrame,
+                false,
+                output->width,
+                output->height))
+        {
+            StereoReleaseOpenXrPair(output);
+            return false;
+        }
+        return true;
+    }
+
+    bool captureMode204UiPair(
+        IDirect3DDevice9* gameDevice,
+        const gtaiv_xr_bridge::PoseBridge& renderPose,
+        uint64_t sourceFrame,
+        const UiPresentationState& uiState,
+        OpenXrStereoPair* output)
+    {
+        if (!gameDevice || !uiState || !output)
+            return false;
+        *output = {};
+
+        D3DSURFACE_DESC worldDescription {};
+        if (!StereoGetMode204EyeTextureDesc(&worldDescription)
+            || worldDescription.Width == 0u
+            || worldDescription.Height == 0u
+            || worldDescription.Format == D3DFMT_UNKNOWN)
+        {
+            logRateLimited(
+                "OpenXRBridge: Mode204 UI waits for the upstream eye-transport "
+                "description; g_texL/g_texR remain untouched",
+                lastRouteWaitLogTick_);
+            return false;
+        }
+
+        ComPtr<IDirect3DSurface9> backBuffer;
+        D3DSURFACE_DESC backBufferDescription {};
+        if (FAILED(gameDevice->GetBackBuffer(
+                0u,
+                0u,
+                D3DBACKBUFFER_TYPE_MONO,
+                &backBuffer))
+            || !backBuffer
+            || FAILED(backBuffer->GetDesc(&backBufferDescription))
+            || backBufferDescription.Width == 0u
+            || backBufferDescription.Height == 0u)
+        {
+            return false;
+        }
+
+        const bool recreate =
+            !mode204UiTexture_
+            || !sameComIdentity(mode204UiDevice_.Get(), gameDevice)
+            || mode204UiWidth_ != worldDescription.Width
+            || mode204UiHeight_ != worldDescription.Height
+            || mode204UiFormat_ != worldDescription.Format;
+        if (recreate)
+        {
+            mode204UiTexture_.Reset();
+            mode204UiDevice_.Reset();
+            mode204UiWidth_ = 0u;
+            mode204UiHeight_ = 0u;
+            mode204UiFormat_ = D3DFMT_UNKNOWN;
+            if (FAILED(gameDevice->CreateTexture(
+                    worldDescription.Width,
+                    worldDescription.Height,
+                    1u,
+                    D3DUSAGE_RENDERTARGET,
+                    worldDescription.Format,
+                    D3DPOOL_DEFAULT,
+                    &mode204UiTexture_,
+                    nullptr))
+                || !mode204UiTexture_)
+            {
+                Log(
+                    "OpenXRBridge: Mode204 bridge-owned UI texture creation "
+                    "failed size=%ux%u format=%u",
+                    worldDescription.Width,
+                    worldDescription.Height,
+                    static_cast<unsigned>(worldDescription.Format));
+                return false;
+            }
+            mode204UiDevice_ = gameDevice;
+            mode204UiWidth_ = worldDescription.Width;
+            mode204UiHeight_ = worldDescription.Height;
+            mode204UiFormat_ = worldDescription.Format;
+            Log(
+                "OpenXRBridge: Mode204 bridge-owned UI texture ready "
+                "transport=%ux%u sourceAspect=%ux%u",
+                mode204UiWidth_,
+                mode204UiHeight_,
+                backBufferDescription.Width,
+                backBufferDescription.Height);
+        }
+
+        ComPtr<IDirect3DSurface9> uiSurface;
+        if (FAILED(mode204UiTexture_->GetSurfaceLevel(
+                0u,
+                &uiSurface))
+            || !uiSurface
+            || FAILED(gameDevice->StretchRect(
+                backBuffer.Get(),
+                nullptr,
+                uiSurface.Get(),
+                nullptr,
+                D3DTEXF_NONE)))
+        {
+            return false;
+        }
+
+        mode204UiTexture_->AddRef();
+        output->eyes[0] = mode204UiTexture_.Get();
+        output->width = mode204UiWidth_;
+        output->height = mode204UiHeight_;
+        output->format = mode204UiFormat_;
+        if (!stampMode204Pair(
+                output,
+                renderPose,
+                sourceFrame,
+                true,
+                backBufferDescription.Width,
+                backBufferDescription.Height))
+        {
+            StereoReleaseOpenXrPair(output);
+            return false;
+        }
+        return true;
+    }
+
     uint8_t* cpuSlotPixels(uint32_t slot, uint32_t eye) const
     {
         if (!cpuMailbox_
@@ -1453,8 +1761,14 @@ private:
     bool querySourceEyes(
         IDirect3DDevice9* gameDevice,
         const OpenXrStereoPair& pair,
+        uint32_t eyeCount,
         std::array<SourceEye, gtaiv_xr_bridge::EyeCount>& output)
     {
+        if (eyeCount == 0u
+            || eyeCount > gtaiv_xr_bridge::EyeCount)
+        {
+            return false;
+        }
         if (!interop_)
         {
             if (FAILED(gameDevice->QueryInterface(
@@ -1467,7 +1781,7 @@ private:
             }
         }
 
-        for (uint32_t eye = 0u; eye < gtaiv_xr_bridge::EyeCount; ++eye)
+        for (uint32_t eye = 0u; eye < eyeCount; ++eye)
         {
             SourceEye& value = output[eye];
             if (!pair.eyes[eye]
@@ -1503,8 +1817,9 @@ private:
                 return false;
             }
         }
-        if (output[0].image == output[1].image
-            || output[0].info.format != output[1].info.format)
+        if (eyeCount == gtaiv_xr_bridge::EyeCount
+            && (output[0].image == output[1].image
+                || output[0].info.format != output[1].info.format))
         {
             Log("OpenXRBridge: L/R Vulkan images alias or use different formats");
             return false;
@@ -2338,11 +2653,15 @@ private:
             timeline.signalSemaphoreValueCount = 1u;
             timeline.pSignalSemaphoreValues = &signalValue;
 
-            const VkPipelineStageFlags waitStage =
-                VK_PIPELINE_STAGE_TRANSFER_BIT;
             VkSubmitInfo submit {VK_STRUCTURE_TYPE_SUBMIT_INFO};
             submit.pNext = &timeline;
-            submit.waitSemaphoreCount = waitValue != 0u ? 1u : 0u;
+            // findReusableSlot already proved this value is satisfied, so this
+            // wait cannot stall GTA. It is still required to acquire external
+            // D3D11 ownership/visibility before Vulkan writes the reused slot.
+            const VkPipelineStageFlags waitStage =
+                VK_PIPELINE_STAGE_TRANSFER_BIT;
+            submit.waitSemaphoreCount =
+                waitValue != 0u ? 1u : 0u;
             submit.pWaitSemaphores =
                 waitValue != 0u ? &releaseSemaphore_ : nullptr;
             submit.pWaitDstStageMask =
@@ -2578,7 +2897,10 @@ private:
     std::array<
         ComPtr<IDirect3DSurface9>,
         gtaiv_xr_bridge::EyeCount> cpuReadbacks_;
+    ComPtr<IDirect3DDevice9> mode204UiDevice_;
+    ComPtr<IDirect3DTexture9> mode204UiTexture_;
     D3DFORMAT cpuD3dFormat_ = D3DFMT_UNKNOWN;
+    D3DFORMAT mode204UiFormat_ = D3DFMT_UNKNOWN;
     PixelFormat cpuProtocolFormat_ = PixelFormat::Unknown;
     cpu_temporal_readback::Scheduler temporalReadbackScheduler_;
 
@@ -2590,6 +2912,8 @@ private:
     uint64_t lastPairId_ = 0u;
     uint64_t lastHandledPairId_ = 0u;
     uint64_t producerCallOrdinal_ = 0u;
+    uint64_t mode204PairId_ = 0u;
+    uint64_t mode204WorldPublishCount_ = 0u;
     uint64_t cpuReadbackGeneration_ = 1u;
     std::atomic<uint64_t> deviceResetNotification_ {1u};
     uint64_t lastHeartbeatPublishTick_ = 0u;
@@ -2609,6 +2933,8 @@ private:
     uint32_t nextSlot_ = 0u;
     uint32_t width_ = 0u;
     uint32_t height_ = 0u;
+    uint32_t mode204UiWidth_ = 0u;
+    uint32_t mode204UiHeight_ = 0u;
     gtaiv_xr_bridge::PresentationMode lastPresentationMode_ =
         gtaiv_xr_bridge::PresentationMode::Unknown;
     gtaiv_xr_bridge::PresentationMode lastLoggedCpuPresentation_ =
@@ -2694,6 +3020,8 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
         g_openXrGameplayArmed = false;
         g_openXrArmAttempted = true;
         g_openXrHavePoseForNextFrame = false;
+        InvalidateHmdPose();
+        InvalidateVrDisplayFromOpenXr();
         StereoSetOpenXrRenderPose(nullptr);
         SetCamMatrixGameplayActive(false);
         return true;
@@ -2709,6 +3037,7 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
     if (!GetLatestOpenXrPoseBridge(&pose))
     {
         InvalidateHmdPose();
+        InvalidateVrDisplayFromOpenXr();
         g_openXrHavePoseForNextFrame = false;
         StereoSetOpenXrRenderPose(nullptr);
         SetCamMatrixGameplayActive(false);
@@ -2730,13 +3059,27 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
         && pose.frameId != 0u
         && pose.predictedDisplayTime != 0
         && IsOpenXrPoseRenderable(pose);
+    const bool haveCompletedFrameRenderPose =
+        g_openXrHavePoseForNextFrame;
+    const gtaiv_xr_bridge::PoseBridge completedFrameRenderPose =
+        g_openXrPoseForNextFrame;
     StereoSetOpenXrRenderPose(
-        g_openXrHavePoseForNextFrame
-            ? &g_openXrPoseForNextFrame
+        haveCompletedFrameRenderPose
+            ? &completedFrameRenderPose
             : nullptr);
     g_openXrPoseForNextFrame = pose;
     g_openXrHavePoseForNextFrame = true;
     UpdateHmdPoseFromOpenXr(pose);
+    if (!UpdateVrDisplayFromOpenXr(pose))
+    {
+        InvalidateHmdPose();
+        g_openXrHavePoseForNextFrame = false;
+        StereoSetOpenXrRenderPose(nullptr);
+        SetCamMatrixGameplayActive(false);
+        if (g_producer)
+            g_producer->heartbeat();
+        return;
+    }
 
     if (!g_openXrGameplayArmed)
     {
@@ -2747,12 +3090,17 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
         g_openXrArmAttempted = true;
         ReloadStereoMode();
         const StereoMode directMode = GetStereoMode();
-        if (!IsOpenXrDirectMode(directMode))
+        const bool mode204OpenXrAdapter =
+            directMode ==
+                StereoMode::OursFpSameTickParentDualTry2;
+        if (!IsOpenXrDirectMode(directMode)
+            && !mode204OpenXrAdapter)
         {
             Log(
                 "OpenXRBridge: direct world presentation requires stereo mode "
                 "55 (immersive mono), 56 (guarded DrawScene diagnostic), "
                 "57 (ordered temporal stereo), 58 (Mode204 fused first-person), "
+                "204 (literal upstream renderer through the OpenXR adapter), "
                 "or 54 (experimental WVP); "
                 "current mode=%d, so no GTA "
                 "camera, controller, or frame hooks were armed",
@@ -2808,18 +3156,32 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
         SetCamMatrixGameplayActive(true);
     }
 
+    const bool mode204OpenXrAdapter =
+        GetStereoMode() ==
+            StereoMode::OursFpSameTickParentDualTry2;
+    const uint64_t completedMode204SourceFrame =
+        mode204OpenXrAdapter
+            ? GetStereoRenderFrameSequence()
+            : 0u;
     StereoRenderOnDevice(device);
+    // Match the established Mode 204/OpenVR outer loop. These calls are GTA
+    // renderer/config bookkeeping only; the compositor-specific submit is the
+    // adapter immediately below.
+    UpdateGameFovFromDevice(device);
+    TryApplyCoverMatchedFovAdd();
+    UpdateHudLayoutForVr();
     if (openVrLoaded())
     {
         if (g_producer)
             g_producer->heartbeat();
         return;
     }
-    UpdateGameFovFromDevice(device);
     PollCamHotkeys();
     PollIpdScaleHotkey();
     PollWorldScaleHotkey();
+    PollTrueWorldScaleHotkey();
     PollStereoScaleHotkey();
+    PollVrResHotkey();
     PumpOpenXrControllerBridge();
     if (g_producer)
     {
@@ -2828,12 +3190,19 @@ void PublishOpenXrFrame(IDirect3DDevice9* device)
             pose.producerEpoch,
             pose.frameId,
             pose.referenceSpaceGeneration,
-            renderPoseValid);
+            renderPoseValid,
+            mode204OpenXrAdapter
+                    && haveCompletedFrameRenderPose
+                ? &completedFrameRenderPose
+                : nullptr,
+            completedMode204SourceFrame);
     }
     // Keep the established GTA-side locomotion/right-stick behavior identical
     // across compositors. OpenXR only supplies the cached HMD pose and XInput
     // state; vr_move.cpp remains the single owner of gameplay movement policy.
-    if (IsOpenXrFusedFirstPerson(GetStereoMode()))
+    if (IsOpenXrFusedFirstPerson(GetStereoMode())
+        || GetStereoMode()
+            == StereoMode::OursFpSameTickParentDualTry2)
         UpdateLookMove();
     else
         UpdateVrMoveAndStick();
@@ -2843,6 +3212,7 @@ void ShutdownOpenXrBridge()
 {
     g_openXrHavePoseForNextFrame = false;
     StereoSetOpenXrRenderPose(nullptr);
+    InvalidateVrDisplayFromOpenXr();
     if (g_producer)
         g_producer->announceStopped();
 }

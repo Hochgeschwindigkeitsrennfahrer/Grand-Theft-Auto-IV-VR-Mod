@@ -8,6 +8,9 @@ Official links:
 
 - [Meta XR Simulator 205.0 download and release notes](https://developers.meta.com/horizon/downloads/package/meta-xr-simulator-windows/)
 - [Native/standalone simulator setup](https://developers.meta.com/horizon/documentation/native/xrsim-getting-started/)
+- [Meta XR Operator Standalone 205.1](https://developers.meta.com/horizon/downloads/package/meta-xr-operator-standalone/)
+- [Connecting an AI agent to Operator Standalone](https://developers.meta.com/horizon/documentation/unity/meta-xr-operator/connecting-ai-agents/)
+- [Using Operator with Meta XR Simulator](https://developers.meta.com/horizon/documentation/unity/meta-xr-operator/xr-simulator/)
 
 ## What this can prove
 
@@ -23,6 +26,45 @@ Official links:
 It cannot prove Quest optics, human stereo comfort/fusion, Link latency, or real
 Quest performance. One final Quest 3 test remains required after simulator gates
 pass.
+
+## Optional Meta XR Operator control
+
+Meta XR Operator Standalone is a separate download from Meta XR Simulator. It is
+an experimental OpenXR API layer for test automation, not a renderer dependency.
+For this native project it wraps only the separate x64
+`gtaiv_xr_host.exe`; it never loads into 32-bit GTA and never changes Mode 204.
+
+When enabled, Operator can inspect the OpenXR session and frame state, capture
+the composed simulator image, set simulated head and controller poses, and send
+Touch buttons, thumbsticks, triggers, and grips. Those normal OpenXR actions flow
+through the host's existing `PoseBridge` into GTA.
+
+The supervised launcher accepts Operator only through the explicit
+`-MetaXrOperatorDirectory` option. It:
+
+- permits only Meta XR Simulator or Meta Quest Link;
+- finds the manifest by the exact declared layer name
+  `XR_APILAYER_METAX_operator`;
+- requires the manifest's layer DLL and the MCP proxy in the same Windows bundle
+  directory and verifies both executables are x64;
+- rejects a pre-existing listener on port `8720`;
+- sets `XR_API_LAYER_PATH` and `XR_ENABLE_API_LAYERS` only while starting the
+  x64 host, then restores the parent environment immediately;
+- never launches the MCP proxy and never enables Operator by default.
+
+After extracting Meta's official bundle, a supervised native-host run uses:
+
+```powershell
+.\scripts\run-openxr-gta-steam-safe.ps1 `
+  -GameDir "D:\SteamLibrary\steamapps\common\Grand Theft Auto IV\GTAIV" `
+  -StereoMode 204 `
+  -MetaXrOperatorDirectory "<extracted bundle>\windows" `
+  -MaxSeconds 900 `
+  -Authorized
+```
+
+The MCP proxy remains agent-owned so it can reconnect independently while the
+host starts and stops. Do not package Meta's binaries with this project.
 
 ## Install and activate
 

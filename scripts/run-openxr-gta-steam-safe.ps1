@@ -3,13 +3,16 @@ param(
   [string]$GameDir = "D:\SteamLibrary\steamapps\common\Grand Theft Auto IV\GTAIV",
   [ValidateRange(120, 1800)]
   [uint32]$MaxSeconds = 900,
-  [ValidateSet(55, 56, 57, 58)]
+  [ValidateRange(120, 600)]
+  [uint32]$LaunchSeconds = 300,
+  [ValidateSet(55, 56, 57, 58, 204)]
   [uint32]$StereoMode = 55,
   [switch]$Authorized,
   [string]$RuntimeManifest = "",
+  [string]$MetaXrOperatorDirectory = "",
   [switch]$ElliottCliProof,
   [switch]$StopWhenProofComplete,
-  [ValidateRange(6, 30)]
+  [ValidateRange(6, 60)]
   [uint32]$ElliottWalkSeconds = 6
 )
 
@@ -32,6 +35,9 @@ $DisableFile = Join-Path $GameDir "gtaiv_dxvk_vr.disable"
 $InstalledOpenVr = Join-Path $GameDir "openvr_api.dll"
 $GameLog = Join-Path $GameDir "gtaiv_dxvk_vr.log"
 $DxvkLog = Join-Path $GameDir "GTAIV_d3d9.log"
+$SquareCommandLineTemplate =
+  Join-Path $Root "config\commandline.vr-square.txt"
+$ActiveCommandLine = Join-Path $GameDir "commandline.txt"
 $CandidateAsi = Join-Path $Root "out-asi\gtaiv_dxvk_vr.asi"
 $HostExe = Join-Path $Root "out-openxr\gtaiv_xr_host.exe"
 $HostLog = Join-Path (Split-Path -Parent $HostExe) "gtaiv_xr_host.log"
@@ -61,6 +67,8 @@ $ElliottControllerCommand = Join-Path `
   $ElliottDataDirectory "controller_pose_command.json"
 $ElliottPoseSweepCommand = Join-Path `
   $ElliottDataDirectory "pose_sweep_command.json"
+$ElliottHeadsetProfileCommand = Join-Path `
+  $ElliottDataDirectory "headset_profile_command.json"
 $ElliottCommandAck = Join-Path `
   $ElliottDataDirectory "command_ack.json"
 $ElliottCommandSequence = [uint64]0
@@ -85,7 +93,17 @@ function Write-StatusBestEffort([string]$Message) {
 function Get-ByName([string[]]$Names) {
   $result = @()
   foreach ($name in $Names) {
-    $result += @(Get-Process -Name $name -ErrorAction SilentlyContinue)
+    $result += @(
+      Get-Process -Name $name -ErrorAction SilentlyContinue |
+        Where-Object {
+          try {
+            -not $_.HasExited
+          }
+          catch {
+            $true
+          }
+        }
+    )
   }
   return @($result)
 }
@@ -291,6 +309,68 @@ function Read-Text([string]$Path) {
   }
 }
 
+function Get-LatestMode204FirstPersonPosition(
+  [string]$Text,
+  [int]$AfterIndex = -1
+) {
+  $pattern =
+    "CamMatrix: FP lock #\d+ L pos=\(" +
+    "(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)\)"
+  $matches = @([regex]::Matches($Text, $pattern) | Where-Object {
+    $_.Index -gt $AfterIndex
+  })
+  if ($matches.Count -eq 0) {
+    return [pscustomobject]@{
+      Found = $false
+      Index = -1
+      X = [double]0
+      Y = [double]0
+      Z = [double]0
+    }
+  }
+  $match = $matches[$matches.Count - 1]
+  return [pscustomobject]@{
+    Found = $true
+    Index = $match.Index
+    X = [double]::Parse(
+      $match.Groups[1].Value,
+      [Globalization.CultureInfo]::InvariantCulture
+    )
+    Y = [double]::Parse(
+      $match.Groups[2].Value,
+      [Globalization.CultureInfo]::InvariantCulture
+    )
+    Z = [double]::Parse(
+      $match.Groups[3].Value,
+      [Globalization.CultureInfo]::InvariantCulture
+    )
+  }
+}
+
+function Get-OpenXrHostExitClassification([string]$HostText) {
+  if ([string]::IsNullOrWhiteSpace($HostText)) {
+    return "NO_EVIDENCE"
+  }
+  if ($HostText -match "(?m)^.*FATAL:") {
+    return "FATAL"
+  }
+  $exitingIndex = $HostText.LastIndexOf(
+    "XRHost: session EXITING",
+    [System.StringComparison]::Ordinal
+  )
+  $cleanIndex = $HostText.LastIndexOf(
+    "XRHost: clean shutdown requested",
+    [System.StringComparison]::Ordinal
+  )
+  if ($exitingIndex -ge 0 -and $cleanIndex -gt $exitingIndex) {
+    return "ORDERLY_RUNTIME_EXITING"
+  }
+  if ($exitingIndex -ge 0 -or $cleanIndex -ge 0) {
+    return "INCOMPLETE_RUNTIME_EXIT"
+  }
+  return "UNEXPECTED"
+}
+
 function Get-MonotonicTransactionSequence(
   [string]$Text,
   [string]$Pattern,
@@ -361,6 +441,81 @@ function Get-SustainedWorldRouteEvidence(
   }
 }
 
+function Get-SampledGpuWorldRouteEvidence(
+  [string]$GameText,
+  [string]$HostText,
+  [string]$ProducerPattern,
+  [string]$HostPattern,
+  [int]$GameAfterIndex,
+  [int]$HostAfterIndex
+) {
+  $producer = Get-MonotonicTransactionSequence `
+    -Text $GameText `
+    -Pattern $ProducerPattern `
+    -AfterIndex $GameAfterIndex
+  $hostFrames = Get-MonotonicTransactionSequence `
+    -Text $HostText `
+    -Pattern $HostPattern `
+    -AfterIndex $HostAfterIndex
+  $coupledProducerIds = @()
+  $coupledHostIds = @()
+  $overlapStart = [uint64]0
+  $overlapEnd = [uint64]0
+  if ($producer.Count -gt 0 -and $hostFrames.Count -gt 0) {
+    # Mode204 producer and host diagnostics intentionally sample the same
+    # contiguous transaction stream at different cadences. Exact sampled IDs
+    # therefore need not coincide. Independent monotonic advancement plus a
+    # nonempty common numeric range proves that both traversed the same stream;
+    # the per-side overlap counts remain diagnostic only.
+    $overlapStart = if ($producer.First -gt $hostFrames.First) {
+      $producer.First
+    }
+    else {
+      $hostFrames.First
+    }
+    $overlapEnd = if ($producer.Latest -lt $hostFrames.Latest) {
+      $producer.Latest
+    }
+    else {
+      $hostFrames.Latest
+    }
+    $coupledProducerIds = @($producer.Ids | Where-Object {
+      $_ -ge $overlapStart -and $_ -le $overlapEnd
+    })
+    $coupledHostIds = @($hostFrames.Ids | Where-Object {
+      $_ -ge $overlapStart -and $_ -le $overlapEnd
+    })
+  }
+  return [pscustomobject]@{
+    Ready =
+      $producer.Count -ge 3 -and
+      $hostFrames.Count -ge 3 -and
+      $producer.Monotonic -and
+      $hostFrames.Monotonic -and
+      $producer.Latest -gt $producer.First -and
+      $hostFrames.Latest -gt $hostFrames.First -and
+      $overlapEnd -gt $overlapStart
+    ProducerCount = $producer.Count
+    HostCount = $hostFrames.Count
+    CoupledCount = if (
+      $coupledProducerIds.Count -lt $coupledHostIds.Count
+    ) {
+      $coupledProducerIds.Count
+    }
+    else {
+      $coupledHostIds.Count
+    }
+    CoupledProducerCount = $coupledProducerIds.Count
+    CoupledHostCount = $coupledHostIds.Count
+    OverlapStart = $overlapStart
+    OverlapEnd = $overlapEnd
+    ProducerFirst = $producer.First
+    ProducerLatest = $producer.Latest
+    HostFirst = $hostFrames.First
+    HostLatest = $hostFrames.Latest
+  }
+}
+
 function Get-OpenXrHostArguments(
   [uint32]$Mode,
   [uint64]$TimeoutMs
@@ -385,6 +540,8 @@ function Clear-ElliottCliProofCommands {
       "$ElliottControllerCommand.tmp",
       $ElliottPoseSweepCommand,
       "$ElliottPoseSweepCommand.tmp",
+      $ElliottHeadsetProfileCommand,
+      "$ElliottHeadsetProfileCommand.tmp",
       $ElliottCommandAck,
       "$ElliottCommandAck.tmp"
     )) {
@@ -624,6 +781,45 @@ function Send-ElliottPoseSweep(
   )
 }
 
+function Send-ElliottHeadsetProfile(
+  [ValidateSet("quest3", "default")]
+  [string]$Name,
+  [ValidateRange(1, 5)]
+  [int]$Attempts = 3
+) {
+  $payload = [ordered]@{
+    name = $Name
+  }
+  for ($attempt = 1; $attempt -le $Attempts; ++$attempt) {
+    Remove-Item `
+      -LiteralPath $ElliottCommandAck `
+      -Force `
+      -ErrorAction SilentlyContinue
+    Write-ElliottJsonAtomic $ElliottHeadsetProfileCommand $payload
+    if (Wait-ElliottCommandAck `
+        -Command "headset_profile" `
+        -Sequence 0 `
+        -TimeoutMs 2000) {
+      Write-Status (
+        "ELLIOTT CLI: headset profile name=$Name acknowledged"
+      )
+      return
+    }
+    Write-Status (
+      "ELLIOTT CLI RETRY: headset profile name={0} attempt={1}/{2}: {3}" -f
+      $Name,
+      $attempt,
+      $Attempts,
+      $script:ElliottLastAckFailure
+    )
+  }
+  throw (
+    "ELLIOTT CLI INPUT FAILED: headset profile name={0}; {1}" -f
+    $Name,
+    $script:ElliottLastAckFailure
+  )
+}
+
 function Get-SteamAppLaunchOptions([string]$AppId) {
   $userdata = Join-Path (Split-Path -Parent $SteamExe) "userdata"
   if (-not (Test-Path -LiteralPath $userdata -PathType Container)) {
@@ -685,6 +881,132 @@ function Get-PeMachine([string]$Path) {
   return [BitConverter]::ToUInt16($bytes, $peOffset + 4)
 }
 
+function Test-MetaXrOperatorRuntimeKind([string]$Kind) {
+  return $Kind -in @("MetaSimulator", "MetaQuestLink")
+}
+
+function Get-MetaXrOperatorInfo([string]$Directory) {
+  $layerName = "XR_APILAYER_METAX_operator"
+  if ([string]::IsNullOrWhiteSpace($Directory) -or
+      -not (Test-Path -LiteralPath $Directory -PathType Container)) {
+    throw "Meta XR Operator directory is missing: $Directory"
+  }
+
+  $resolvedDirectory = (Resolve-Path -LiteralPath $Directory).Path
+  $matchingManifests = @()
+  foreach ($manifestPath in @(
+      Get-ChildItem `
+        -LiteralPath $resolvedDirectory `
+        -Filter "*.json" `
+        -File `
+        -ErrorAction Stop
+    )) {
+    try {
+      $manifest = Get-Content `
+        -LiteralPath $manifestPath.FullName `
+        -Raw `
+        -ErrorAction Stop |
+        ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+      continue
+    }
+    $apiLayerProperty = $manifest.PSObject.Properties["api_layer"]
+    if ($null -eq $apiLayerProperty -or
+        $null -eq $apiLayerProperty.Value) {
+      continue
+    }
+    $nameProperty =
+      $apiLayerProperty.Value.PSObject.Properties["name"]
+    if ($null -ne $nameProperty -and
+        [string]$nameProperty.Value -ceq $layerName) {
+      $matchingManifests += [pscustomobject]@{
+        Path = $manifestPath.FullName
+        ApiLayer = $apiLayerProperty.Value
+      }
+    }
+  }
+
+  if ($matchingManifests.Count -ne 1) {
+    throw (
+      "Meta XR Operator directory must contain exactly one API-layer " +
+      "manifest declaring $layerName; found $($matchingManifests.Count): " +
+      $resolvedDirectory
+    )
+  }
+
+  $selected = $matchingManifests[0]
+  $libraryProperty =
+    $selected.ApiLayer.PSObject.Properties["library_path"]
+  $libraryValue = if ($null -ne $libraryProperty) {
+    [string]$libraryProperty.Value
+  }
+  else {
+    ""
+  }
+  if ([string]::IsNullOrWhiteSpace($libraryValue)) {
+    throw (
+      "Meta XR Operator manifest has no api_layer.library_path: " +
+      $selected.Path
+    )
+  }
+
+  $libraryPath = if ([IO.Path]::IsPathRooted($libraryValue)) {
+    [IO.Path]::GetFullPath($libraryValue)
+  }
+  else {
+    [IO.Path]::GetFullPath(
+      (Join-Path $resolvedDirectory $libraryValue)
+    )
+  }
+  $libraryDirectory = [IO.Path]::GetDirectoryName($libraryPath)
+  if (-not (Test-CanonicalPathEqual `
+      -Left $libraryDirectory `
+      -Right $resolvedDirectory)) {
+    throw (
+      "Meta XR Operator layer library must be in the same directory as " +
+      "its manifest: $libraryPath"
+    )
+  }
+  if (-not (Test-Path -LiteralPath $libraryPath -PathType Leaf)) {
+    throw "Meta XR Operator layer library is missing: $libraryPath"
+  }
+
+  $proxyPath = Join-Path `
+    $resolvedDirectory "meta-xr-operator-mcp-proxy.exe"
+  if (-not (Test-Path -LiteralPath $proxyPath -PathType Leaf)) {
+    throw "Meta XR Operator MCP proxy is missing: $proxyPath"
+  }
+  if ((Get-PeMachine $libraryPath) -ne 0x8664) {
+    throw "Meta XR Operator layer library is not x64: $libraryPath"
+  }
+  if ((Get-PeMachine $proxyPath) -ne 0x8664) {
+    throw "Meta XR Operator MCP proxy is not x64: $proxyPath"
+  }
+
+  return [pscustomobject]@{
+    Directory = $resolvedDirectory
+    LayerName = $layerName
+    ManifestPath = $selected.Path
+    LibraryPath = $libraryPath
+    ProxyPath = $proxyPath
+  }
+}
+
+function Assert-MetaXrOperatorPortAvailable([uint16]$Port = 8720) {
+  $listeners = @(
+    [Net.NetworkInformation.IPGlobalProperties]::GetIPGlobalProperties().
+      GetActiveTcpListeners() |
+      Where-Object { $_.Port -eq $Port }
+  )
+  if ($listeners.Count -ne 0) {
+    throw (
+      "Meta XR Operator port $Port is already in use. Close the other " +
+      "Operator-enabled XR app or MCP server before this supervised run."
+    )
+  }
+}
+
 function Get-Sha256([string]$Path) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
     return "MISSING"
@@ -692,17 +1014,76 @@ function Get-Sha256([string]$Path) {
   return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
 }
 
+function Assert-SquareCommandLineTemplate([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "Required square-render preset is missing: $Path"
+  }
+  $text = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+  $normalized = (
+    @($text -split '\s+' | Where-Object { $_.Length -gt 0 }) -join " "
+  )
+  $expected = "-windowed -width 1440 -height 1440 -norestrictions"
+  if (-not $normalized.Equals(
+      $expected,
+      [System.StringComparison]::OrdinalIgnoreCase
+    )) {
+    throw (
+      "Square-render preset must contain exactly '$expected': $Path"
+    )
+  }
+}
+
+function Install-SquareCommandLine(
+  [string]$TemplatePath,
+  [string]$ActivePath
+) {
+  Assert-SquareCommandLineTemplate $TemplatePath
+  $templateHash = Get-Sha256 $TemplatePath
+  Copy-Item -LiteralPath $TemplatePath -Destination $ActivePath -Force
+  $installedHash = Get-Sha256 $ActivePath
+  if ($installedHash -ne $templateHash) {
+    throw (
+      "Active commandline.txt does not exactly match the square-render " +
+      "preset: expected=$templateHash actual=$installedHash"
+    )
+  }
+  return [pscustomobject]@{
+    TemplateHash = $templateHash
+    InstalledHash = $installedHash
+  }
+}
+
 function Save-State([string]$Path, [string]$Name) {
   $exists = Test-Path -LiteralPath $Path -PathType Leaf
+  $hash = "MISSING"
   if ($exists) {
-    Copy-Item -LiteralPath $Path -Destination (Join-Path $BackupDirectory $Name) -Force
+    $backupPath = Join-Path $BackupDirectory $Name
+    Copy-Item -LiteralPath $Path -Destination $backupPath -Force
+    $hash = Get-Sha256 $Path
+    $backupHash = Get-Sha256 $backupPath
+    if ($backupHash -ne $hash) {
+      throw (
+        "Backup verification failed for ${Name}: " +
+        "source=$hash backup=$backupHash"
+      )
+    }
   }
   return [pscustomobject]@{
     Path = $Path
     Name = $Name
     Existed = $exists
-    Hash = Get-Sha256 $Path
+    Hash = $hash
   }
+}
+
+function Test-StateRestored($State) {
+  if ($State.Existed) {
+    return (
+      (Test-Path -LiteralPath $State.Path -PathType Leaf) -and
+      (Get-Sha256 $State.Path) -eq $State.Hash
+    )
+  }
+  return -not (Test-Path -LiteralPath $State.Path)
 }
 
 function Restore-State($State) {
@@ -712,7 +1093,7 @@ function Restore-State($State) {
     do {
       try {
         Copy-Item -LiteralPath $source -Destination $State.Path -Force
-        return
+        break
       }
       catch {
         if ([DateTime]::UtcNow -ge $deadline) {
@@ -725,9 +1106,173 @@ function Restore-State($State) {
   elseif (Test-Path -LiteralPath $State.Path -PathType Leaf) {
     Remove-Item -LiteralPath $State.Path -Force
   }
+  if (-not (Test-StateRestored $State)) {
+    throw (
+      "Exact restoration verification failed for $($State.Name): " +
+      "expected=$($State.Hash) actual=$(Get-Sha256 $State.Path)"
+    )
+  }
 }
 
-foreach ($required in @($GtaExe, $InstalledAsi, $CandidateAsi, $HostExe, $SteamExe)) {
+function Test-SquareCommandLineRequired([uint32]$Mode) {
+  return $Mode -in @(58, 204)
+}
+
+function Test-Mode204ConfigRequired([uint32]$Mode) {
+  return $Mode -eq 204
+}
+
+function Get-Mode204ConfigPreset {
+  return [ordered]@{
+    "gtaiv_dxvk_vr.stereo" = "204"
+    "gtaiv_dxvk_vr.vres" = "2048"
+    "gtaiv_dxvk_vr.eyefwd" = "0"
+    "gtaiv_dxvk_vr.fovadd" = "0"
+    "gtaiv_dxvk_vr.fpfov" = "110 110 110"
+    "gtaiv_dxvk_vr.camoff" = "0 0 0"
+    "gtaiv_dxvk_vr.vehcamoff" = "0 -12 0"
+    "gtaiv_dxvk_vr.mousesens" = "50"
+    "gtaiv_dxvk_vr.joysens" = "20 30"
+    "gtaiv_dxvk_vr.dualn" = "2"
+    "gtaiv_dxvk_vr.ipd" = "2"
+    "gtaiv_dxvk_vr.pedhide" = "0"
+    "gtaiv_dxvk_vr.stereoscale" = "130"
+    "gtaiv_dxvk_vr.scale" = "100"
+    "gtaiv_dxvk_vr.hudoff" = "center 1.0 -0.10 0.10"
+  }
+}
+
+function Enter-Mode204ConfigScope(
+  [uint32]$Mode,
+  [string]$Directory
+) {
+  if (-not (Test-Mode204ConfigRequired $Mode)) {
+    return [pscustomobject]@{
+      Required = $false
+      States = @()
+      Values = [ordered]@{}
+    }
+  }
+
+  $values = Get-Mode204ConfigPreset
+  $savedStates = @()
+  try {
+    foreach ($entry in $values.GetEnumerator()) {
+      $path = Join-Path $Directory $entry.Key
+      $savedStates += Save-State $path $entry.Key
+      Set-Content `
+        -LiteralPath $path `
+        -Value $entry.Value `
+        -Encoding ASCII `
+        -NoNewline
+      $installedValue = [System.IO.File]::ReadAllText($path)
+      if (-not $installedValue.Equals(
+          $entry.Value,
+          [System.StringComparison]::Ordinal
+        )) {
+        throw (
+          "Mode204 config verification failed for $($entry.Key): " +
+          "expected='$($entry.Value)' actual='$installedValue'"
+        )
+      }
+    }
+  }
+  catch {
+    $installFailure = $_.Exception.Message
+    $rollbackFailures = @()
+    for ($index = $savedStates.Count - 1; $index -ge 0; --$index) {
+      try {
+        Restore-State $savedStates[$index]
+      }
+      catch {
+        $rollbackFailures += $_.Exception.Message
+      }
+    }
+    if ($rollbackFailures.Count -gt 0) {
+      throw (
+        "Mode204 config installation failed ('$installFailure') and " +
+        "immediate rollback was incomplete: " +
+        ($rollbackFailures -join " | ")
+      )
+    }
+    throw (
+      "Mode204 config installation failed; original values were restored " +
+      "exactly: $installFailure"
+    )
+  }
+
+  return [pscustomobject]@{
+    Required = $true
+    States = @($savedStates)
+    Values = $values
+  }
+}
+
+function Enter-SquareCommandLineScope(
+  [uint32]$Mode,
+  [string]$TemplatePath,
+  [string]$ActivePath
+) {
+  if (-not (Test-SquareCommandLineRequired $Mode)) {
+    return [pscustomobject]@{
+      Required = $false
+      State = $null
+      TemplateHash = "NOT_APPLICABLE"
+      InstalledHash = "NOT_APPLICABLE"
+      OriginalExisted = $false
+      OriginalHash = "NOT_APPLICABLE"
+    }
+  }
+
+  $state = Save-State $ActivePath "commandline.txt"
+  try {
+    $installation = Install-SquareCommandLine `
+      -TemplatePath $TemplatePath `
+      -ActivePath $ActivePath
+  }
+  catch {
+    $installFailure = $_.Exception.Message
+    try {
+      Restore-State $state
+    }
+    catch {
+      throw (
+        "Square command-line installation failed ('$installFailure') and " +
+        "its immediate rollback also failed: $($_.Exception.Message)"
+      )
+    }
+    throw (
+      "Square command-line installation failed; original state was " +
+      "restored exactly: $installFailure"
+    )
+  }
+
+  return [pscustomobject]@{
+    Required = $true
+    State = $state
+    TemplateHash = $installation.TemplateHash
+    InstalledHash = $installation.InstalledHash
+    OriginalExisted = $state.Existed
+    OriginalHash = $state.Hash
+  }
+}
+
+$squareCommandLineRequired =
+  Test-SquareCommandLineRequired $StereoMode
+$mode204ConfigRequired =
+  Test-Mode204ConfigRequired $StereoMode
+$parentDualMode = $StereoMode -in @(58, 204)
+$requiredFiles = @(
+  $GtaExe,
+  $InstalledAsi,
+  $CandidateAsi,
+  $HostExe,
+  $SteamExe
+)
+if ($squareCommandLineRequired) {
+  $requiredFiles += $SquareCommandLineTemplate
+}
+foreach ($required in $requiredFiles) {
   if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
     throw "Required file is missing: $required"
   }
@@ -757,6 +1302,33 @@ if (-not $runtimeInfo.IsDirectTestRuntime) {
 if ($ElliottCliProof -and $runtimeInfo.Kind -ne "ElliottSimulator") {
   throw "-ElliottCliProof requires the Elliott OpenXR Simulator manifest."
 }
+$metaXrOperatorEnabled =
+  -not [string]::IsNullOrWhiteSpace($MetaXrOperatorDirectory)
+$metaXrOperatorInfo = $null
+$metaXrOperatorLayerName = "DISABLED"
+$metaXrOperatorDirectoryResolved = "DISABLED"
+$metaXrOperatorManifestHash = "NOT_APPLICABLE"
+$metaXrOperatorLibraryHash = "NOT_APPLICABLE"
+$metaXrOperatorProxyHash = "NOT_APPLICABLE"
+if ($metaXrOperatorEnabled) {
+  if (-not (Test-MetaXrOperatorRuntimeKind $runtimeInfo.Kind)) {
+    throw (
+      "Meta XR Operator is supported only with Meta XR Simulator or " +
+      "Meta Quest Link; selected runtime kind=$($runtimeInfo.Kind)."
+    )
+  }
+  $metaXrOperatorInfo =
+    Get-MetaXrOperatorInfo -Directory $MetaXrOperatorDirectory
+  Assert-MetaXrOperatorPortAvailable -Port 8720
+  $metaXrOperatorLayerName = $metaXrOperatorInfo.LayerName
+  $metaXrOperatorDirectoryResolved = $metaXrOperatorInfo.Directory
+  $metaXrOperatorManifestHash =
+    Get-Sha256 $metaXrOperatorInfo.ManifestPath
+  $metaXrOperatorLibraryHash =
+    Get-Sha256 $metaXrOperatorInfo.LibraryPath
+  $metaXrOperatorProxyHash =
+    Get-Sha256 $metaXrOperatorInfo.ProxyPath
+}
 if ($runtimeInfo.RequiresOvrService) {
   $ovrService = Get-Service -Name OVRService -ErrorAction SilentlyContinue
   if (-not $ovrService -or $ovrService.Status -ne "Running") {
@@ -777,6 +1349,39 @@ $states = @()
 $hostProcess = $null
 $outcome = "ABORTED"
 $failure = ""
+$hostExitClassification = "NOT_EXITED"
+$activeCommandLineState = $null
+$squareCommandLineTemplateHash = if ($squareCommandLineRequired) {
+  "MISSING"
+}
+else {
+  "NOT_APPLICABLE"
+}
+$activeCommandLineOriginalExisted = $false
+$activeCommandLineOriginalHash = if ($squareCommandLineRequired) {
+  "MISSING"
+}
+else {
+  "NOT_APPLICABLE"
+}
+$activeCommandLineInstalledHash = if ($squareCommandLineRequired) {
+  "MISSING"
+}
+else {
+  "NOT_APPLICABLE"
+}
+$squareCommandLineInstalled = $false
+$activeCommandLineRestored = -not $squareCommandLineRequired
+$activeCommandLineRestoredHash = if ($squareCommandLineRequired) {
+  "UNVERIFIED"
+}
+else {
+  "NOT_APPLICABLE"
+}
+$mode204ConfigStates = @()
+$mode204ConfigInstalled = -not $mode204ConfigRequired
+$mode204ConfigRestored = -not $mode204ConfigRequired
+$mode204ConfigFileCount = 0
 $gameStarted = $false
 $hostFocused = $false
 $backendOpenXr = $false
@@ -833,18 +1438,28 @@ $mode58PrePauseProducerTransactions = 0
 $mode58PrePauseHostTransactions = 0
 $mode58PrePauseSharedTransaction = $false
 $mode58PrePauseContinuityReady = $StereoMode -ne 58
-$parentDualFusedPairReady = $StereoMode -ne 58
-$parentDualProducerReady = $StereoMode -ne 58
-$parentDualProofComplete = $StereoMode -ne 58
+$mode204PrePauseFirstPairOrdinal = [uint32]0
+$mode204PrePauseAcceptedPairSpan = [uint32]0
+$mode204PrePauseProducerTransactions = 0
+$mode204PrePauseHostTransactions = 0
+$mode204PrePauseRangeCoupled = $false
+$mode204PrePauseContinuityReady = $StereoMode -ne 204
+$mode204AdapterReady = $StereoMode -ne 204
+$mode204GpuProducerReady = $StereoMode -ne 204
+$mode204GpuQueueReady = $StereoMode -ne 204
+$mode204GpuHostReady = $StereoMode -ne 204
+$parentDualFusedPairReady = -not $parentDualMode
+$parentDualProducerReady = -not $parentDualMode
+$parentDualProofComplete = -not $parentDualMode
 $parentDualPairPose = [uint64]0
 $parentDualPairSource = [uint64]0
 $parentDualProducerTransaction = [uint64]0
-$parentDualHostExactPoseReady = $StereoMode -ne 58
-$firstPersonHardHookReady = $StereoMode -ne 58
-$firstPersonGameplayReady = $StereoMode -ne 58
-$firstPersonPedHideReady = $StereoMode -ne 58
+$parentDualHostExactPoseReady = -not $parentDualMode
+$firstPersonHardHookReady = -not $parentDualMode
+$firstPersonGameplayReady = -not $parentDualMode
+$firstPersonPedHideReady = -not $parentDualMode
 $firstPersonPedHideSuccesses = [uint32]0
-$firstPersonProofComplete = $StereoMode -ne 58
+$firstPersonProofComplete = -not $parentDualMode
 $temporalPairReady = $StereoMode -ne 57
 $temporalPixelDistinct = $StereoMode -ne 57
 $temporalHostAccepted = $StereoMode -ne 57
@@ -865,7 +1480,15 @@ $temporalSplitPhaseGateCall = [uint64]0
 $temporalSplitPhaseCurrentCall = [uint64]0
 $temporalSplitPhaseEpoch = [uint64]0
 $temporalSplitPhaseGapMs = [double]0
-$stereoProofComplete = if ($StereoMode -eq 58) {
+$stereoProofComplete = if ($StereoMode -eq 204) {
+  $mode204AdapterReady -and
+  $mode204GpuProducerReady -and
+  $mode204GpuQueueReady -and
+  $mode204GpuHostReady -and
+  $parentDualProofComplete -and
+  $mode204PrePauseContinuityReady
+}
+elseif ($StereoMode -eq 58) {
   $stereoCameraDistanceReady -and
   $stereoPixelDistinct -and
   $stereoApplyGenerationFresh -and
@@ -925,6 +1548,7 @@ $worldLoadReasonsZeroSince = $null
 $worldLoadProducerFrames = 0
 $worldLoadHostFrames = 0
 $worldLoadSharedFrames = 0
+$worldLoadCoupledFrames = 0
 $worldLoadSustainedMilliseconds = [int64]0
 $pauseRoundTrip = $false
 $pauseTestStarted = $false
@@ -939,16 +1563,53 @@ $pauseWorldProducerBaselineCount = 0
 $pauseWorldHostBaselineCount = 0
 $pauseWorldProducerBaselineTransaction = [uint64]0
 $pauseWorldHostBaselineTransaction = [uint64]0
+$walkProducerBaselineTransaction = [uint64]0
+$walkHostBaselineTransaction = [uint64]0
+$walkHeartbeatPauseBaselineCount = 0
+$walkHeartbeatPauseCount = 0
+$walkProducerAdvance = [uint64]0
+$walkHostAdvance = [uint64]0
+$walkMinimumTransactionAdvance =
+  [uint64]$ElliottWalkSeconds * [uint64]20
+$walkHeartbeatPauseFree =
+  $StereoMode -ne 204 -or -not $ElliottCliProof
+$walkFrameContinuityReady =
+  $StereoMode -ne 204 -or -not $ElliottCliProof
+$walkAttempt = 0
+$walkMaximumAttempts = 2
+$walkRecoveryProducerBaseline = [uint64]0
+$walkRecoveryHostBaseline = [uint64]0
+$walkStickPacketBaseline = [uint64]0
+$walkNeutralPacketBaseline = [uint64]0
+$acceptedWalkAttempt = 0
+$walkStartPositionIndex = -1
+$walkStartX = [double]0
+$walkStartY = [double]0
+$walkStartZ = [double]0
+$walkEndX = [double]0
+$walkEndY = [double]0
+$walkEndZ = [double]0
+$walkPlanarDistance = [double]0
+$walkMinimumPlanarDistance = [double]0.5
+$walkPositionReady =
+  $StereoMode -ne 204 -or -not $ElliottCliProof
+$walkQualityReady =
+  $StereoMode -ne 204 -or -not $ElliottCliProof
 $elliottStickCommanded = $false
 $elliottPoseSweepEnabled = $false
 $elliottPoseSweepCompleted = $false
 $elliottProofAutomationComplete = $false
+$elliottQuestProfileReady = $StereoMode -ne 204
+$elliottQuestProfileReset = $StereoMode -ne 204
+$sustainedPoseControllerProof = $false
 $elliottCleanupFailures = @()
 $notRespondingSince = $null
 $cleanupFailures = @()
 $archiveFailures = @()
 $restoreFailures = @()
 $priorRuntimeOverride = $env:XR_RUNTIME_JSON
+$priorMetaXrApiLayerPath = $env:XR_API_LAYER_PATH
+$priorMetaXrEnabledApiLayers = $env:XR_ENABLE_API_LAYERS
 $priorSimulatorHeadless = $env:OPENXR_SIMULATOR_HEADLESS
 $priorSimulatorExternalFocus =
   $env:OPENXR_SIMULATOR_EXTERNAL_FOCUS_EXE
@@ -976,6 +1637,13 @@ try {
   Write-Status "SAFETY: GTA IV Steam launch options are empty"
   Write-Status "ARTIFACT: ASI sha256=$(Get-Sha256 $CandidateAsi)"
   Write-Status "ARTIFACT: host sha256=$(Get-Sha256 $HostExe)"
+  if ($metaXrOperatorEnabled) {
+    Write-Status (
+      "META XR OPERATOR: opt-in layer validated x64; " +
+      "runtimeKind=$($runtimeInfo.Kind) port=8720; " +
+      "proxy remains agent-owned and is never launched by this script"
+    )
+  }
   if ($ElliottCliProof) {
     New-Item `
       -ItemType Directory `
@@ -991,11 +1659,67 @@ try {
   $states = @(
     Save-State $InstalledAsi "gtaiv_dxvk_vr.asi"
     Save-State $BackendFile "gtaiv_dxvk_vr.backend"
-    Save-State $StereoFile "gtaiv_dxvk_vr.stereo"
     Save-State $DisableFile "gtaiv_dxvk_vr.disable"
     Save-State $InstalledOpenVr "openvr_api.dll"
     Save-State $DxvkLog "GTAIV_d3d9.log"
   )
+  if (-not $mode204ConfigRequired) {
+    $states += Save-State $StereoFile "gtaiv_dxvk_vr.stereo"
+  }
+  $mode204Scope = Enter-Mode204ConfigScope `
+    -Mode $StereoMode `
+    -Directory $GameDir
+  if ($mode204Scope.Required) {
+    $mode204ConfigStates = @($mode204Scope.States)
+    $states += $mode204ConfigStates
+    $mode204ConfigFileCount = $mode204Scope.Values.Count
+    $mode204ConfigInstalled = $true
+    $activeMode204ConfigDirectory =
+      Join-Path $RunDirectory "active-mode204-config"
+    New-Item `
+      -ItemType Directory `
+      -Path $activeMode204ConfigDirectory `
+      -Force | Out-Null
+    foreach ($entry in $mode204Scope.Values.GetEnumerator()) {
+      Copy-Item `
+        -LiteralPath (Join-Path $GameDir $entry.Key) `
+        -Destination (Join-Path $activeMode204ConfigDirectory $entry.Key) `
+        -Force
+    }
+    Write-Status (
+      "MODE204 CONFIG: exact pack-mode204 preset staged transactionally " +
+      "files=$mode204ConfigFileCount; buildid/user extras untouched"
+    )
+  }
+  $squareScope = Enter-SquareCommandLineScope `
+    -Mode $StereoMode `
+    -TemplatePath $SquareCommandLineTemplate `
+    -ActivePath $ActiveCommandLine
+  if ($squareScope.Required) {
+    $activeCommandLineState = $squareScope.State
+    $states += $activeCommandLineState
+    $activeCommandLineOriginalExisted = $squareScope.OriginalExisted
+    $activeCommandLineOriginalHash = $squareScope.OriginalHash
+    $squareCommandLineTemplateHash = $squareScope.TemplateHash
+    $activeCommandLineInstalledHash = $squareScope.InstalledHash
+    $squareCommandLineInstalled =
+      $activeCommandLineInstalledHash -eq $squareCommandLineTemplateHash
+    Copy-Item `
+      -LiteralPath $ActiveCommandLine `
+      -Destination (Join-Path $RunDirectory "active-commandline.txt") `
+      -Force
+    Write-Status (
+      "SQUARE RENDER: Mode$StereoMode active commandline.txt installed exactly " +
+      "from tracked config/commandline.vr-square.txt (1440x1440) sha256=" +
+      $activeCommandLineInstalledHash
+    )
+  }
+  else {
+    Write-Status (
+      "SQUARE RENDER: not requested for Mode $StereoMode; " +
+      "commandline.txt untouched"
+    )
+  }
   if (Test-Path -LiteralPath $GameLog -PathType Leaf) {
     Copy-Item -LiteralPath $GameLog -Destination (Join-Path $BackupDirectory "previous-game.log") -Force
     Remove-Item -LiteralPath $GameLog -Force
@@ -1010,7 +1734,9 @@ try {
 
   Copy-Item -LiteralPath $CandidateAsi -Destination $InstalledAsi -Force
   Set-Content -LiteralPath $BackendFile -Value "openxr" -Encoding ASCII -NoNewline
-  Set-Content -LiteralPath $StereoFile -Value "$StereoMode" -Encoding ASCII -NoNewline
+  if (-not $mode204ConfigRequired) {
+    Set-Content -LiteralPath $StereoFile -Value "$StereoMode" -Encoding ASCII -NoNewline
+  }
   Set-Content -LiteralPath $DisableFile -Value "1" -Encoding ASCII -NoNewline
   if (Test-Path -LiteralPath $InstalledOpenVr -PathType Leaf) {
     Remove-Item -LiteralPath $InstalledOpenVr -Force
@@ -1019,6 +1745,7 @@ try {
     56 { "DrawScene same-frame L/R stereo candidate"; break }
     57 { "temporal native-frame L/R stereo"; break }
     58 { "Mode204 fused same-tick OpenXR first-person stereo"; break }
+    204 { "literal Mode204 GPU OpenXR first-person stereo adapter"; break }
     default { "immersive mono baseline" }
   }
   Write-Status "DEPLOYED: backend=openxr stereo=$StereoMode ($stereoDescription)"
@@ -1038,6 +1765,10 @@ try {
   Assert-And-Stop-SteamVrAtLaunchBoundary
   try {
     $env:XR_RUNTIME_JSON = $runtime
+    if ($metaXrOperatorEnabled) {
+      $env:XR_API_LAYER_PATH = $metaXrOperatorInfo.Directory
+      $env:XR_ENABLE_API_LAYERS = $metaXrOperatorInfo.LayerName
+    }
     if ($runtimeInfo.Kind -eq "ElliottSimulator") {
       $env:OPENXR_SIMULATOR_HEADLESS = "1"
       $env:OPENXR_SIMULATOR_EXTERNAL_FOCUS_EXE = "GTAIV.exe"
@@ -1063,6 +1794,18 @@ try {
     }
     else {
       $env:XR_RUNTIME_JSON = $priorRuntimeOverride
+    }
+    if ($null -eq $priorMetaXrApiLayerPath) {
+      Remove-Item Env:XR_API_LAYER_PATH -ErrorAction SilentlyContinue
+    }
+    else {
+      $env:XR_API_LAYER_PATH = $priorMetaXrApiLayerPath
+    }
+    if ($null -eq $priorMetaXrEnabledApiLayers) {
+      Remove-Item Env:XR_ENABLE_API_LAYERS -ErrorAction SilentlyContinue
+    }
+    else {
+      $env:XR_ENABLE_API_LAYERS = $priorMetaXrEnabledApiLayers
     }
     if ($null -eq $priorSimulatorHeadless) {
       Remove-Item Env:OPENXR_SIMULATOR_HEADLESS -ErrorAction SilentlyContinue
@@ -1101,6 +1844,15 @@ try {
   }
   Write-Status "$inspectionTarget READY: OpenXR session FOCUSED; Touch actions ready"
   if ($ElliottCliProof) {
+    if ($StereoMode -eq 204) {
+      Send-ElliottHeadsetProfile -Name "quest3"
+      $elliottQuestProfileReady = $true
+      $elliottQuestProfileReset = $false
+      Write-Status (
+        "ELLIOTT CLI: Quest 3-like asymmetric FOV/IPD profile active " +
+        "through file IPC"
+      )
+    }
     [void](Send-ElliottControllerSnapshot -Kind "NeutralBoth")
     $elliottInitialNeutralAck = $true
     Write-Status "ELLIOTT CLI: initial both-controller neutral established"
@@ -1108,7 +1860,7 @@ try {
 
   Start-AuditedGtaSteamAuthentication "requested GTA IV"
 
-  $launchDeadline = [DateTime]::UtcNow.AddSeconds(120)
+  $launchDeadline = [DateTime]::UtcNow.AddSeconds($LaunchSeconds)
   $authRetryAt = [DateTime]::UtcNow.AddSeconds(60)
   $authRetryAttempted = $false
   while ([DateTime]::UtcNow -lt $launchDeadline) {
@@ -1153,7 +1905,10 @@ try {
     Start-Sleep -Milliseconds 100
   }
   if (-not $gameStarted) {
-    throw "No fresh GTA OpenXR/Mode $StereoMode ASI session appeared within 120 seconds."
+    throw (
+      "No fresh GTA OpenXR/Mode $StereoMode ASI session appeared within " +
+      "$LaunchSeconds seconds."
+    )
   }
   Write-Status "GTA READY: fresh x86 ASI session backend=OpenXR stereo=$StereoMode"
   switch ($StereoMode) {
@@ -1167,6 +1922,10 @@ try {
     }
     58 {
       Write-Status "${inspectionTarget}: inspect Mode204 fused first-person L/R world stereo, stationary menus, color, and Touch controls"
+      break
+    }
+    204 {
+      Write-Status "${inspectionTarget}: inspect literal Mode204 GPU first-person L/R world stereo, stationary menus, color, and Touch controls"
       break
     }
     default {
@@ -1208,7 +1967,10 @@ try {
       elseif ($null -eq $notRespondingSince) {
         $notRespondingSince = [DateTime]::UtcNow
       }
-      elseif (([DateTime]::UtcNow - $notRespondingSince).TotalSeconds -ge 15) {
+      elseif (
+        ([DateTime]::UtcNow - $notRespondingSince).TotalSeconds -ge 15 -and
+        -not ($ElliottCliProof -and $StereoMode -eq 204)
+      ) {
         throw "GTA stopped responding for 15 seconds."
       }
     }
@@ -1216,6 +1978,55 @@ try {
     $gameText = Read-Text $GameLog
     $hostText = Read-Text $HostLog
     $dxvkText = Read-Text $DxvkLog
+    $expectedProducerPresentation = switch ($StereoMode) {
+      56 { "world-drawscene-stereo"; break }
+      57 { "world-temporal-stereo"; break }
+      58 { "world-parent-dual-stereo"; break }
+      204 { "world-stereo"; break }
+      default { "world-immersive-mono" }
+    }
+    $expectedHostAcquiredPresentation = if ($StereoMode -eq 204) {
+      "world-parent-dual-stereo"
+    }
+    else {
+      $expectedProducerPresentation
+    }
+    $producerPattern = if ($StereoMode -eq 204) {
+      "OpenXRBridge: frame transaction=(\d+)[^\r\n]*" +
+      "presentation=$expectedProducerPresentation"
+    }
+    else {
+      "OpenXRBridge: CPU mailbox transaction=(\d+)[^\r\n]*" +
+      "presentation=$expectedProducerPresentation"
+    }
+    $hostPattern = if ($StereoMode -eq 204) {
+      "(?:GameBridge: frame acquired|" +
+      "XRHost: game swapchain (?:updated|reused)) " +
+      "transaction=(\d+)[^\r\n]*" +
+      "presentation=$expectedHostAcquiredPresentation"
+    }
+    else {
+      "GameBridge: CPU mailbox acquired transaction=(\d+)[^\r\n]*" +
+      "presentation=$expectedHostAcquiredPresentation"
+    }
+    $uiProducerPattern = if ($StereoMode -eq 204) {
+      "OpenXRBridge: frame transaction=[^\r\n]*" +
+      "presentation=stationary-ui-quad"
+    }
+    else {
+      "OpenXRBridge: CPU mailbox transaction=[^\r\n]*" +
+      "presentation=stationary-ui-quad"
+    }
+    $uiHostPattern = if ($StereoMode -eq 204) {
+      "(?:GameBridge: frame acquired|" +
+      "XRHost: game swapchain (?:updated|reused)) " +
+      "transaction=[^\r\n]*" +
+      "presentation=stationary-ui-quad"
+    }
+    else {
+      "GameBridge: CPU mailbox acquired transaction=[^\r\n]*" +
+      "presentation=stationary-ui-quad"
+    }
 
     $uiReasonMatches = [regex]::Matches(
       $gameText,
@@ -1261,16 +2072,10 @@ try {
       }
       else {
         if (-not $deviceResetRecovered) {
-          $gameWorldAtReset = [regex]::Matches(
-            $gameText,
-            "OpenXRBridge: CPU mailbox transaction=(\d+)[^\r\n]*" +
-            "presentation=world-"
-          )
-          $hostWorldAtReset = [regex]::Matches(
-            $hostText,
-            "GameBridge: CPU mailbox acquired transaction=(\d+)[^\r\n]*" +
-            "presentation=world-"
-          )
+          $gameWorldAtReset =
+            [regex]::Matches($gameText, $producerPattern)
+          $hostWorldAtReset =
+            [regex]::Matches($hostText, $hostPattern)
           $resetRecoveryProducerBaseline =
             if ($gameWorldAtReset.Count -gt 0) {
               [uint64]$gameWorldAtReset[
@@ -1302,7 +2107,8 @@ try {
     if ($deviceResetObserved -and
         -not $deviceResetRecovered -and
         $null -ne $deviceResetSince -and
-        ([DateTime]::UtcNow - $deviceResetSince).TotalSeconds -ge 15) {
+        ([DateTime]::UtcNow - $deviceResetSince).TotalSeconds -ge 15 -and
+        -not ($ElliottCliProof -and $StereoMode -eq 204)) {
       throw "GTA D3D9 Reset did not recover within 15 seconds."
     }
     if ($dxvkText -match
@@ -1380,9 +2186,18 @@ try {
         }
       }
     }
-    if (-not $bridgeReady -and $gameText -match "OpenXRBridge: READY") {
-      $bridgeReady = $true
-      Write-Status "MARKER: x86 CPU mailbox producer READY"
+    if (-not $bridgeReady) {
+      if ($StereoMode -eq 204 -and
+          $gameText -match
+          "OpenXRBridge: READY Vulkan-imported D3D11 NT frame resources") {
+        $bridgeReady = $true
+        Write-Status "MARKER: x86 isolated GPU frame producer READY"
+      }
+      elseif ($StereoMode -ne 204 -and
+          $gameText -match "OpenXRBridge: READY") {
+        $bridgeReady = $true
+        Write-Status "MARKER: x86 CPU mailbox producer READY"
+      }
     }
     if (-not $worldCaptureReady) {
       if ($StereoMode -eq 56 -and
@@ -1633,6 +2448,142 @@ try {
         $firstPersonGameplayReady -and
         $firstPersonPedHideReady -and
         $parentDualFusedPairReady
+    }
+    if ($StereoMode -eq 204) {
+      if (-not $firstPersonHardHookReady -and
+          $gameText -match
+          "CamMatrix: \d+/4 hooked [^\r\n]*HARD FP on ped") {
+        $firstPersonHardHookReady = $true
+        Write-Status "MARKER: Mode204 hard first-person camera hooks READY"
+      }
+      if (-not $firstPersonGameplayReady -and
+          $gameText -match
+          "CamMatrix: gameplay ACTIVE [^\r\n]*FP lock armed") {
+        $firstPersonGameplayReady = $true
+        Write-Status "MARKER: Mode204 gameplay first-person lock ACTIVE"
+      }
+      foreach ($pedHideMatch in [regex]::Matches(
+          $gameText,
+          "PedHide: #\d+ ok=(\d+) dead=0 native=1"
+        )) {
+        $pedHideSuccesses = [uint32]$pedHideMatch.Groups[1].Value
+        if ($pedHideSuccesses -gt $firstPersonPedHideSuccesses) {
+          $firstPersonPedHideSuccesses = $pedHideSuccesses
+        }
+      }
+      if (-not $firstPersonPedHideReady -and
+          $firstPersonPedHideSuccesses -gt 0) {
+        $firstPersonPedHideReady = $true
+        Write-Status (
+          "MARKER: Mode204 native player head hide operational ok={0}" -f
+          $firstPersonPedHideSuccesses
+        )
+      }
+
+      $mode204AdapterPattern =
+        "OpenXRSubmitAdapter: Mode204 passive exact textures " +
+        "pair=(\d+) source=(\d+) pose=(\d+) " +
+        "transport=(\d+)x(\d+) transaction=(\d+)"
+      $mode204AdapterMatches =
+        [regex]::Matches($gameText, $mode204AdapterPattern)
+      foreach ($adapterMatch in $mode204AdapterMatches) {
+        $adapterPair = [uint32]$adapterMatch.Groups[1].Value
+        $adapterSource = [uint64]$adapterMatch.Groups[2].Value
+        $adapterPose = [uint64]$adapterMatch.Groups[3].Value
+        $adapterWidth = [uint32]$adapterMatch.Groups[4].Value
+        $adapterHeight = [uint32]$adapterMatch.Groups[5].Value
+        if ($adapterPair -gt 0 -and
+            $adapterPose -gt 0 -and
+            $adapterSource -gt 0 -and
+            $adapterWidth -gt 0 -and
+            $adapterHeight -gt 0) {
+          $mode204AdapterReady = $true
+          $parentDualFusedPairReady = $true
+          $parentDualPairPose = $adapterPose
+          $parentDualPairSource = $adapterSource
+          if ($adapterPair -gt $stereoAcceptedPairOrdinal) {
+            $stereoAcceptedPairOrdinal = $adapterPair
+          }
+        }
+      }
+      if (-not $worldCaptureReady -and $mode204AdapterReady) {
+        $worldCaptureReady = $true
+        $orderedUiToWorld = $stationaryUiQuad
+        Write-Status (
+          "MARKER: literal Mode204 parent L/R adapter capture READY"
+        )
+      }
+
+      $mode204ProducerPattern =
+        "OpenXRBridge: frame transaction=(\d+) slot=\d+ pair=(\d+) " +
+        "presentation=world-stereo sameTick=1 wvpProof=0 " +
+        "parentDual=1 fp=[01] headHide=[01] " +
+        "pose=(\d+)/(\d+) source=(\d+)/(\d+)"
+      foreach ($gpuProducerMatch in
+          [regex]::Matches($gameText, $mode204ProducerPattern)) {
+        $candidateTransaction =
+          [uint64]$gpuProducerMatch.Groups[1].Value
+        $candidatePair = [uint64]$gpuProducerMatch.Groups[2].Value
+        $candidatePoseLeft =
+          [uint64]$gpuProducerMatch.Groups[3].Value
+        $candidatePoseRight =
+          [uint64]$gpuProducerMatch.Groups[4].Value
+        $candidateSourceLeft =
+          [uint64]$gpuProducerMatch.Groups[5].Value
+        $candidateSourceRight =
+          [uint64]$gpuProducerMatch.Groups[6].Value
+        if ($candidateTransaction -gt 0 -and
+            $candidatePair -gt 0 -and
+            $candidatePoseLeft -gt 0 -and
+            $candidatePoseRight -eq $candidatePoseLeft -and
+            $candidateSourceLeft -gt 0 -and
+            $candidateSourceRight -eq $candidateSourceLeft) {
+          $mode204GpuProducerReady = $true
+          $parentDualProducerReady = $true
+          if ($candidateTransaction -gt
+              $parentDualProducerTransaction) {
+            $parentDualProducerTransaction = $candidateTransaction
+          }
+        }
+      }
+      if (-not $mode204GpuQueueReady -and
+          $hostText -match
+          "GameBridge: isolated GPU ingest queue READY") {
+        $mode204GpuQueueReady = $true
+        Write-Status "MARKER: Mode204 isolated GPU ingest queue READY"
+      }
+      $mode204HostPattern =
+        "GameBridge: frame acquired transaction=(\d+) privateSlot=\d+ " +
+        "sameTick=1 temporal=0 parentDual=1 fp=[01] headHide=[01] " +
+        "pixelDistinct=1 presentation=world-parent-dual-stereo " +
+        "pose=(\d+)/(\d+)"
+      foreach ($gpuHostMatch in
+          [regex]::Matches($hostText, $mode204HostPattern)) {
+        $candidateHostTransaction =
+          [uint64]$gpuHostMatch.Groups[1].Value
+        $candidateHostPoseLeft =
+          [uint64]$gpuHostMatch.Groups[2].Value
+        $candidateHostPoseRight =
+          [uint64]$gpuHostMatch.Groups[3].Value
+        if ($candidateHostTransaction -gt 0 -and
+            $candidateHostPoseLeft -gt 0 -and
+            $candidateHostPoseRight -eq $candidateHostPoseLeft) {
+          $mode204GpuHostReady = $true
+          $stereoPixelDistinct = $true
+        }
+      }
+      $parentDualProofComplete =
+        $mode204AdapterReady -and
+        $mode204GpuProducerReady -and
+        $mode204GpuQueueReady -and
+        $mode204GpuHostReady -and
+        $parentDualHostExactPoseReady -and
+        $stereoPixelDistinct
+      $firstPersonProofComplete =
+        $firstPersonHardHookReady -and
+        $firstPersonGameplayReady -and
+        $mode204AdapterReady -and
+        $mode204GpuHostReady
     }
     if ($StereoMode -eq 57) {
       $temporalBuildReplayProofPattern =
@@ -1910,19 +2861,20 @@ try {
         }
       }
     }
-    $expectedProducerPresentation = switch ($StereoMode) {
-      56 { "world-drawscene-stereo"; break }
-      57 { "world-temporal-stereo"; break }
-      58 { "world-parent-dual-stereo"; break }
-      default { "world-immersive-mono" }
-    }
     if (-not $producerTransaction -and
-        $gameText -match "OpenXRBridge: CPU mailbox transaction=.*presentation=$expectedProducerPresentation") {
+        $gameText -match $producerPattern) {
       $producerTransaction = $true
-      Write-Status "MARKER: GTA published CPU mailbox $expectedProducerPresentation transaction"
+      $producerTransport = if ($StereoMode -eq 204) {
+        "isolated GPU bridge"
+      }
+      else {
+        "CPU mailbox"
+      }
+      Write-Status (
+        "MARKER: GTA published $producerTransport " +
+        "$expectedProducerPresentation transaction"
+      )
     }
-    $producerPattern =
-      "OpenXRBridge: CPU mailbox transaction=(\d+).*presentation=$expectedProducerPresentation"
     $producerMatches = [regex]::Matches($gameText, $producerPattern)
     if ($producerMatches.Count -gt 0) {
       $producerLatestTransaction =
@@ -1936,20 +2888,30 @@ try {
       $producerStallTransaction = $producerLatestTransaction
       $producerLastAdvancedAt = [DateTime]::UtcNow
     }
-    if (-not $hostConnected -and
-        $hostText -match "GameBridge: CONNECTED FNVVR-style CPU mailbox") {
-      $hostConnected = $true
-      Write-Status "MARKER: host connected to CPU mailbox"
+    if (-not $hostConnected) {
+      if ($StereoMode -eq 204 -and
+          $hostText -match "GameBridge: CONNECTED frame source pid=") {
+        $hostConnected = $true
+        Write-Status "MARKER: host connected to isolated GPU frame source"
+      }
+      elseif ($StereoMode -ne 204 -and
+          $hostText -match "GameBridge: CONNECTED FNVVR-style CPU mailbox") {
+        $hostConnected = $true
+        Write-Status "MARKER: host connected to CPU mailbox"
+      }
     }
     if (-not $hostAcquired -and
-        $hostText -match "GameBridge: CPU mailbox acquired transaction=.*presentation=$expectedProducerPresentation") {
+        $hostText -match $hostPattern) {
       $hostAcquired = $true
-      Write-Status "MARKER: host acquired $expectedProducerPresentation mailbox frame"
+      Write-Status (
+        "MARKER: host acquired $expectedHostAcquiredPresentation frame"
+      )
     }
     $expectedHostReusePresentation = switch ($StereoMode) {
       56 { "world-stereo"; break }
       57 { "world-temporal-stereo"; break }
       58 { "world-parent-dual-stereo"; break }
+      204 { "world-parent-dual-stereo"; break }
       default { "world-headtracked-mono-projection" }
     }
     $hostSwapchainUpdateMatches = [regex]::Matches(
@@ -1970,23 +2932,40 @@ try {
     )
     $hostSwapchainFreshWorldUpdateSamples =
       $hostSwapchainFreshWorldUpdateMatches.Count
-    if ($StereoMode -eq 58 -and
+    $requiredFreshWorldUpdateSamples = if ($StereoMode -eq 204) {
+      2
+    }
+    else {
+      3
+    }
+    if ($parentDualMode -and
         -not $hostSwapchainFreshUpdatesReady -and
-        $hostSwapchainFreshWorldUpdateSamples -ge 3) {
+        $hostSwapchainFreshWorldUpdateSamples -ge
+          $requiredFreshWorldUpdateSamples) {
       $firstFreshWorldUpdateTransaction =
         [uint64]$hostSwapchainFreshWorldUpdateMatches[
         0
       ].Groups[1].Value
+      $firstFreshWorldUpdateCounter =
+        [uint64]$hostSwapchainFreshWorldUpdateMatches[
+        0
+      ].Groups[2].Value
       $latestFreshWorldUpdateTransaction =
         [uint64]$hostSwapchainFreshWorldUpdateMatches[
         $hostSwapchainFreshWorldUpdateMatches.Count - 1
       ].Groups[1].Value
+      $latestFreshWorldUpdateCounter =
+        [uint64]$hostSwapchainFreshWorldUpdateMatches[
+        $hostSwapchainFreshWorldUpdateMatches.Count - 1
+      ].Groups[2].Value
       if ($latestFreshWorldUpdateTransaction -gt
-          $firstFreshWorldUpdateTransaction -and
+           $firstFreshWorldUpdateTransaction -and
+          $latestFreshWorldUpdateCounter -gt
+            $firstFreshWorldUpdateCounter -and
           $parentDualHostExactPoseReady) {
         $hostSwapchainFreshUpdatesReady = $true
         Write-Status (
-          "MARKER: Mode58 fresh OpenXR world swapchain updates READY " +
+          "MARKER: Mode$StereoMode fresh OpenXR world swapchain updates READY " +
           "presentation=$expectedHostReusePresentation samples=" +
           "$hostSwapchainFreshWorldUpdateSamples transaction=" +
           "$firstFreshWorldUpdateTransaction->$latestFreshWorldUpdateTransaction"
@@ -2011,7 +2990,7 @@ try {
       if (-not $hostSwapchainReuseReady -and
           $hostSwapchainReuseFramesLowerBound -gt 0 -and
           ($StereoMode -ne 57 -or $temporalCapturePoseActive) -and
-          ($StereoMode -ne 58 -or $parentDualHostExactPoseReady)) {
+          (-not $parentDualMode -or $parentDualHostExactPoseReady)) {
         $hostSwapchainReuseReady = $true
         Write-Status (
           "MARKER: unchanged OpenXR world swapchain reuse READY " +
@@ -2021,8 +3000,6 @@ try {
         )
       }
     }
-    $hostPattern =
-      "GameBridge: CPU mailbox acquired transaction=(\d+).*presentation=$expectedProducerPresentation"
     $hostMatches = [regex]::Matches($hostText, $hostPattern)
     if ($hostMatches.Count -gt 0) {
       $hostLatestTransaction =
@@ -2165,6 +3142,74 @@ try {
         )
       }
     }
+    if ($StereoMode -eq 204 -and
+        -not $pauseTestStarted -and
+        -not $mode204PrePauseContinuityReady) {
+      $producerUiBoundary =
+        $gameText.LastIndexOf("presentation=stationary-ui-quad")
+      $hostUiBoundary =
+        $hostText.LastIndexOf("presentation=stationary-ui-quad")
+      $mode204PrePauseEvidence = Get-SampledGpuWorldRouteEvidence `
+        -GameText $gameText `
+        -HostText $hostText `
+        -ProducerPattern $producerPattern `
+        -HostPattern $hostPattern `
+        -GameAfterIndex $producerUiBoundary `
+        -HostAfterIndex $hostUiBoundary
+      $mode204PrePauseProducerTransactions =
+        $mode204PrePauseEvidence.ProducerCount
+      $mode204PrePauseHostTransactions =
+        $mode204PrePauseEvidence.HostCount
+      $mode204PrePauseAdapterSequence =
+        Get-MonotonicTransactionSequence `
+          -Text $gameText `
+          -Pattern $mode204AdapterPattern `
+          -AfterIndex $producerUiBoundary
+      if ($mode204PrePauseAdapterSequence.Count -gt 0) {
+        $mode204PrePauseFirstPairOrdinal =
+          [uint32]$mode204PrePauseAdapterSequence.First
+        $prePauseLatestAdapterPairOrdinal =
+          [uint32]$mode204PrePauseAdapterSequence.Latest
+        if ($mode204PrePauseAdapterSequence.Monotonic -and
+            $prePauseLatestAdapterPairOrdinal -ge
+              $mode204PrePauseFirstPairOrdinal) {
+          $mode204PrePauseAcceptedPairSpan =
+            $prePauseLatestAdapterPairOrdinal -
+            $mode204PrePauseFirstPairOrdinal +
+            1
+        }
+      }
+      $mode204PrePauseRangeCoupled =
+        $mode204PrePauseEvidence.OverlapEnd -gt
+          $mode204PrePauseEvidence.OverlapStart
+      if ($mode204PrePauseAcceptedPairSpan -ge 2 -and
+          $mode204PrePauseAdapterSequence.Count -ge 2 -and
+          $mode204PrePauseAdapterSequence.Monotonic -and
+          $mode204PrePauseAdapterSequence.Latest -gt
+            $mode204PrePauseAdapterSequence.First -and
+          $mode204PrePauseEvidence.Ready -and
+          $mode204PrePauseRangeCoupled) {
+        $mode204PrePauseContinuityReady = $true
+        $continuousWorldFrames = $true
+        Write-Status (
+          (
+            "MARKER: Mode204 uninterrupted GPU world continuity PASS " +
+            "adapterPairSpan={0} ({1}->{2}) producerIds={3} " +
+            "hostIds={4} coupledProducerIds={5} coupledHostIds={6} " +
+            "overlap={7}->{8}"
+          ) -f
+            $mode204PrePauseAcceptedPairSpan,
+            $mode204PrePauseFirstPairOrdinal,
+            $stereoAcceptedPairOrdinal,
+            $mode204PrePauseProducerTransactions,
+            $mode204PrePauseHostTransactions,
+            $mode204PrePauseEvidence.CoupledProducerCount,
+            $mode204PrePauseEvidence.CoupledHostCount,
+            $mode204PrePauseEvidence.OverlapStart,
+            $mode204PrePauseEvidence.OverlapEnd
+        )
+      }
+    }
     $intentionalPauseActive = $elliottProofState -in @(
       "PAUSE_PRESS",
       "PAUSE_RELEASE",
@@ -2181,7 +3226,7 @@ try {
       ) -or (
         $hostText.LastIndexOf("presentation=stationary-ui-quad") -gt
         $hostText.LastIndexOf(
-          "presentation=$expectedProducerPresentation")
+          "presentation=$expectedHostAcquiredPresentation")
       )
     if ($currentStationaryUiRoute) {
       $producerLastAdvancedAt = [DateTime]::UtcNow
@@ -2191,7 +3236,8 @@ try {
         $worldCaptureReady -and
         ((-not $deviceResetObserved) -or $deviceResetRecovered) -and
         -not $currentStationaryUiRoute -and
-        -not $intentionalPauseActive) {
+        -not $intentionalPauseActive -and
+        -not ($StereoMode -eq 204)) {
       if ($null -eq $worldProgressStartedAt) {
         $worldProgressStartedAt = [DateTime]::UtcNow
       }
@@ -2239,21 +3285,30 @@ try {
       56 { "world-stereo"; break }
       57 { "world-temporal-stereo"; break }
       58 { "world-parent-dual-stereo"; break }
+      204 { "world-parent-dual-stereo"; break }
       default { "world-headtracked-mono-projection" }
     }
-    if ($StereoMode -eq 58 -and
+    $parentDualPresentationTelemetry =
+      if ($StereoMode -eq 204) {
+        "parentDual=1 fp=[01] headHide=[01] pixelDistinct=1"
+      }
+      else {
+        "parentDual=1 fp=1 headHide=1 pixelDistinct=1"
+      }
+    if ($parentDualMode -and
         -not $parentDualHostExactPoseReady -and
         $hostText -match
-          "XRHost: parent-dual exact capture pose active " +
-          "transaction=\d+ sharedPose=(\d+) displayTime=-?\d+ " +
-          "parentDual=1 fp=1 headHide=1 pixelDistinct=1") {
+          ("XRHost: parent-dual exact capture pose active " +
+           "transaction=\d+ sharedPose=(\d+) displayTime=-?\d+ " +
+           $parentDualPresentationTelemetry)) {
       $parentDualHostExactPoseReady = $true
       $gamePoseMatched = $true
       Write-Status (
-        "MARKER: Mode58 parent-dual exact capture pose active in OpenXR host"
+        "MARKER: Mode$StereoMode parent-dual exact capture pose active " +
+        "in OpenXR host"
       )
     }
-    elseif ($StereoMode -ne 58 -and
+    elseif (-not $parentDualMode -and
             -not $gamePoseMatched -and
             $hostText -match
               "XRHost: presentation=$expectedHostPresentation") {
@@ -2262,10 +3317,20 @@ try {
         "MARKER: OpenXR $expectedHostPresentation presentation active"
       )
     }
-    if (-not $srgbDecodeReady -and
-        $hostText -match "CONNECTED FNVVR-style CPU mailbox.*sRGB decode SRV") {
-      $srgbDecodeReady = $true
-      Write-Status "MARKER: game texture sRGB decode SRV READY"
+    if (-not $srgbDecodeReady) {
+      if ($StereoMode -eq 204 -and
+          $hostText -match
+          "GameBridge: color path READY " +
+          "\(isolated typeless ring \+ sRGB decode SRV\)") {
+        $srgbDecodeReady = $true
+        Write-Status "MARKER: isolated GPU texture sRGB decode SRV READY"
+      }
+      elseif ($StereoMode -ne 204 -and
+          $hostText -match
+          "CONNECTED FNVVR-style CPU mailbox.*sRGB decode SRV") {
+        $srgbDecodeReady = $true
+        Write-Status "MARKER: game texture sRGB decode SRV READY"
+      }
     }
     if (-not $swapchainFormatReady) {
       $swapchainFormatMatch = [regex]::Match(
@@ -2293,14 +3358,12 @@ try {
       Write-Status "MARKER: stationary menu/loading/phone quad READY"
     }
     if (-not $stationaryUiProducer -and
-        $gameText -match
-        "OpenXRBridge: CPU mailbox transaction=.*presentation=stationary-ui-quad") {
+        $gameText -match $uiProducerPattern) {
       $stationaryUiProducer = $true
       Write-Status "MARKER: GTA published stationary UI quad transaction"
     }
     if (-not $stationaryUiHost -and
-        $hostText -match
-        "GameBridge: CPU mailbox acquired transaction=.*presentation=stationary-ui-quad") {
+        $hostText -match $uiHostPattern) {
       $stationaryUiHost = $true
       Write-Status "MARKER: host acquired stationary UI quad transaction"
     }
@@ -2423,6 +3486,7 @@ try {
               $worldLoadProducerFrames = 0
               $worldLoadHostFrames = 0
               $worldLoadSharedFrames = 0
+              $worldLoadCoupledFrames = 0
               $worldLoadSustainedMilliseconds = [int64]0
               $elliottProofState = "WAIT_WORLD_LOAD"
               $elliottInputProofDeadline =
@@ -2431,7 +3495,7 @@ try {
                 (
                   "ELLIOTT CLI: menu exit observed after {0} pulses; " +
                   "WAIT_WORLD_LOAD requires current reasons=0 and at least " +
-                  "3 fresh shared producer/host world frames sustained for 2 seconds; " +
+                  "3 fresh producer/host world samples sustained for 2 seconds; " +
                   "button automation paused for up to 120 seconds"
                 ) -f $elliottMenuPulseCount
               )
@@ -2456,23 +3520,40 @@ try {
             $worldLoadProducerFrames = 0
             $worldLoadHostFrames = 0
             $worldLoadSharedFrames = 0
+            $worldLoadCoupledFrames = 0
             $worldLoadSustainedMilliseconds = [int64]0
           }
           else {
             if ($null -eq $worldLoadReasonsZeroSince) {
               $worldLoadReasonsZeroSince = $proofNow
             }
-            $worldLoadEvidence = Get-SustainedWorldRouteEvidence `
-              -GameText $gameText `
-              -HostText $hostText `
-              -ProducerPattern $producerPattern `
-              -HostPattern $hostPattern `
-              -GameAfterIndex $worldLoadGameBoundaryIndex `
-              -HostAfterIndex $worldLoadHostBoundaryIndex
+            $worldLoadEvidence = if ($StereoMode -eq 204) {
+              Get-SampledGpuWorldRouteEvidence `
+                -GameText $gameText `
+                -HostText $hostText `
+                -ProducerPattern $producerPattern `
+                -HostPattern $hostPattern `
+                -GameAfterIndex $worldLoadGameBoundaryIndex `
+                -HostAfterIndex $worldLoadHostBoundaryIndex
+            }
+            else {
+              Get-SustainedWorldRouteEvidence `
+                -GameText $gameText `
+                -HostText $hostText `
+                -ProducerPattern $producerPattern `
+                -HostPattern $hostPattern `
+                -GameAfterIndex $worldLoadGameBoundaryIndex `
+                -HostAfterIndex $worldLoadHostBoundaryIndex
+            }
             $worldLoadProducerFrames =
               $worldLoadEvidence.ProducerCount
             $worldLoadHostFrames = $worldLoadEvidence.HostCount
-            $worldLoadSharedFrames = $worldLoadEvidence.SharedCount
+            if ($StereoMode -eq 204) {
+              $worldLoadCoupledFrames = $worldLoadEvidence.CoupledCount
+            }
+            else {
+              $worldLoadSharedFrames = $worldLoadEvidence.SharedCount
+            }
             $worldLoadSustainedMilliseconds = [int64](
               ($proofNow - $worldLoadReasonsZeroSince).TotalMilliseconds
             )
@@ -2502,13 +3583,24 @@ try {
               Write-Status (
                 (
                   "ELLIOTT CLI: WORLD LOAD READY reasons=0 sustainedMs={0} " +
-                  "producerFrames={1} hostFrames={2} sharedFrames={3}; " +
+                  "producerFrames={1} hostFrames={2} {3}={4}; " +
                   "waiting for exact A/Start GTA consumption"
                 ) -f
                   $worldLoadSustainedMilliseconds,
                   $worldLoadProducerFrames,
                   $worldLoadHostFrames,
-                  $worldLoadSharedFrames
+                  $(if ($StereoMode -eq 204) {
+                    "coupledFrames"
+                  }
+                  else {
+                    "sharedFrames"
+                  }),
+                  $(if ($StereoMode -eq 204) {
+                    $worldLoadCoupledFrames
+                  }
+                  else {
+                    $worldLoadSharedFrames
+                  })
               )
           }
           elseif ($proofNow -ge $elliottInputProofDeadline) {
@@ -2517,13 +3609,14 @@ try {
                 "WORLD_LOAD_TIMEOUT: GTA accepted menu input but did not " +
                 "produce a sustained fresh world route within 120 seconds " +
                 "(reasonsSeen={0} reasons=0x{1} producerFrames={2} " +
-                "hostFrames={3} sharedFrames={4})."
+                 "hostFrames={3} sharedFrames={4} coupledFrames={5})."
               ) -f
                 $uiReasonSampleSeen,
                 $currentUiReasonFlags.ToString("X"),
                 $worldLoadProducerFrames,
                 $worldLoadHostFrames,
-                $worldLoadSharedFrames
+                $worldLoadSharedFrames,
+                $worldLoadCoupledFrames
             )
           }
           break
@@ -2574,6 +3667,16 @@ try {
               $parentDualProofComplete -and
               $firstPersonProofComplete -and
               $mode58PrePauseContinuityReady
+              break
+            }
+            204 {
+              $mode204AdapterReady -and
+              $mode204GpuProducerReady -and
+              $mode204GpuQueueReady -and
+              $mode204GpuHostReady -and
+              $parentDualProofComplete -and
+              $firstPersonProofComplete -and
+              $mode204PrePauseContinuityReady
               break
             }
             default { $continuousWorldFrames }
@@ -2629,26 +3732,17 @@ try {
                 $gameplaySettleProducerBaseline -and
               $hostLatestTransaction -gt
                 $gameplaySettleHostBaseline
-            if (-not $gameplayAdvanced) {
-              $gameplaySettleProducerBaseline =
-                $producerLatestTransaction
-              $gameplaySettleHostBaseline =
-                $hostLatestTransaction
-              $elliottNextActionAt = $proofNow.AddSeconds(3)
-            }
-            else {
+            if ($gameplayAdvanced) {
               $pauseUiProducerBaselineCount = (
                 [regex]::Matches(
                   $gameText,
-                  "OpenXRBridge: CPU mailbox transaction=[^\r\n]*" +
-                  "presentation=stationary-ui-quad"
+                  $uiProducerPattern
                 )
               ).Count
               $pauseUiHostBaselineCount = (
                 [regex]::Matches(
                   $hostText,
-                  "GameBridge: CPU mailbox acquired transaction=[^\r\n]*" +
-                  "presentation=stationary-ui-quad"
+                  $uiHostPattern
                 )
               ).Count
               $pauseWorldProducerBaselineCount = $producerMatches.Count
@@ -2684,15 +3778,13 @@ try {
           $pauseUiProducerCount = (
             [regex]::Matches(
               $gameText,
-              "OpenXRBridge: CPU mailbox transaction=[^\r\n]*" +
-              "presentation=stationary-ui-quad"
+              $uiProducerPattern
             )
           ).Count
           $pauseUiHostCount = (
             [regex]::Matches(
               $hostText,
-              "GameBridge: CPU mailbox acquired transaction=[^\r\n]*" +
-              "presentation=stationary-ui-quad"
+              $uiHostPattern
             )
           ).Count
           if ($pauseUiProducerCount -gt $pauseUiProducerBaselineCount -and
@@ -2741,28 +3833,56 @@ try {
             $pauseRoundTrip = $true
             $producerLastAdvancedAt = [DateTime]::UtcNow
             $hostLastAdvancedAt = [DateTime]::UtcNow
-            if ($StereoMode -eq 58 -and
+            if ($parentDualMode -and
                 -not $elliottPoseSweepEnabled) {
               Send-ElliottPoseSweep -Enabled $true
               $elliottPoseSweepEnabled = $true
               Write-Status (
-                "ELLIOTT CLI: Mode58 pose sweep active for recorded walk"
+                "ELLIOTT CLI: Mode$StereoMode pose sweep active for " +
+                "recorded walk"
               )
             }
+            $walkAttempt = 1
+            $walkProducerBaselineTransaction =
+              $producerLatestTransaction
+            $walkHostBaselineTransaction = $hostLatestTransaction
+            $walkHeartbeatPauseBaselineCount = (
+              [regex]::Matches(
+                $hostText,
+                "GameBridge: GTA frame heartbeat paused"
+              )
+            ).Count
+            $walkProducerAdvance = [uint64]0
+            $walkHostAdvance = [uint64]0
+            $walkHeartbeatPauseFree = $StereoMode -ne 204
+            $walkFrameContinuityReady = $StereoMode -ne 204
+            $walkStickPacketBaseline =
+              $controllerStickConsumedPacket
+            $walkNeutralPacketBaseline =
+              $controllerNeutralConsumedPacket
+            $walkStartPosition =
+              Get-LatestMode204FirstPersonPosition -Text $gameText
+            $walkStartPositionIndex = $walkStartPosition.Index
+            $walkStartX = $walkStartPosition.X
+            $walkStartY = $walkStartPosition.Y
+            $walkStartZ = $walkStartPosition.Z
+            $walkPlanarDistance = [double]0
+            $walkPositionReady = $StereoMode -ne 204
             [void](Send-ElliottControllerSnapshot -Kind "StickForward")
             $elliottStickCommanded = $true
             $elliottProofState = "STICK_HOLD"
             $elliottNextActionAt =
               [DateTime]::UtcNow.AddSeconds($ElliottWalkSeconds)
-            $walkPoseDetail = if ($StereoMode -eq 58) {
-              "; Mode58 pose sweep active=$elliottPoseSweepEnabled"
+            $walkPoseDetail = if ($parentDualMode) {
+              "; Mode$StereoMode pose sweep active=$elliottPoseSweepEnabled"
             }
             else {
               ""
             }
             $walkReadyLine = (
               "ELLIOTT CLI: in-game world->pause UI->world round trip PASS; " +
-              "holding left stick Y=0.8 for $ElliottWalkSeconds seconds" +
+              "holding left stick Y=0.8 for $ElliottWalkSeconds seconds " +
+              "(attempt $walkAttempt/$walkMaximumAttempts)" +
               $walkPoseDetail
             )
             Write-Status $walkReadyLine
@@ -2786,30 +3906,192 @@ try {
         }
         "STICK_HOLD" {
           if ($proofNow -ge $elliottNextActionAt) {
-            [void](Send-ElliottControllerSnapshot -Kind "NeutralLeft")
-            $elliottProofState = "WAIT_STICK_INPUT_PROOF"
-            $elliottInputProofDeadline =
-              [DateTime]::UtcNow.AddSeconds(10)
+            $walkProducerAdvance = if (
+              $producerLatestTransaction -ge
+                $walkProducerBaselineTransaction
+            ) {
+              $producerLatestTransaction -
+                $walkProducerBaselineTransaction
+            }
+            else {
+              [uint64]0
+            }
+            $walkHostAdvance = if (
+              $hostLatestTransaction -ge $walkHostBaselineTransaction
+            ) {
+              $hostLatestTransaction - $walkHostBaselineTransaction
+            }
+            else {
+              [uint64]0
+            }
+            $walkHeartbeatPauseCount = (
+              [regex]::Matches(
+                $hostText,
+                "GameBridge: GTA frame heartbeat paused"
+              )
+            ).Count
+            $walkHeartbeatPauseFree =
+              $walkHeartbeatPauseCount -eq
+                $walkHeartbeatPauseBaselineCount
+            $walkEndPosition =
+              Get-LatestMode204FirstPersonPosition `
+                -Text $gameText `
+                -AfterIndex $walkStartPositionIndex
+            if ($walkEndPosition.Found -and
+                $walkStartPositionIndex -ge 0) {
+              $walkEndX = $walkEndPosition.X
+              $walkEndY = $walkEndPosition.Y
+              $walkEndZ = $walkEndPosition.Z
+              $walkDeltaX = $walkEndX - $walkStartX
+              $walkDeltaY = $walkEndY - $walkStartY
+              $walkPlanarDistance = [Math]::Sqrt(
+                $walkDeltaX * $walkDeltaX +
+                $walkDeltaY * $walkDeltaY
+              )
+            }
+            else {
+              $walkPlanarDistance = [double]0
+            }
+            $walkPositionReady =
+              $StereoMode -ne 204 -or
+              $walkPlanarDistance -ge $walkMinimumPlanarDistance
+            $walkFrameContinuityReady =
+              $StereoMode -ne 204 -or (
+                $walkProducerAdvance -ge
+                  $walkMinimumTransactionAdvance -and
+                $walkHostAdvance -ge
+                  $walkMinimumTransactionAdvance -and
+                $walkHeartbeatPauseFree
+              )
+            $walkQualityReady =
+              $walkFrameContinuityReady -and $walkPositionReady
+            if ($StereoMode -eq 204 -and
+                -not $walkQualityReady) {
+              [void](Send-ElliottControllerSnapshot -Kind "NeutralLeft")
+              if ($walkAttempt -ge $walkMaximumAttempts) {
+                throw (
+                  "WALK_CONTINUITY_FAILED: Mode204 did not hold a clean " +
+                  "$ElliottWalkSeconds-second walk after " +
+                  "$walkMaximumAttempts attempts " +
+                  "(producerAdvance=$walkProducerAdvance " +
+                  "hostAdvance=$walkHostAdvance " +
+                  "required=$walkMinimumTransactionAdvance " +
+                  "heartbeatPauseFree=$walkHeartbeatPauseFree " +
+                  "planarDistance=$($walkPlanarDistance.ToString('F3')) " +
+                  "requiredDistance=" +
+                  "$($walkMinimumPlanarDistance.ToString('F3')))."
+                )
+              }
+              $walkAttempt += 1
+              $walkRecoveryProducerBaseline =
+                $producerLatestTransaction
+              $walkRecoveryHostBaseline = $hostLatestTransaction
+              $elliottProofState = "WAIT_WALK_RECOVERY"
+              $elliottInputProofDeadline =
+                [DateTime]::UtcNow.AddSeconds(30)
+              Write-Status (
+                "ELLIOTT CLI: walk quality retry $walkAttempt/" +
+                "$walkMaximumAttempts; neutral sent and waiting for " +
+                "advancing world recovery (producerAdvance=" +
+                "$walkProducerAdvance hostAdvance=$walkHostAdvance " +
+                "heartbeatPauseFree=$walkHeartbeatPauseFree " +
+                "planarDistance=$($walkPlanarDistance.ToString('F3')))"
+              )
+            }
+            else {
+              $acceptedWalkAttempt = $walkAttempt
+              [void](Send-ElliottControllerSnapshot -Kind "NeutralLeft")
+              $elliottProofState = "WAIT_STICK_INPUT_PROOF"
+              $elliottInputProofDeadline =
+                [DateTime]::UtcNow.AddSeconds(10)
+              Write-Status (
+                "ELLIOTT CLI: clean stick hold released " +
+                "producerAdvance=$walkProducerAdvance " +
+                "hostAdvance=$walkHostAdvance " +
+                "heartbeatPauseFree=$walkHeartbeatPauseFree; " +
+                "planarDistance=$($walkPlanarDistance.ToString('F3')); " +
+                "waiting for GTA locomotion and post-stick neutral"
+              )
+            }
+          }
+          break
+        }
+        "WAIT_WALK_RECOVERY" {
+          if ($proofNow -ge $elliottInputProofDeadline) {
+            throw (
+              "WALK_RECOVERY_TIMEOUT: Mode204 world transactions did not " +
+              "resume within 30 seconds after a rejected walk window."
+            )
+          }
+          if ($worldRouteActive -and
+              $producerLatestTransaction -gt
+                $walkRecoveryProducerBaseline -and
+              $hostLatestTransaction -gt $walkRecoveryHostBaseline) {
+            $walkProducerBaselineTransaction =
+              $producerLatestTransaction
+            $walkHostBaselineTransaction = $hostLatestTransaction
+            $walkHeartbeatPauseBaselineCount = (
+              [regex]::Matches(
+                $hostText,
+                "GameBridge: GTA frame heartbeat paused"
+              )
+            ).Count
+            $walkProducerAdvance = [uint64]0
+            $walkHostAdvance = [uint64]0
+            $walkHeartbeatPauseFree = $false
+            $walkFrameContinuityReady = $false
+            $walkPositionReady = $false
+            $walkQualityReady = $false
+            $walkStickPacketBaseline =
+              $controllerStickConsumedPacket
+            $walkNeutralPacketBaseline =
+              $controllerNeutralConsumedPacket
+            $walkStartPosition =
+              Get-LatestMode204FirstPersonPosition -Text $gameText
+            $walkStartPositionIndex = $walkStartPosition.Index
+            $walkStartX = $walkStartPosition.X
+            $walkStartY = $walkStartPosition.Y
+            $walkStartZ = $walkStartPosition.Z
+            $walkPlanarDistance = [double]0
+            $walkPositionReady = $StereoMode -ne 204
+            [void](Send-ElliottControllerSnapshot -Kind "StickForward")
+            $elliottProofState = "STICK_HOLD"
+            $elliottNextActionAt =
+              [DateTime]::UtcNow.AddSeconds($ElliottWalkSeconds)
             Write-Status (
-              "ELLIOTT CLI: stick hold released; " +
-              "waiting for GTA locomotion and post-stick neutral"
+              "ELLIOTT CLI: advancing world recovered; starting clean " +
+              "$ElliottWalkSeconds-second walk attempt $walkAttempt/" +
+              "$walkMaximumAttempts"
             )
           }
           break
         }
         "WAIT_STICK_INPUT_PROOF" {
+          $acceptedStickPacketReady =
+            $controllerStickConsumedPacket -gt
+              $walkStickPacketBaseline
+          $acceptedNeutralPacketReady =
+            $controllerNeutralConsumedPacket -gt
+              $walkNeutralPacketBaseline -and
+            $controllerNeutralConsumedPacket -gt
+              $controllerStickConsumedPacket
           if ($controllerStickConsumed -and
-              $controllerStickNeutralConsumed) {
-            if ($StereoMode -eq 58) {
+              $controllerStickNeutralConsumed -and
+              $acceptedStickPacketReady -and
+              $acceptedNeutralPacketReady) {
+            if ($parentDualMode) {
               if ($elliottPoseSweepEnabled) {
                 Send-ElliottPoseSweep -Enabled $false
                 $elliottPoseSweepEnabled = $false
               }
               $elliottPoseSweepCompleted = $true
               $elliottProofAutomationComplete = $true
+              $sustainedPoseControllerProof =
+                $ElliottWalkSeconds -ge 60 -and
+                $walkQualityReady
               $elliottProofState = "COMPLETE"
               Write-Status (
-                "ELLIOTT CLI: Mode58 recorded walk pose sweep and " +
+                "ELLIOTT CLI: Mode$StereoMode recorded walk pose sweep and " +
                 "stick/neutral automation COMPLETE"
               )
             }
@@ -2870,11 +4152,21 @@ try {
         "Mode58: (?:FAIL|KILL)[^\r\n]*wrote stereo=57") {
       throw "Mode58 fused parent-dual path failed closed to Mode57."
     }
-    if ($StereoMode -eq 58 -and
+    if ($StereoMode -eq 204 -and
+        ($gameText -match
+          "OpenXRBridge: READY FNVVR-style advancing CPU mailbox" -or
+         $gameText -match "OpenXRBridge: CPU mailbox transaction=")) {
+      throw (
+        "Mode204 entered the legacy CPU mailbox; literal Mode204 proof " +
+        "requires the isolated GPU adapter bridge."
+      )
+    }
+    if ($parentDualMode -and
+        $StereoMode -ne 204 -and
         $hostText -match
         "XRHost: parent-dual exact capture pose missing; projection layer held") {
       throw (
-        "Mode58 exact capture pose was missing; the OpenXR host held the " +
+        "Mode$StereoMode exact capture pose was missing; the OpenXR host held the " +
         "projection layer instead of presenting a mismatched frame."
       )
     }
@@ -2889,7 +4181,15 @@ try {
     else {
       $controllerInputConsumed -and $controllerReleaseConsumed
     }
-    $stereoProofComplete = if ($StereoMode -eq 58) {
+    $stereoProofComplete = if ($StereoMode -eq 204) {
+      $mode204AdapterReady -and
+      $mode204GpuProducerReady -and
+      $mode204GpuQueueReady -and
+      $mode204GpuHostReady -and
+      $parentDualProofComplete -and
+      $mode204PrePauseContinuityReady
+    }
+    elseif ($StereoMode -eq 58) {
       $stereoCameraDistanceReady -and
       $stereoPixelDistinct -and
       $stereoApplyGenerationFresh -and
@@ -2909,7 +4209,7 @@ try {
       $temporalSplitStageReady -and
       $temporalSplitReadbackReady
     }
-    $hostPresentationContinuityReady = if ($StereoMode -eq 58) {
+    $hostPresentationContinuityReady = if ($parentDualMode) {
       $hostSwapchainFreshUpdatesReady
     }
     else {
@@ -2921,9 +4221,16 @@ try {
         $postResetHostFresh -and
         $controllerProofComplete -and
         $stereoProofComplete -and
-        ($StereoMode -ne 58 -or
+        (-not $parentDualMode -or
           ($parentDualProofComplete -and
            $firstPersonProofComplete)) -and
+        ($StereoMode -ne 204 -or $mode204ConfigInstalled) -and
+        ($StereoMode -ne 204 -or
+          -not $ElliottCliProof -or
+          $elliottQuestProfileReady) -and
+        ($StereoMode -ne 204 -or
+          -not $ElliottCliProof -or
+          $walkQualityReady) -and
         $bridgeReady -and
         $worldCaptureReady -and
         $continuousWorldFrames -and
@@ -2950,16 +4257,31 @@ try {
   }
 }
 catch {
-  $failure = $_.Exception.Message
-  Write-Status "ABORT: $failure"
-  if ($_.InvocationInfo.PositionMessage) {
+  $caughtFailure = $_.Exception.Message
+  if ($caughtFailure -match "^OpenXR host exited") {
+    $hostExitClassification =
+      Get-OpenXrHostExitClassification (Read-Text $HostLog)
+  }
+  if ($hostExitClassification -eq "ORDERLY_RUNTIME_EXITING") {
+    $outcome = "OPENXR_RUNTIME_EXITING"
+    $failure = ""
     Write-Status (
-      "ABORT LOCATION: " +
-      $_.InvocationInfo.PositionMessage.Trim()
+      "OPENXR RUNTIME EXITING: host recorded session EXITING followed " +
+      "by clean shutdown; classified separately from an abort"
     )
   }
-  if ($_.ScriptStackTrace) {
-    Write-Status "ABORT STACK: $($_.ScriptStackTrace)"
+  else {
+    $failure = $caughtFailure
+    Write-Status "ABORT: $failure"
+    if ($_.InvocationInfo.PositionMessage) {
+      Write-Status (
+        "ABORT LOCATION: " +
+        $_.InvocationInfo.PositionMessage.Trim()
+      )
+    }
+    if ($_.ScriptStackTrace) {
+      Write-Status "ABORT STACK: $($_.ScriptStackTrace)"
+    }
   }
 }
 finally {
@@ -3001,6 +4323,23 @@ finally {
               "ELLIOTT CLI CLEANUP WARNING: pose sweep disable: " +
               $_.Exception.Message
             )
+          }
+          if ($StereoMode -eq 204 -and $elliottQuestProfileReady) {
+            try {
+              Send-ElliottHeadsetProfile -Name "default" -Attempts 1
+              $elliottQuestProfileReset = $true
+              Write-StatusBestEffort (
+                "ELLIOTT CLI CLEANUP: headset profile reset to default"
+              )
+            }
+            catch {
+              $elliottCleanupFailures +=
+                "headset profile reset: $($_.Exception.Message)"
+              Write-StatusBestEffort (
+                "ELLIOTT CLI CLEANUP WARNING: headset profile reset: " +
+                $_.Exception.Message
+              )
+            }
           }
         }
       }
@@ -3166,6 +4505,46 @@ finally {
     }
   }
 
+  if ($null -ne $activeCommandLineState) {
+    $activeCommandLineRestored =
+      Test-StateRestored $activeCommandLineState
+    $activeCommandLineRestoredHash = Get-Sha256 $ActiveCommandLine
+    if ($activeCommandLineRestored) {
+      Write-StatusBestEffort (
+        "SQUARE RENDER RESTORED: commandline.txt original existence/hash " +
+        "verified exactly"
+      )
+    }
+    elseif (@($restoreFailures | Where-Object {
+          $_ -like "commandline.txt:*"
+        }).Count -eq 0) {
+      $restoreFailures += (
+        "commandline.txt: exact post-restore verification failed; " +
+        "expected=$activeCommandLineOriginalHash " +
+        "actual=$activeCommandLineRestoredHash"
+      )
+    }
+  }
+  if ($mode204ConfigRequired) {
+    $mode204ConfigRestored =
+      $mode204ConfigStates.Count -eq $mode204ConfigFileCount -and
+      @($mode204ConfigStates | Where-Object {
+        -not (Test-StateRestored $_)
+      }).Count -eq 0
+    if ($mode204ConfigRestored) {
+      Write-StatusBestEffort (
+        "MODE204 CONFIG RESTORED: all original file existence/hash " +
+        "states verified exactly"
+      )
+    }
+    elseif (@($restoreFailures | Where-Object {
+          $_ -like "gtaiv_dxvk_vr.*"
+        }).Count -eq 0) {
+      $restoreFailures +=
+        "Mode204 config: exact post-restore verification failed"
+    }
+  }
+
   $controllerProofComplete = if ($ElliottCliProof) {
     $controllerAConsumed -and
     $controllerStartConsumed -and
@@ -3177,7 +4556,15 @@ finally {
   else {
     $controllerInputConsumed -and $controllerReleaseConsumed
   }
-  $stereoProofComplete = if ($StereoMode -eq 58) {
+  $stereoProofComplete = if ($StereoMode -eq 204) {
+    $mode204AdapterReady -and
+    $mode204GpuProducerReady -and
+    $mode204GpuQueueReady -and
+    $mode204GpuHostReady -and
+    $parentDualProofComplete -and
+    $mode204PrePauseContinuityReady
+  }
+  elseif ($StereoMode -eq 58) {
     $stereoCameraDistanceReady -and
     $stereoPixelDistinct -and
     $stereoApplyGenerationFresh -and
@@ -3197,7 +4584,7 @@ finally {
     $temporalSplitStageReady -and
     $temporalSplitReadbackReady
   }
-  $hostPresentationContinuityReady = if ($StereoMode -eq 58) {
+  $hostPresentationContinuityReady = if ($parentDualMode) {
     $hostSwapchainFreshUpdatesReady
   }
   else {
@@ -3206,8 +4593,28 @@ finally {
   $result = @(
     "outcome=$outcome"
     "failure=$failure"
+    "hostExitClassification=$hostExitClassification"
     "runtime=$runtime"
     "runtimeKind=$($runtimeInfo.Kind)"
+    "metaXrOperatorEnabled=$metaXrOperatorEnabled"
+    "metaXrOperatorLayerName=$metaXrOperatorLayerName"
+    "metaXrOperatorDirectory=$metaXrOperatorDirectoryResolved"
+    "metaXrOperatorPort=$(if ($metaXrOperatorEnabled) { 8720 } else { 0 })"
+    "metaXrOperatorManifestHash=$metaXrOperatorManifestHash"
+    "metaXrOperatorLibraryHash=$metaXrOperatorLibraryHash"
+    "metaXrOperatorProxyHash=$metaXrOperatorProxyHash"
+    "squareCommandLineRequired=$squareCommandLineRequired"
+    "squareCommandLineTemplateHash=$squareCommandLineTemplateHash"
+    "activeCommandLineOriginalExisted=$activeCommandLineOriginalExisted"
+    "activeCommandLineOriginalHash=$activeCommandLineOriginalHash"
+    "activeCommandLineInstalledHash=$activeCommandLineInstalledHash"
+    "squareCommandLineInstalled=$squareCommandLineInstalled"
+    "activeCommandLineRestored=$activeCommandLineRestored"
+    "activeCommandLineRestoredHash=$activeCommandLineRestoredHash"
+    "mode204ConfigRequired=$mode204ConfigRequired"
+    "mode204ConfigInstalled=$mode204ConfigInstalled"
+    "mode204ConfigRestored=$mode204ConfigRestored"
+    "mode204ConfigFileCount=$mode204ConfigFileCount"
     "gameStarted=$gameStarted"
     "hostFocused=$hostFocused"
     "backendOpenXr=$backendOpenXr"
@@ -3275,6 +4682,16 @@ finally {
     "mode58PrePauseHostTransactions=$mode58PrePauseHostTransactions"
     "mode58PrePauseSharedTransaction=$mode58PrePauseSharedTransaction"
     "mode58PrePauseContinuityReady=$mode58PrePauseContinuityReady"
+    "mode204PrePauseFirstPairOrdinal=$mode204PrePauseFirstPairOrdinal"
+    "mode204PrePauseAcceptedPairSpan=$mode204PrePauseAcceptedPairSpan"
+    "mode204PrePauseProducerTransactions=$mode204PrePauseProducerTransactions"
+    "mode204PrePauseHostTransactions=$mode204PrePauseHostTransactions"
+    "mode204PrePauseRangeCoupled=$mode204PrePauseRangeCoupled"
+    "mode204PrePauseContinuityReady=$mode204PrePauseContinuityReady"
+    "mode204AdapterReady=$mode204AdapterReady"
+    "mode204GpuProducerReady=$mode204GpuProducerReady"
+    "mode204GpuQueueReady=$mode204GpuQueueReady"
+    "mode204GpuHostReady=$mode204GpuHostReady"
     "parentDualFusedPairReady=$parentDualFusedPairReady"
     "parentDualProducerReady=$parentDualProducerReady"
     "parentDualPairPose=$parentDualPairPose"
@@ -3316,14 +4733,37 @@ finally {
     "worldLoadProducerFrames=$worldLoadProducerFrames"
     "worldLoadHostFrames=$worldLoadHostFrames"
     "worldLoadSharedFrames=$worldLoadSharedFrames"
+    "worldLoadCoupledFrames=$worldLoadCoupledFrames"
     "worldLoadSustainedMilliseconds=$worldLoadSustainedMilliseconds"
     "pauseTestStarted=$pauseTestStarted"
     "pauseUiObserved=$pauseUiObserved"
     "pauseRoundTrip=$pauseRoundTrip"
     "elliottStickCommanded=$elliottStickCommanded"
     "elliottWalkSeconds=$ElliottWalkSeconds"
+    "walkAttempt=$walkAttempt"
+    "acceptedWalkAttempt=$acceptedWalkAttempt"
+    "walkMinimumTransactionAdvance=$walkMinimumTransactionAdvance"
+    "walkProducerBaselineTransaction=$walkProducerBaselineTransaction"
+    "walkHostBaselineTransaction=$walkHostBaselineTransaction"
+    "walkProducerAdvance=$walkProducerAdvance"
+    "walkHostAdvance=$walkHostAdvance"
+    "walkHeartbeatPauseBaselineCount=$walkHeartbeatPauseBaselineCount"
+    "walkHeartbeatPauseCount=$walkHeartbeatPauseCount"
+    "walkHeartbeatPauseFree=$walkHeartbeatPauseFree"
+    "walkFrameContinuityReady=$walkFrameContinuityReady"
+    "walkStartPosition=$walkStartX,$walkStartY,$walkStartZ"
+    "walkEndPosition=$walkEndX,$walkEndY,$walkEndZ"
+    "walkPlanarDistance=$walkPlanarDistance"
+    "walkMinimumPlanarDistance=$walkMinimumPlanarDistance"
+    "walkPositionReady=$walkPositionReady"
+    "walkQualityReady=$walkQualityReady"
+    "walkStickPacketBaseline=$walkStickPacketBaseline"
+    "walkNeutralPacketBaseline=$walkNeutralPacketBaseline"
     "elliottPoseSweepCompleted=$elliottPoseSweepCompleted"
     "elliottProofAutomationComplete=$elliottProofAutomationComplete"
+    "elliottQuestProfileReady=$elliottQuestProfileReady"
+    "elliottQuestProfileReset=$elliottQuestProfileReset"
+    "sustainedPoseControllerProof=$sustainedPoseControllerProof"
     "elliottCleanupFailures=$($elliottCleanupFailures -join ' | ')"
     "cleanupFailures=$($cleanupFailures -join ' | ')"
     "archiveFailures=$($archiveFailures -join ' | ')"
@@ -3332,7 +4772,25 @@ finally {
   Set-Content -LiteralPath $ResultPath -Value $result -Encoding UTF8
   Write-Status "RESULT: $outcome"
   if ($restoreFailures.Count -eq 0) {
-    Write-Status "RESTORED: original ASI/backend/stereo/OpenVR state"
+    if ($squareCommandLineRequired) {
+      Write-Status (
+        "RESTORED: original ASI/backend/stereo/OpenVR/commandline state"
+      )
+    }
+    else {
+      if ($mode204ConfigRequired) {
+        Write-Status (
+          "RESTORED: original ASI/backend/exact Mode204 config/OpenVR " +
+          "state; commandline.txt was untouched"
+        )
+      }
+      else {
+        Write-Status (
+          "RESTORED: original ASI/backend/stereo/OpenVR state; " +
+          "commandline.txt was untouched"
+        )
+      }
+    }
   }
   else {
     Write-Status "RESTORE INCOMPLETE: see result.txt"

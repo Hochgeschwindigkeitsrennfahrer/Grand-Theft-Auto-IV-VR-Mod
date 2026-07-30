@@ -3,11 +3,11 @@ param(
   [string]$GameDir =
     "D:\SteamLibrary\steamapps\common\Grand Theft Auto IV\GTAIV",
   [string]$RuntimeManifest = "",
-  [ValidateSet(55, 56, 57, 58)]
+  [ValidateSet(55, 56, 57, 58, 204)]
   [uint32]$StereoMode = 58,
   [ValidateRange(120, 1800)]
   [uint32]$MaxSeconds = 600,
-  [ValidateRange(15, 30)]
+  [ValidateRange(15, 60)]
   [uint32]$WalkSeconds = 20,
   [ValidateRange(10, 12)]
   [uint32]$DurationSeconds = 10,
@@ -23,8 +23,257 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+if ($StereoMode -eq 204 -and
+    -not $PSBoundParameters.ContainsKey("DurationSeconds")) {
+  # Mode58 keeps its established 10-second default. Literal Mode204 uses the
+  # longest capture supported by the existing non-activating recorder seam.
+  $DurationSeconds = 12
+}
+
+function Read-TextIfPresent([string]$Path) {
+  if (Test-Path -LiteralPath $Path -PathType Leaf) {
+    try {
+      return [IO.File]::ReadAllText($Path)
+    }
+    catch [IO.IOException] {
+      # The launcher may briefly hold the append handle while the watcher fires.
+      # The bounded event loop will retry without polling or changing proof state.
+      return ""
+    }
+  }
+  return ""
+}
+
+function Get-Mode204RetrySignal(
+  [string]$StatusText,
+  [uint32]$ExpectedWalkSeconds
+) {
+  $pattern =
+    "(?m)^.*ELLIOTT CLI: advancing world recovered; starting clean " +
+    [regex]::Escape("$ExpectedWalkSeconds") +
+    "-second walk attempt 2/2\s*$"
+  $retryMatch = [regex]::Match($StatusText, $pattern)
+  if (-not $retryMatch.Success) {
+    return ""
+  }
+  return $retryMatch.Value.Trim()
+}
+
+function Wait-Mode204RetrySignal(
+  [string]$StatusPath,
+  [System.Diagnostics.Process]$LauncherProcess,
+  [uint32]$ExpectedWalkSeconds,
+  [uint32]$TimeoutSeconds
+) {
+  $statusDirectory = Split-Path -Parent $StatusPath
+  $statusName = Split-Path -Leaf $StatusPath
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  $watcher = New-Object IO.FileSystemWatcher($statusDirectory, $statusName)
+  $watcher.IncludeSubdirectories = $false
+  $watcher.NotifyFilter =
+    [IO.NotifyFilters]::FileName -bor
+    [IO.NotifyFilters]::LastWrite -bor
+    [IO.NotifyFilters]::Size
+  $watcher.EnableRaisingEvents = $true
+  try {
+    while ($true) {
+      $retrySignal = Get-Mode204RetrySignal `
+        -StatusText (Read-TextIfPresent $StatusPath) `
+        -ExpectedWalkSeconds $ExpectedWalkSeconds
+      if (-not [string]::IsNullOrWhiteSpace($retrySignal)) {
+        return $retrySignal
+      }
+      $LauncherProcess.Refresh()
+      if ($LauncherProcess.HasExited) {
+        return ""
+      }
+      $remainingMilliseconds = [int][Math]::Ceiling(
+        ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+      if ($remainingMilliseconds -le 0) {
+        return ""
+      }
+      $waitMilliseconds = [Math]::Min(1000, $remainingMilliseconds)
+      [void]$watcher.WaitForChanged(
+        [IO.WatcherChangeTypes]::All,
+        $waitMilliseconds)
+    }
+  }
+  finally {
+    $watcher.EnableRaisingEvents = $false
+    $watcher.Dispose()
+  }
+}
+
+function Write-TextAtomic(
+  [string]$Path,
+  [string[]]$Value
+) {
+  $temporaryPath = "$Path.tmp"
+  Set-Content `
+    -LiteralPath $temporaryPath `
+    -Value $Value `
+    -Encoding UTF8
+  Move-Item `
+    -LiteralPath $temporaryPath `
+    -Destination $Path `
+    -Force
+}
+
+function Start-ElliottCaptureAttempt(
+  [string]$RecorderPath,
+  [string]$WalkMarkerPath,
+  [string]$OutputPath,
+  [uint32]$LauncherPid,
+  [uint32]$DurationSeconds,
+  [uint32]$FrameRate,
+  [uint32]$WaitSeconds,
+  [string]$FfmpegExecutable,
+  [string]$StandardOutputPath,
+  [string]$StandardErrorPath,
+  [string]$PidPath,
+  [uint32]$Attempt
+) {
+  $recorderArguments = (
+    "-NoLogo -NoProfile -ExecutionPolicy Bypass " +
+    "-File `"$RecorderPath`" " +
+    "-WalkMarkerPath `"$WalkMarkerPath`" " +
+    "-OutputPath `"$OutputPath`" " +
+    "-LauncherPid $LauncherPid " +
+    "-DurationSeconds $DurationSeconds -FrameRate $FrameRate " +
+    "-WaitSeconds $WaitSeconds " +
+    "-FfmpegPath `"$FfmpegExecutable`""
+  )
+  $captureProcess = Start-Process `
+    -FilePath "powershell.exe" `
+    -ArgumentList $recorderArguments `
+    -RedirectStandardOutput $StandardOutputPath `
+    -RedirectStandardError $StandardErrorPath `
+    -WindowStyle Hidden `
+    -PassThru
+  $captureProcess.Id | Set-Content -LiteralPath $PidPath
+  return [pscustomobject]@{
+    Attempt = $Attempt
+    Process = $captureProcess
+    VideoPath = $OutputPath
+    ReceiptPath = "$OutputPath.capture.txt"
+    StandardOutputPath = $StandardOutputPath
+    StandardErrorPath = $StandardErrorPath
+  }
+}
+
+function Get-UniqueResultValue(
+  [string[]]$ResultLines,
+  [string]$Key
+) {
+  $prefix = "$Key="
+  $matches = @($ResultLines | Where-Object {
+    $_.StartsWith($prefix, [StringComparison]::Ordinal)
+  })
+  if ($matches.Count -ne 1) {
+    throw (
+      "Expected exactly one '$Key' field in launcher result.txt; found " +
+      "$($matches.Count)."
+    )
+  }
+  return $matches[0].Substring($prefix.Length)
+}
+
+function Get-Mode204AcceptedWalkAttempt(
+  [string[]]$ResultLines,
+  [uint32]$ExpectedWalkSeconds
+) {
+  $requiredValues = [ordered]@{
+    outcome = "PROOF_COMPLETE"
+    stereoMode = "204"
+    elliottWalkSeconds = "$ExpectedWalkSeconds"
+    walkQualityReady = "True"
+    sustainedPoseControllerProof = "True"
+  }
+  foreach ($requiredValue in $requiredValues.GetEnumerator()) {
+    $actualValue = Get-UniqueResultValue `
+      -ResultLines $ResultLines `
+      -Key $requiredValue.Key
+    if ($actualValue -ne $requiredValue.Value) {
+      throw (
+        "Mode204 accepted-attempt selection requires " +
+        "$($requiredValue.Key)=$($requiredValue.Value); got " +
+        "$($requiredValue.Key)=$actualValue."
+      )
+    }
+  }
+  $attemptText = Get-UniqueResultValue `
+    -ResultLines $ResultLines `
+    -Key "acceptedWalkAttempt"
+  $acceptedAttempt = [uint32]0
+  if (-not [uint32]::TryParse($attemptText, [ref]$acceptedAttempt) -or
+      $acceptedAttempt -notin @(1, 2)) {
+    throw (
+      "Mode204 launcher result selected invalid acceptedWalkAttempt=" +
+      "'$attemptText'; expected 1 or 2."
+    )
+  }
+  return $acceptedAttempt
+}
+
+function Publish-Mode204AcceptedCapture(
+  [string]$CandidatePath,
+  [string]$CandidateReceiptPath,
+  [string]$OutputPath,
+  [string]$ResultPath,
+  [uint32]$AcceptedAttempt
+) {
+  if (Test-Path -LiteralPath $OutputPath) {
+    throw "Refusing to overwrite an existing proof video: $OutputPath"
+  }
+  $publishingPath = "$OutputPath.publishing"
+  Copy-Item `
+    -LiteralPath $CandidatePath `
+    -Destination $publishingPath
+  $candidateHash = (
+    Get-FileHash -LiteralPath $CandidatePath -Algorithm SHA256
+  ).Hash
+  $publishingHash = (
+    Get-FileHash -LiteralPath $publishingPath -Algorithm SHA256
+  ).Hash
+  if ($publishingHash -ne $candidateHash) {
+    throw (
+      "Accepted-attempt video copy failed hash verification: " +
+      "candidate=$candidateHash publishing=$publishingHash"
+    )
+  }
+  Move-Item `
+    -LiteralPath $publishingPath `
+    -Destination $OutputPath
+
+  $publishedReceiptLines = @(
+    Get-Content -LiteralPath $CandidateReceiptPath |
+      ForEach-Object {
+        if ($_.StartsWith("output=", [StringComparison]::Ordinal)) {
+          "output=$OutputPath"
+        }
+        else {
+          $_
+        }
+      }
+  )
+  $publishedReceiptLines += @(
+    "acceptedWalkAttempt=$AcceptedAttempt",
+    "selectedCandidate=$CandidatePath",
+    "launcherResult=$ResultPath",
+    "candidateSha256=$candidateHash",
+    "outputSha256=$publishingHash",
+    "publication=ACCEPTED_ATTEMPT_ONLY"
+  )
+  Write-TextAtomic `
+    -Path "$OutputPath.capture.txt" `
+    -Value $publishedReceiptLines
+}
+
 if (-not $Authorized) {
   throw "Live launch and recording are locked. Pass -Authorized for one run."
+}
+if ($StereoMode -eq 204 -and $WalkSeconds -ne 60) {
+  throw "Literal Mode204 video proof requires WalkSeconds=60."
 }
 if ($WalkSeconds -lt ($DurationSeconds + 3)) {
   throw (
@@ -97,13 +346,18 @@ $existingRuns = @(
 
 $launcherOutput = Join-Path $controlPath "launcher.stdout.log"
 $launcherError = Join-Path $controlPath "launcher.stderr.log"
-$captureOutput = Join-Path $controlPath "capture.stdout.log"
-$captureError = Join-Path $controlPath "capture.stderr.log"
 $videoPath = Join-Path $controlPath (
   "gtaiv-openxr-mode{0}-vr-sbs-{1}s.mp4" -f
     $StereoMode,
     $DurationSeconds
 )
+$attemptCaptureDirectory = Join-Path $controlPath "attempt-captures"
+if ($StereoMode -eq 204) {
+  New-Item `
+    -ItemType Directory `
+    -Path $attemptCaptureDirectory |
+    Out-Null
+}
 
 $runWatcher = New-Object IO.FileSystemWatcher($runRoot, "*-steam-safe")
 $runWatcher.IncludeSubdirectories = $false
@@ -170,43 +424,116 @@ $controlPath |
     Join-Path $root "out-openxr\latest-vr-video-control.txt"
   )
 
-$recorderArguments = (
-  "-NoLogo -NoProfile -ExecutionPolicy Bypass " +
-  "-File `"$recorderPath`" " +
-  "-WalkMarkerPath `"$walkMarkerPath`" " +
-  "-OutputPath `"$videoPath`" " +
-  "-LauncherPid $($launcherProcess.Id) " +
-  "-DurationSeconds $DurationSeconds -FrameRate $FrameRate " +
-  "-WaitSeconds $WaitSeconds " +
-  "-FfmpegPath `"$ffmpegExecutable`""
-)
-$captureProcess = Start-Process `
-  -FilePath "powershell.exe" `
-  -ArgumentList $recorderArguments `
-  -RedirectStandardOutput $captureOutput `
-  -RedirectStandardError $captureError `
-  -WindowStyle Hidden `
-  -PassThru
-$captureProcess.Id |
-  Set-Content -LiteralPath (Join-Path $controlPath "capture.pid")
+$captureAttempts = @()
+$attemptOneVideoPath = if ($StereoMode -eq 204) {
+  Join-Path $attemptCaptureDirectory (
+    "gtaiv-openxr-mode204-vr-sbs-{0}s.attempt1.candidate.mp4" -f
+      $DurationSeconds
+  )
+}
+else {
+  $videoPath
+}
+$attemptOneOutput = Join-Path $controlPath $(if ($StereoMode -eq 204) {
+  "capture-attempt1.stdout.log"
+}
+else {
+  "capture.stdout.log"
+})
+$attemptOneError = Join-Path $controlPath $(if ($StereoMode -eq 204) {
+  "capture-attempt1.stderr.log"
+}
+else {
+  "capture.stderr.log"
+})
+$attemptOnePid = Join-Path $controlPath $(if ($StereoMode -eq 204) {
+  "capture-attempt1.pid"
+}
+else {
+  "capture.pid"
+})
+$captureAttempts += Start-ElliottCaptureAttempt `
+  -RecorderPath $recorderPath `
+  -WalkMarkerPath $walkMarkerPath `
+  -OutputPath $attemptOneVideoPath `
+  -LauncherPid ([uint32]$launcherProcess.Id) `
+  -DurationSeconds $DurationSeconds `
+  -FrameRate $FrameRate `
+  -WaitSeconds $WaitSeconds `
+  -FfmpegExecutable $ffmpegExecutable `
+  -StandardOutputPath $attemptOneOutput `
+  -StandardErrorPath $attemptOneError `
+  -PidPath $attemptOnePid `
+  -Attempt 1
+
+if ($StereoMode -eq 204) {
+  $retrySignal = Wait-Mode204RetrySignal `
+    -StatusPath (Join-Path $runPath "status.log") `
+    -LauncherProcess $launcherProcess `
+    -ExpectedWalkSeconds $WalkSeconds `
+    -TimeoutSeconds ([uint32]($MaxSeconds + 120))
+  if (-not [string]::IsNullOrWhiteSpace($retrySignal)) {
+    $attemptTwoMarkerPath =
+      Join-Path $controlPath "attempt2-walk-ready.marker"
+    Write-TextAtomic `
+      -Path $attemptTwoMarkerPath `
+      -Value @($retrySignal)
+    $attemptTwoVideoPath = Join-Path $attemptCaptureDirectory (
+      "gtaiv-openxr-mode204-vr-sbs-{0}s.attempt2.candidate.mp4" -f
+        $DurationSeconds
+    )
+    $captureAttempts += Start-ElliottCaptureAttempt `
+      -RecorderPath $recorderPath `
+      -WalkMarkerPath $attemptTwoMarkerPath `
+      -OutputPath $attemptTwoVideoPath `
+      -LauncherPid ([uint32]$launcherProcess.Id) `
+      -DurationSeconds $DurationSeconds `
+      -FrameRate $FrameRate `
+      -WaitSeconds $WaitSeconds `
+      -FfmpegExecutable $ffmpegExecutable `
+      -StandardOutputPath (
+        Join-Path $controlPath "capture-attempt2.stdout.log"
+      ) `
+      -StandardErrorPath (
+        Join-Path $controlPath "capture-attempt2.stderr.log"
+      ) `
+      -PidPath (Join-Path $controlPath "capture-attempt2.pid") `
+      -Attempt 2
+  }
+}
 
 $captureWaitMilliseconds =
   [int](($WaitSeconds + $DurationSeconds + 30) * 1000)
 $launcherWaitMilliseconds = [int](($MaxSeconds + 120) * 1000)
-$captureExited = $captureProcess.WaitForExit($captureWaitMilliseconds)
+$captureOutcomes = @()
+foreach ($captureAttempt in $captureAttempts) {
+  $captureExited =
+    $captureAttempt.Process.WaitForExit($captureWaitMilliseconds)
+  $captureExitCode = if ($captureExited) {
+    $captureAttempt.Process.ExitCode
+  }
+  else {
+    $null
+  }
+  $captureOutcomes += [pscustomobject]@{
+    Attempt = $captureAttempt.Attempt
+    Exited = $captureExited
+    ExitCode = $captureExitCode
+    VideoPath = $captureAttempt.VideoPath
+    ReceiptPath = $captureAttempt.ReceiptPath
+    StandardOutputPath = $captureAttempt.StandardOutputPath
+    StandardErrorPath = $captureAttempt.StandardErrorPath
+  }
+}
 $launcherExited = $launcherProcess.WaitForExit($launcherWaitMilliseconds)
-$captureExitCode = $captureProcess.ExitCode
-$launcherExitCode = $launcherProcess.ExitCode
+$launcherExitCode = if ($launcherExited) {
+  $launcherProcess.ExitCode
+}
+else {
+  $null
+}
 
 $failures = @()
-if (-not $captureExited) {
-  $failures += "Recorder did not exit within its bounded wait."
-}
-elseif ($null -ne $captureExitCode -and $captureExitCode -ne 0) {
-  $failures += (
-    "Recorder exited with code $captureExitCode; see $captureError."
-  )
-}
 if (-not $launcherExited) {
   $failures += "Launcher did not exit within its bounded wait."
 }
@@ -216,16 +543,19 @@ elseif ($null -ne $launcherExitCode -and $launcherExitCode -ne 0) {
     "$launcherError."
   )
 }
-if ((Test-Path -LiteralPath $captureError -PathType Leaf) -and
-    (Get-Item -LiteralPath $captureError).Length -ne 0) {
-  $failures += "Recorder stderr is not empty: $captureError."
-}
 if ((Test-Path -LiteralPath $launcherError -PathType Leaf) -and
     (Get-Item -LiteralPath $launcherError).Length -ne 0) {
   $failures += "Launcher stderr is not empty: $launcherError."
 }
 
 $resultPath = Join-Path $runPath "result.txt"
+$resultLines = @()
+$acceptedWalkAttempt = if ($StereoMode -eq 204) {
+  [uint32]0
+}
+else {
+  [uint32]1
+}
 if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
   $failures += "Launcher result.txt is missing."
 }
@@ -264,17 +594,32 @@ else {
     elliottPoseSweepCompleted = "True"
     elliottProofAutomationComplete = "True"
   }
-  if ($StereoMode -eq 58) {
+  if ($StereoMode -in @(58, 204)) {
     $requiredResultValues["hostSwapchainFreshUpdatesReady"] = "True"
-    $requiredResultValues["mode58PrePauseContinuityReady"] = "True"
     $requiredResultValues["parentDualFusedPairReady"] = "True"
     $requiredResultValues["parentDualProducerReady"] = "True"
     $requiredResultValues["parentDualHostExactPoseReady"] = "True"
     $requiredResultValues["parentDualProofComplete"] = "True"
     $requiredResultValues["firstPersonHardHookReady"] = "True"
     $requiredResultValues["firstPersonGameplayReady"] = "True"
-    $requiredResultValues["firstPersonPedHideReady"] = "True"
     $requiredResultValues["firstPersonProofComplete"] = "True"
+  }
+  if ($StereoMode -eq 58) {
+    $requiredResultValues["mode58PrePauseContinuityReady"] = "True"
+    $requiredResultValues["firstPersonPedHideReady"] = "True"
+  }
+  elseif ($StereoMode -eq 204) {
+    $requiredResultValues["mode204PrePauseContinuityReady"] = "True"
+    $requiredResultValues["mode204AdapterReady"] = "True"
+    $requiredResultValues["mode204GpuProducerReady"] = "True"
+    $requiredResultValues["mode204GpuQueueReady"] = "True"
+    $requiredResultValues["mode204GpuHostReady"] = "True"
+    $requiredResultValues["mode204ConfigRestored"] = "True"
+    $requiredResultValues["elliottQuestProfileReady"] = "True"
+    $requiredResultValues["elliottQuestProfileReset"] = "True"
+    $requiredResultValues["elliottWalkSeconds"] = "60"
+    $requiredResultValues["walkQualityReady"] = "True"
+    $requiredResultValues["sustainedPoseControllerProof"] = "True"
   }
   else {
     $requiredResultValues["hostSwapchainReuseReady"] = "True"
@@ -297,34 +642,189 @@ else {
       "Launcher proof did not report one sRGB swapchain format (29 or 91)."
     )
   }
+  if ($StereoMode -eq 204) {
+    try {
+      $acceptedWalkAttempt = Get-Mode204AcceptedWalkAttempt `
+        -ResultLines $resultLines `
+        -ExpectedWalkSeconds $WalkSeconds
+    }
+    catch {
+      $failures += $_.Exception.Message
+    }
+  }
+}
+
+foreach ($captureOutcome in $captureOutcomes) {
+  if (-not $captureOutcome.Exited) {
+    $failures += (
+      "Recorder attempt $($captureOutcome.Attempt) did not exit within " +
+      "its bounded wait."
+    )
+  }
+}
+
+$selectedCaptures = @($captureOutcomes | Where-Object {
+  $_.Attempt -eq $acceptedWalkAttempt
+})
+$selectedCapture = $null
+if ($acceptedWalkAttempt -eq 0) {
+  $failures += "Launcher did not identify an accepted walk attempt."
+}
+elseif ($selectedCaptures.Count -ne 1) {
+  $failures += (
+    "Expected one captured candidate for launcher-accepted walk attempt " +
+    "$acceptedWalkAttempt; found $($selectedCaptures.Count)."
+  )
+}
+else {
+  $selectedCapture = $selectedCaptures[0]
+}
+
+if ($StereoMode -eq 204 -and $acceptedWalkAttempt -in @(1, 2)) {
+  foreach ($captureOutcome in $captureOutcomes) {
+    $selection = if (
+      $captureOutcome.Attempt -eq $acceptedWalkAttempt
+    ) {
+      "LAUNCHER_ACCEPTED_CANDIDATE"
+    }
+    else {
+      "REJECTED_NOT_PROOF"
+    }
+    Write-TextAtomic `
+      -Path "$($captureOutcome.VideoPath).selection.txt" `
+      -Value @(
+        "attempt=$($captureOutcome.Attempt)",
+        "launcherAcceptedAttempt=$acceptedWalkAttempt",
+        "selection=$selection",
+        "proofPublished=False",
+        "video=$($captureOutcome.VideoPath)",
+        "launcherResult=$resultPath"
+      )
+  }
+}
+
+if ($null -ne $selectedCapture) {
+  if ($null -ne $selectedCapture.ExitCode -and
+      $selectedCapture.ExitCode -ne 0) {
+    $failures += (
+      "Recorder for accepted attempt $acceptedWalkAttempt exited with " +
+      "code $($selectedCapture.ExitCode); see " +
+      "$($selectedCapture.StandardErrorPath)."
+    )
+  }
+  if ((Test-Path `
+        -LiteralPath $selectedCapture.StandardErrorPath `
+        -PathType Leaf) -and
+      (Get-Item `
+        -LiteralPath $selectedCapture.StandardErrorPath).Length -ne 0) {
+    $failures += (
+      "Recorder stderr for accepted attempt $acceptedWalkAttempt is not " +
+      "empty: $($selectedCapture.StandardErrorPath)."
+    )
+  }
+  if (-not (Test-Path `
+        -LiteralPath $selectedCapture.ReceiptPath `
+        -PathType Leaf)) {
+    $failures += (
+      "Recorder receipt for accepted attempt $acceptedWalkAttempt is " +
+      "missing."
+    )
+  }
+  else {
+    $candidateReceiptLines =
+      @(Get-Content -LiteralPath $selectedCapture.ReceiptPath)
+    foreach ($requiredReceiptLine in @(
+        "capture=PASS",
+        "simulatorInput=CLI/headless",
+        "windowActivation=False",
+        "durationSeconds=$DurationSeconds",
+        "frameRate=$FrameRate",
+        "output=$($selectedCapture.VideoPath)"
+      )) {
+      if ($candidateReceiptLines -notcontains $requiredReceiptLine) {
+        $failures += (
+          "Accepted-attempt recorder receipt is missing " +
+          "'$requiredReceiptLine'."
+        )
+      }
+    }
+  }
+  if (-not (Test-Path `
+        -LiteralPath $selectedCapture.VideoPath `
+        -PathType Leaf)) {
+    $failures += "Accepted-attempt recorded video is missing."
+  }
+  elseif ((Get-Item `
+        -LiteralPath $selectedCapture.VideoPath).Length -le 1024) {
+    $failures += "Accepted-attempt recorded video is unexpectedly small."
+  }
+}
+
+if ($StereoMode -eq 204 -and
+    $failures.Count -eq 0 -and
+    $null -ne $selectedCapture) {
+  try {
+    Publish-Mode204AcceptedCapture `
+      -CandidatePath $selectedCapture.VideoPath `
+      -CandidateReceiptPath $selectedCapture.ReceiptPath `
+      -OutputPath $videoPath `
+      -ResultPath $resultPath `
+      -AcceptedAttempt $acceptedWalkAttempt
+    Write-TextAtomic `
+      -Path "$($selectedCapture.VideoPath).selection.txt" `
+      -Value @(
+        "attempt=$acceptedWalkAttempt",
+        "launcherAcceptedAttempt=$acceptedWalkAttempt",
+        "selection=LAUNCHER_ACCEPTED_CANDIDATE",
+        "proofPublished=True",
+        "proofVideo=$videoPath",
+        "video=$($selectedCapture.VideoPath)",
+        "launcherResult=$resultPath"
+      )
+  }
+  catch {
+    $failures += (
+      "Accepted-attempt proof publication failed: " +
+      $_.Exception.Message
+    )
+  }
 }
 
 $receiptPath = "$videoPath.capture.txt"
-if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
-  $failures += "Recorder capture receipt is missing."
-}
-else {
-  $receiptLines = @(Get-Content -LiteralPath $receiptPath)
-  foreach ($requiredReceiptLine in @(
+if ($failures.Count -eq 0) {
+  if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
+    $failures += "Published recorder capture receipt is missing."
+  }
+  else {
+    $receiptLines = @(Get-Content -LiteralPath $receiptPath)
+    $publishedReceiptRequirements = @(
       "capture=PASS",
       "simulatorInput=CLI/headless",
       "windowActivation=False",
       "durationSeconds=$DurationSeconds",
       "frameRate=$FrameRate",
       "output=$videoPath"
-    )) {
-    if ($receiptLines -notcontains $requiredReceiptLine) {
-      $failures += (
-        "Recorder receipt is missing '$requiredReceiptLine'."
+    )
+    if ($StereoMode -eq 204) {
+      $publishedReceiptRequirements += @(
+        "acceptedWalkAttempt=$acceptedWalkAttempt",
+        "publication=ACCEPTED_ATTEMPT_ONLY"
       )
     }
+    foreach ($requiredReceiptLine in $publishedReceiptRequirements) {
+      if ($receiptLines -notcontains $requiredReceiptLine) {
+        $failures += (
+          "Published recorder receipt is missing '$requiredReceiptLine'."
+        )
+      }
+    }
   }
-}
-if (-not (Test-Path -LiteralPath $videoPath -PathType Leaf)) {
-  $failures += "Recorded video is missing."
-}
-elseif ((Get-Item -LiteralPath $videoPath).Length -le 1024) {
-  $failures += "Recorded video is unexpectedly small."
+  if (-not (Test-Path -LiteralPath $videoPath -PathType Leaf)) {
+    $failures += "Published recorded video is missing."
+  }
+  elseif ((Get-Item -LiteralPath $videoPath).Length -le 1024) {
+    $failures += "Published recorded video is unexpectedly small."
+  }
 }
 
 if ($failures.Count -ne 0) {

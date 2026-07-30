@@ -3,6 +3,8 @@
 #include "log.h"
 #include "openxr_controller_map.h"
 #include "openxr_pose_client.h"
+#include "stereo_config.h"
+#include "ui_state.h"
 #include "../bridge/gtaiv_xr_haptic_bridge.h"
 #include "../bridge/gtaiv_xr_pose_bridge.h"
 
@@ -47,6 +49,8 @@ std::atomic<bool> g_xinputEnabled{true};
 std::atomic<uint32_t> g_requestedMotors{0u};
 std::atomic<DWORD> g_lastLoggedInputPacket{0xffffffffu};
 std::atomic<bool> g_loggedNonNeutralInput{false};
+std::atomic<int> g_lastVrYawInput{0};
+std::atomic<DWORD> g_vrYawEvent{0u};
 
 SRWLOCK g_packetLock = SRWLOCK_INIT;
 XINPUT_GAMEPAD g_lastGamepad {};
@@ -100,6 +104,14 @@ bool nonNeutral(const XINPUT_GAMEPAD& gamepad)
         || gamepad.sThumbRY != 0;
 }
 
+bool vrOwnsWorldRightStick()
+{
+    const StereoMode mode = GetStereoMode();
+    return !GetUiPresentationState()
+        && (IsCleanDualLookMove(mode)
+            || WantsExternalFpLookMove(mode));
+}
+
 DWORD WINAPI HookXInputGetState(
     DWORD userIndex,
     XINPUT_STATE* state)
@@ -111,6 +123,47 @@ DWORD WINAPI HookXInputGetState(
         && touchInputAvailable(pose)
         && synthesizeGamepad(pose, gamepad))
     {
+        const SHORT rawRightX = gamepad.sThumbRX;
+        if (vrOwnsWorldRightStick())
+        {
+            // In immersive world presentation vr_move.cpp consumes the raw
+            // PoseBridge right stick and integrates it into VR body/camera
+            // yaw. Passing the same X value into GTA's native camera makes
+            // each pulse turn twice, then spring back when GTA releases its
+            // temporary camera offset.
+            gamepad.sThumbRX = 0;
+            const int prior =
+                g_lastVrYawInput.exchange(
+                    static_cast<int>(rawRightX),
+                    std::memory_order_acq_rel);
+            if (prior != static_cast<int>(rawRightX)
+                && (prior != 0 || rawRightX != 0))
+            {
+                DWORD event =
+                    g_vrYawEvent.fetch_add(1u, std::memory_order_acq_rel)
+                    + 1u;
+                if (event == 0u)
+                {
+                    event =
+                        g_vrYawEvent.fetch_add(
+                            1u,
+                            std::memory_order_acq_rel)
+                        + 1u;
+                }
+                Log(
+                    "OpenXRController: VR yaw event=%lu RSX=%d "
+                    "nativeSuppressed=1 neutral=%d",
+                    static_cast<unsigned long>(event),
+                    static_cast<int>(rawRightX),
+                    rawRightX == 0 ? 1 : 0);
+            }
+        }
+        else
+        {
+            g_lastVrYawInput.store(
+                static_cast<int>(rawRightX),
+                std::memory_order_release);
+        }
         const DWORD packet = packetFor(gamepad);
         state->dwPacketNumber = packet;
         state->Gamepad = gamepad;

@@ -6,7 +6,18 @@
 
 struct IDirect3DDevice9;
 
+namespace gtaiv_xr_bridge {
+struct PoseBridge;
+}
+
 namespace asi {
+
+struct GameFovPublishReceipt {
+  uint32_t generation = 0u;
+  float tanHalfHorizontal = 0.f;
+  float tanHalfVertical = 0.f;
+  bool trueFov = false;
+};
 
 bool InstallVrDisplayHooks();
 void LogVrDisplayInfo();
@@ -16,6 +27,13 @@ float GetVrHorizontalFovDegrees();
 bool GetEyeSubmitBounds(vr::EVREye eye, vr::VRTextureBounds_t* out);
 bool GetCoverFovTangents(float* tanHalfHoriz, float* tanHalfVert);
 
+// OpenXR input adapter. It fills a backend-isolated display-frustum cache;
+// provider getters fail closed until this cache is ready.
+bool UpdateVrDisplayFromOpenXr(
+    const gtaiv_xr_bridge::PoseBridge& pose);
+void InvalidateVrDisplayFromOpenXr();
+bool IsVrDisplayFromOpenXr();
+
 void UpdateGameFovFromDevice(IDirect3DDevice9* device);
 
 // Mode 36: publish TRUE engine FOV from CCam+0x60 (after fovadd write).
@@ -23,6 +41,23 @@ void UpdateGameFovFromDevice(IDirect3DDevice9* device);
 // ccamDeg = live CCam FOV degrees; aspectWH = backbuffer W/H (0 = last known / 16:9).
 // Conversion: Mode 16 probe — CCam 45° → rendered V ≈ 58.7° (factor 58.7/45).
 void PublishGameFovFromCCamDegrees(float ccamDeg, float aspectWH = 0.f);
+// Proven Mode16 CCam->raster conversion (45 CCam degrees -> 58.7 vertical
+// raster degrees). Pure/query-free; aspectWH must be the captured backbuffer.
+bool ComputeGameFovTangentsFromCCamDegrees(
+    float ccamDeg,
+    float aspectWH,
+    float* tanHalfHorizontal,
+    float* tanHalfVertical);
+// Query-free tangent commit. The caller already owns validated display
+// geometry (direct OpenXR uses PoseBridge::eyeFovs); this function never
+// consults OpenVR or any runtime API.
+bool PublishGameFovTangents(
+    float tanHalfHorizontal,
+    float tanHalfVertical,
+    GameFovPublishReceipt* receipt = nullptr);
+// Fail-closed validation for a receipt used to authorize a captured pair.
+bool IsGameFovPublishReceiptCurrent(
+    const GameFovPublishReceipt& receipt);
 // Mode 153: lock canvas gameTan to HMD cover FOV (under-publish vs wide CCam).
 // Returns true when cover tangents were applied.
 bool PublishGameFovFromCover();

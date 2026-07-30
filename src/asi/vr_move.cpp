@@ -3,7 +3,9 @@
 #include "cam_matrix.h"
 #include "hmd_pose.h"
 #include "log.h"
+#include "openxr_pose_client.h"
 #include "stereo_config.h"
+#include "../bridge/gtaiv_xr_pose_bridge.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -35,6 +37,8 @@ std::atomic<bool> g_ready{false};
 
 // Controller yaw baked into look (cam matrix) + ped facing
 float g_controllerYaw = 0.f;
+LARGE_INTEGER g_yawClockFrequency{};
+LONGLONG g_yawClockPrevious = 0;
 
 constexpr float kStickDead = 0.22f;
 constexpr float kStickYawSpeed = 2.8f;   // rad/s at full deflection
@@ -103,10 +107,26 @@ void SendMouseDx(int dx) {
 }
 
 float ReadRightStickX() {
-  XINPUT_STATE st{};
-  if (XInputGetState(0, &st) != ERROR_SUCCESS)
-    return 0.f;
-  float x = st.Gamepad.sThumbRX / 32767.f;
+  float x = 0.f;
+  gtaiv_xr_bridge::PoseBridge pose{};
+  const uint32_t required =
+      gtaiv_xr_bridge::PoseBridgeHostRunning |
+      gtaiv_xr_bridge::PoseBridgeSessionRunning |
+      gtaiv_xr_bridge::PoseBridgeInputFocused |
+      gtaiv_xr_bridge::PoseBridgeRightControllerValid;
+  if (GetLatestOpenXrPoseBridge(&pose) &&
+      (pose.flags & required) == required) {
+    // Read the same OpenXR publication used by the Touch -> XInput hook.
+    // Calling XInputGetState here can resolve through a different XInput DLL
+    // than GTA's hooked import, which makes GTA receive RS packets while the
+    // VR body-yaw accumulator sees a permanently neutral physical controller.
+    x = pose.controllers[1].thumbstickX;
+  } else {
+    XINPUT_STATE st{};
+    if (XInputGetState(0, &st) != ERROR_SUCCESS)
+      return 0.f;
+    x = st.Gamepad.sThumbRX / 32767.f;
+  }
   if (x > 1.f)
     x = 1.f;
   if (x < -1.f)
@@ -116,6 +136,26 @@ float ReadRightStickX() {
   // Rescale after deadzone. Negate: XInput right-stick X is inverted vs GTA look.
   const float s = (std::fabs(x) - kStickDead) / (1.f - kStickDead);
   return -(x < 0.f ? -s : s);
+}
+
+float GetYawDeltaSeconds() {
+  if (g_yawClockFrequency.QuadPart == 0) {
+    QueryPerformanceFrequency(&g_yawClockFrequency);
+  }
+  LARGE_INTEGER now{};
+  QueryPerformanceCounter(&now);
+  if (g_yawClockPrevious == 0 ||
+      g_yawClockFrequency.QuadPart <= 0) {
+    g_yawClockPrevious = now.QuadPart;
+    return 0.f;
+  }
+  const LONGLONG elapsedTicks = now.QuadPart - g_yawClockPrevious;
+  g_yawClockPrevious = now.QuadPart;
+  const float elapsed = static_cast<float>(
+      static_cast<double>(elapsedTicks) /
+      static_cast<double>(g_yawClockFrequency.QuadPart));
+  // A pause or debugger break must not become a large turn on resume.
+  return (std::max)(0.f, (std::min)(elapsed, 0.05f));
 }
 
 void ApplyPedHeading(void* ped, float heading) {
@@ -151,6 +191,7 @@ float GetControllerYawOffset() {
 
 void ResetControllerYawOffset() {
   g_controllerYaw = 0.f;
+  g_yawClockPrevious = 0;
 }
 
 void UpdateVrMoveAndStick() {
@@ -161,10 +202,9 @@ void UpdateVrMoveAndStick() {
   }
 
   const float stick = ReadRightStickX();
-  // ~60fps assumed for yaw integrate; fine for cinema feel
-  constexpr float kDt = 1.f / 60.f;
+  const float dt = GetYawDeltaSeconds();
   if (stick != 0.f) {
-    g_controllerYaw += stick * kStickYawSpeed * GetFpJoySensScale() * kDt;
+    g_controllerYaw += stick * kStickYawSpeed * GetFpJoySensScale() * dt;
     // Keep in [-pi, pi]
     while (g_controllerYaw > 3.14159265f)
       g_controllerYaw -= 6.2831853f;

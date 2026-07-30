@@ -266,8 +266,6 @@ TransactionQuality assessTransactionQuality(
     result.parentDualStereo =
         worldStereo
         && verifiedParentDualStereo
-        && firstPersonCamera
-        && nativeHeadHidden
         && distinctEyes
         && result.sameTick
         && !temporalStereoFlag;
@@ -314,12 +312,12 @@ TransactionQuality assessTransactionQuality(
         || (worldStereo && immersiveMonoFlag)
         || (worldStereo && !distinctEyes)
         || (sameTickFlag && temporalStereoFlag)
-        || verifiedParentDualStereo != firstPersonCamera
-        || verifiedParentDualStereo != nativeHeadHidden
         || ((verifiedParentDualStereo
                 || firstPersonCamera
                 || nativeHeadHidden)
             && !worldStereo)
+        || ((firstPersonCamera || nativeHeadHidden)
+            && !verifiedParentDualStereo)
         || (result.immersiveMono
             && (!immersiveMonoFlag
                 || verifiedWvpStereo
@@ -372,7 +370,7 @@ TransactionQuality assessTransactionQuality(
     if (verifiedParentDualStereo && !result.parentDualStereo)
     {
         result.rejection =
-            "parent-dual stereo lacks first-person/head-hide proof";
+            "parent-dual stereo lacks same-tick distinct-eye proof";
         return result;
     }
     if (result.immersiveMono && !result.sameTick)
@@ -1822,21 +1820,19 @@ bool GameBridgeProtocolSelfTest(std::string& failure)
     value.flags &= ~gtaiv_xr_bridge::VerifiedDrawSceneStereo;
 
     value.flags |=
-        gtaiv_xr_bridge::VerifiedParentDualStereo
-        | gtaiv_xr_bridge::FirstPersonCamera
-        | gtaiv_xr_bridge::NativeHeadHidden;
-    const TransactionQuality parentDualQuality =
+        gtaiv_xr_bridge::VerifiedParentDualStereo;
+    TransactionQuality parentDualQuality =
         assessTransactionQuality(value, false);
     if (!parentDualQuality.accepted
         || !parentDualQuality.sameTick
         || parentDualQuality.temporalStereo
         || !parentDualQuality.parentDualStereo
-        || !parentDualQuality.firstPersonCamera
-        || !parentDualQuality.nativeHeadHidden
+        || parentDualQuality.firstPersonCamera
+        || parentDualQuality.nativeHeadHidden
         || !parentDualQuality.pixelDistinct)
     {
         failure =
-            "strict Mode58 parent-dual first-person world pair was rejected";
+            "literal Mode204 parent-dual submit pair was rejected";
         return false;
     }
     GameFrameView parentDualFrame {};
@@ -1850,22 +1846,34 @@ bool GameBridgeProtocolSelfTest(std::string& failure)
             "parent-dual world route did not require exact capture pose";
         return false;
     }
-    value.flags &= ~gtaiv_xr_bridge::NativeHeadHidden;
-    if (assessTransactionQuality(value, false).accepted)
+    value.flags |=
+        gtaiv_xr_bridge::FirstPersonCamera
+        | gtaiv_xr_bridge::NativeHeadHidden;
+    parentDualQuality =
+        assessTransactionQuality(value, false);
+    if (!parentDualQuality.accepted
+        || !parentDualQuality.parentDualStereo
+        || !parentDualQuality.firstPersonCamera
+        || !parentDualQuality.nativeHeadHidden)
     {
         failure =
-            "parent-dual world pair without native head hide was accepted";
+            "parent-dual observational camera/head telemetry was lost";
         return false;
     }
-    value.flags |= gtaiv_xr_bridge::NativeHeadHidden;
-    value.flags &= ~gtaiv_xr_bridge::FirstPersonCamera;
-    if (assessTransactionQuality(value, false).accepted)
+    value.flags &=
+        ~(gtaiv_xr_bridge::FirstPersonCamera
+            | gtaiv_xr_bridge::NativeHeadHidden);
+    parentDualQuality =
+        assessTransactionQuality(value, false);
+    if (!parentDualQuality.accepted
+        || !parentDualQuality.parentDualStereo
+        || parentDualQuality.firstPersonCamera
+        || parentDualQuality.nativeHeadHidden)
     {
         failure =
-            "parent-dual world pair without first-person proof was accepted";
+            "optional camera/head telemetry changed Mode204 acceptance";
         return false;
     }
-    value.flags |= gtaiv_xr_bridge::FirstPersonCamera;
     value.flags &= ~gtaiv_xr_bridge::SameSimulationTick;
     if (assessTransactionQuality(value, false).accepted)
     {

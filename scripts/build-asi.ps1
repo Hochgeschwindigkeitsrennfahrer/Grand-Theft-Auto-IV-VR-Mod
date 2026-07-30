@@ -285,13 +285,13 @@ if (-not $stereoConfigSource.Contains(
   throw "OpenXR isolation check failed: direct mode defaults may query OpenVR IPD"
 }
 
-if (-not $stereoRenderSource.Contains(
-    "ComputeOpenXrEyeRawTangents(")) {
-  throw "OpenXR frame isolation check failed: direct modes have no OpenXR per-eye FOV path"
-}
-if ($stereoRenderSource.Contains(
-    "if (!GetEyeRawProjection(eye, &l, &r, &t, &b)")) {
-  throw "OpenXR frame isolation check failed: canvas still calls OpenVR projection directly"
+foreach ($providerNeutralCanvasToken in @(
+  "GetCoverFovTangents(",
+  "GetEyeRawProjection("
+)) {
+  if (-not $stereoRenderSource.Contains($providerNeutralCanvasToken)) {
+    throw "OpenXR frame isolation check failed: upstream canvas no longer uses provider-neutral '$providerNeutralCanvasToken'"
+  }
 }
 foreach ($requiredMonoSource in @(
   "CaptureOpenXrWorldMonoPair(",
@@ -510,9 +510,9 @@ if (([regex]::Matches(
 }
 Assert-SourceTokens `
     -Source $parentTargetBlock `
-    -Label "Mode58 exact Mode204 parent target" `
+    -Label "literal upstream Mode204 parent target" `
     -Required @(
-      "UsesMode204ParentDualPath(GetStereoMode())",
+      "IsOursFpSameTickParentDualTry2(GetStereoMode())",
       "? kMode204TargetRva",
       ": kMode200TargetRva"
     )
@@ -522,57 +522,23 @@ $canvasSizeBlock = Get-CppBraceBlock `
     -StartToken "void ComputeCanvasSize(" `
     -Label "ComputeCanvasSize"
 Assert-SourceTokens `
-    -Source $frameBridgeSource `
-    -Label "fixed OpenXR CPU canvas constants" `
-    -Required @(
-      "CpuFrameMaxWidth = 1280u;",
-      "CpuFrameMaxHeight = 720u;"
-    )
-Assert-SourceTokens `
     -Source $canvasSizeBlock `
-    -Label "Mode58 fixed CPU canvas" `
+    -Label "upstream provider-neutral canvas sizing" `
     -Required @(
-      "StereoMode::OpenXrFusedFirstPerson",
-      "*outW = gtaiv_xr_bridge::CpuFrameMaxWidth;",
-      "*outH = gtaiv_xr_bridge::CpuFrameMaxHeight;",
-      "OpenXR CPU mailbox=%ux%u"
-    )
-Assert-SourceTokenOrder `
-    -Source $canvasSizeBlock `
-    -Label "Mode58 fixed CPU canvas early return" `
-    -Tokens @(
-      "StereoMode::OpenXrFusedFirstPerson",
-      "*outW = gtaiv_xr_bridge::CpuFrameMaxWidth;",
-      "*outH = gtaiv_xr_bridge::CpuFrameMaxHeight;",
-      "return;",
-      "GetCanvasCoverFovTangents("
+      "GetCoverFovTangents(&coverH, &coverV)",
+      "GetGameFovTangents(&gameH, &gameV)"
     )
 
-$canvasCoverBlock = Get-CppBraceBlock `
-    -Source $stereoRenderSource `
-    -StartToken "bool GetCanvasCoverFovTangents(" `
-    -Label "GetCanvasCoverFovTangents"
 $canvasEyeBlock = Get-CppBraceBlock `
     -Source $stereoRenderSource `
-    -StartToken "bool GetCanvasEyeRawProjection(" `
-    -Label "GetCanvasEyeRawProjection"
-Assert-SourceTokens `
-    -Source $canvasCoverBlock `
-    -Label "direct OpenXR cover FOV" `
-    -Required @(
-      "if (!IsOpenXrDirectMode(GetStereoMode()))",
-      "return GetCoverFovTangents(",
-      "g_openXrCanvasPoseOverride",
-      "ComputeOpenXrCoverTangents("
-    )
+    -StartToken "bool CopySurfToEyeCanvas(" `
+    -Label "CopySurfToEyeCanvas"
 Assert-SourceTokens `
     -Source $canvasEyeBlock `
-    -Label "direct OpenXR per-eye FOV" `
+    -Label "upstream provider-neutral per-eye projection" `
     -Required @(
-      "if (!IsOpenXrDirectMode(GetStereoMode()))",
-      "return GetEyeRawProjection(",
-      "g_openXrCanvasPoseOverride",
-      "ComputeOpenXrEyeRawTangents("
+      "GetEyeRawProjection(eye, &l, &r, &t, &b)",
+      "GetLatchedGameFovTangents(&gameH, &gameV)"
     )
 
 $hookDrawWalkBlock = Get-CppBraceBlock `
@@ -581,29 +547,20 @@ $hookDrawWalkBlock = Get-CppBraceBlock `
     -Label "HookDrawWalk"
 Assert-SourceTokens `
     -Source $hookDrawWalkBlock `
-    -Label "Mode58 pinned parent-dual pose" `
+    -Label "literal upstream Mode204 parent-dual dispatch" `
     -Required @(
-      "IsOpenXrFusedFirstPerson(parentMode)",
-      "GetLatestOpenXrPoseBridge(&mode58Pose)",
-      "BeginPinnedOpenXrBuildPose(mode58Pose)",
-      "CaptureOpenXrStampFromPose(mode58Pose)",
-      "g_openXrCanvasPoseOverride = &mode58Pose;",
-      "RunMode200ParentDualGuarded(",
-      "g_openXrCanvasPoseOverride = nullptr;",
-      "EndPinnedOpenXrBuildPose();",
-      "if (poseLatch && !openXrFirstPerson)"
+      "IsOursFpSameTickParentDual(GetStereoMode())",
+      "RunMode200ParentDualGuarded(self, edx)",
+      "g_inDrawWalkDual.store(true);"
     )
-Assert-SourceTokenOrder `
+Assert-SourceExcludes `
     -Source $hookDrawWalkBlock `
-    -Label "Mode58 pinned pose/canvas lifetime" `
-    -Tokens @(
-      "GetLatestOpenXrPoseBridge(&mode58Pose)",
-      "BeginPinnedOpenXrBuildPose(mode58Pose)",
-      "CaptureOpenXrStampFromPose(mode58Pose)",
-      "g_openXrCanvasPoseOverride = &mode58Pose;",
-      "RunMode200ParentDualGuarded(",
-      "g_openXrCanvasPoseOverride = nullptr;",
-      "EndPinnedOpenXrBuildPose();"
+    -Label "literal upstream Mode204 dispatch excludes OpenXR proof machinery" `
+    -Forbidden @(
+      "IsOpenXrFusedFirstPerson(",
+      "GetLatestOpenXrPoseBridge(",
+      "BeginPinnedOpenXrBuildPose(",
+      "CaptureOpenXrStampFromPose("
     )
 
 $decodeOpenXrPoseBlock = Get-CppBraceBlock `
@@ -650,132 +607,96 @@ Assert-SourceTokenOrder `
       "g_valid.load()"
     )
 
-$applyHmdToCamBlock = Get-CppBraceBlock `
-    -Source $camMatrixSource `
-    -StartToken "void ApplyHmdToCam(Matrix44* mat) {" `
-    -Label "ApplyHmdToCam"
-Assert-SourceTokens `
-    -Source $camMatrixHeaderSource `
-    -Label "StereoCamBuildReceipt first-person evidence fields" `
-    -Required @(
-      "struct StereoCamBuildReceipt",
-      "uint32_t applyGeneration = 0u;",
-      "uint32_t writerThreadId = 0u;",
-      "bool rightEye = false;",
-      "bool eyeOffsetApplied = false;",
-      "bool firstPersonAnchor = false;",
-      "float preEyePosition[3] = {};",
-      "float basis[9] = {};"
-    )
-Assert-SourceTokens `
-    -Source $applyHmdToCamBlock `
-    -Label "Mode58 camera receipt writer" `
-    -Required @(
-      "GetCachedEyeOffset(rightEye, &eyeOffset)",
-      "StereoMode::OpenXrFusedFirstPerson",
-      "g_camBuildReceiptScope.applyGeneration = n;",
-      "g_camBuildReceiptScope.lastPreEyePosition",
-      "eyeCenter && IsOpenXrFusedFirstPerson(sm)",
-      "g_camBuildReceiptScope.lastBasis"
-    )
-
 $parentDualBlock = Get-CppBraceBlock `
     -Source $stereoRenderSource `
-    -StartToken "const OpenXrCaptureStamp* mode58Stamp) {" `
-    -Label "RunMode200ParentDualGuarded"
+    -StartToken "bool RunMode200ParentDualGuarded(void* self, void* edx) {" `
+    -Label "literal upstream RunMode200ParentDualGuarded"
 Assert-SourceTokens `
     -Source $parentDualBlock `
-    -Label "Mode58 fresh first-person parent-dual gate" `
+    -Label "literal upstream Mode204 renderer body" `
     -Required @(
-      "StereoCamBuildReceipt leftReceipt{};",
-      "StereoCamBuildReceipt rightReceipt{};",
-      "GetStereoCamApplyGeneration();",
-      "BeginStereoCamBuildReceipt(false);",
-      "BeginStereoCamBuildReceipt(true);",
-      "EndStereoCamBuildReceipt(&leftReceipt)",
-      "EndStereoCamBuildReceipt(&rightReceipt)",
-      "leftReceipt.applyGeneration >",
-      "rightReceipt.applyGeneration >",
-      "rightReceipt.applyGeneration >",
-      "leftReceipt.writerThreadId == currentThread",
-      "rightReceipt.writerThreadId == currentThread",
-      "!leftReceipt.rightEye",
-      "rightReceipt.rightEye",
-      "leftReceipt.eyeOffsetApplied",
-      "rightReceipt.eyeOffsetApplied",
-      "leftReceipt.firstPersonAnchor",
-      "rightReceipt.firstPersonAnchor",
-      "distanceMeters >= 0.01f",
-      "distanceMeters <= 0.20f",
-      "centerDistanceMeters <= 0.005f",
-      "maxBasisDelta <= 0.002f",
-      "IsPedHeadHideOperational();",
-      "firstPersonCameraPair &&",
-      "headHideReady &&",
-      "okL && okR",
-      "CompleteOpenXrPair(",
-      "StereoOpenXRFused: accepted pair #%u",
-      "sameTick=1 ",
-      "parentDual=1 firstPerson=1 headHide=1 ",
-      "parent=0x%X"
+      "SetStereoEye(StereoEye::Left);",
+      "g_origDrawWalk(self, edx);",
+      "CopyBbToEyeCanvasGated(g_device, g_texL, vr::Eye_Left)",
+      "SetStereoEye(StereoEye::Right);",
+      "CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Right)",
+      "if (IsOursFpAtomicEyePair(GetStereoMode()))",
+      "if (okL && okR)",
+      "g_haveL = g_haveR = true;"
     )
-$headHideOperationalBlock = Get-CppBraceBlock `
-    -Source $pedHideSource `
-    -StartToken "bool IsPedHeadHideOperational() {" `
-    -Label "IsPedHeadHideOperational"
-Assert-SourceTokens `
-    -Source $headHideOperationalBlock `
-    -Label "Mode58 native head-hide operational gate" `
-    -Required @(
-      "!g_dead.load()",
-      "g_nativeHidePasses.load() > 0u",
-      "g_nativeSuccessMode.load() ==",
-      "WantsNativePedHide(mode)"
+Assert-SourceExcludes `
+    -Source $parentDualBlock `
+    -Label "literal upstream Mode204 renderer excludes OpenXR proof policy" `
+    -Forbidden @(
+      "OpenXrCaptureStamp",
+      "StereoCamBuildReceipt",
+      "CompleteOpenXrPair(",
+      "IsPedHeadHideOperational(",
+      "firstPersonCamera",
+      "nativeHead"
     )
 
-$completePairBlock = Get-CppBraceBlock `
+$mode204LeaseBlock = Get-CppBraceBlock `
     -Source $stereoRenderSource `
-    -StartToken "void CompleteOpenXrPair(" `
-    -Label "CompleteOpenXrPair"
-$acquirePairBlock = Get-CppBraceBlock `
+    -StartToken "bool StereoAcquireMode204SubmitPair(" `
+    -Label "StereoAcquireMode204SubmitPair"
+$mode204DescBlock = Get-CppBraceBlock `
     -Source $stereoRenderSource `
-    -StartToken "bool StereoAcquireOpenXrPair(" `
-    -Label "StereoAcquireOpenXrPair"
+    -StartToken "bool StereoGetMode204EyeTextureDesc(" `
+    -Label "StereoGetMode204EyeTextureDesc"
 Assert-SourceTokens `
     -Source $stereoRenderHeaderSource `
-    -Label "Mode58 producer pair proof fields" `
+    -Label "passive literal Mode204 OpenXR seam declarations" `
     -Required @(
-      "bool verifiedParentDualStereo = false;",
-      "bool firstPersonCamera = false;",
-      "bool nativeHeadHidden = false;"
+      "bool StereoAcquireMode204SubmitPair(OpenXrStereoPair* output);",
+      "bool StereoGetMode204EyeTextureDesc(D3DSURFACE_DESC* output);"
     )
 Assert-SourceTokens `
-    -Source $completePairBlock `
-    -Label "Mode58 pair-proof dependency chain" `
+    -Source $mode204LeaseBlock `
+    -Label "passive exact Mode204 texture lease" `
     -Required @(
-      "g_openXrPairVerifiedParentDual =",
-      "g_openXrPairVerifiedDrawScene &&",
-      "g_openXrPairFirstPersonCamera =",
-      "g_openXrPairVerifiedParentDual &&",
-      "g_openXrPairNativeHeadHidden =",
-      "g_openXrPairFirstPersonCamera &&",
-      "!g_openXrPairSameTick &&",
-      "verifiedTemporalStereo"
+      "StereoMode::OursFpSameTickParentDualTry2",
+      "IsStereoRenderArmed()",
+      "!g_haveL",
+      "!g_haveR",
+      "g_texL->GetLevelDesc(",
+      "g_texL->AddRef();",
+      "g_texR->AddRef();",
+      "output->eyes[0] = g_texL;",
+      "output->eyes[1] = g_texR;"
+    )
+Assert-SourceExcludes `
+    -Source $mode204LeaseBlock `
+    -Label "passive Mode204 lease has no renderer policy or mutation" `
+    -Forbidden @(
+      "CompleteOpenXrPair(",
+      "g_mode200DualN",
+      "pairId",
+      "poseSequence",
+      "firstPersonCamera",
+      "nativeHeadHidden",
+      "g_haveL =",
+      "g_haveR ="
     )
 Assert-SourceTokens `
-    -Source $acquirePairBlock `
-    -Label "Mode58 OpenXR pair output" `
+    -Source $mode204DescBlock `
+    -Label "passive Mode204 UI transport description" `
     -Required @(
-      "output->verifiedParentDualStereo =",
-      "g_openXrPairVerifiedParentDual;",
-      "output->firstPersonCamera =",
-      "g_openXrPairFirstPersonCamera;",
-      "output->nativeHeadHidden =",
-      "g_openXrPairNativeHeadHidden;"
+      "StereoMode::OursFpSameTickParentDualTry2",
+      "g_texL->GetLevelDesc(0, output)"
+    )
+Assert-SourceExcludes `
+    -Source $mode204DescBlock `
+    -Label "Mode204 UI description does not consume a world pair" `
+    -Forbidden @(
+      "g_haveL",
+      "g_haveR",
+      "AddRef(",
+      "Release("
     )
 Assert-SourceTokens `
     -Source $frameBridgeSource `
-    -Label "Mode58 shared protocol proof flags" `
+    -Label "Mode204 shared protocol observation flags" `
     -Required @(
       "VerifiedParentDualStereo = 1u << 11u,",
       "FirstPersonCamera = 1u << 12u,",
@@ -796,24 +717,29 @@ $producerDescriptorBlock = Get-CppBraceBlock `
     -Label "OpenXrFrameProducer::descriptor"
 Assert-SourceTokens `
     -Source $producerPublishBlock `
-    -Label "Mode58 CPU mailbox route" `
+    -Label "literal Mode204 passive GPU route" `
     -Required @(
-      "stereoMode == StereoMode::OpenXrTemporalStereo;",
-      "stereoMode",
-      "== StereoMode::OpenXrFusedFirstPerson;",
-      "fusedFirstPersonMode",
+      "mode204OpenXrAdapter",
+      "captureMode204UiPair(",
+      "acquireMode204WorldPair(",
+      "StereoAcquireOpenXrPair(&lease.pair)",
       "lease.pair.verifiedParentDualStereo",
-      "lease.pair.firstPersonCamera",
-      "lease.pair.nativeHeadHidden",
       "lease.pair.sameSimulationTick",
       "lease.pair.verifiedTemporalStereo",
-      "stereoMode == StereoMode::OpenXrFusedFirstPerson;",
       "if (cpuMailboxRoute)",
-      "publishCpuMailboxFrame("
+      "publishCpuMailboxFrame(",
+      "OpenXRSubmitAdapter: Mode204 passive exact textures"
+    )
+Assert-SourceExcludes `
+    -Source $producerPublishBlock `
+    -Label "literal Mode204 never uses the CPU mailbox" `
+    -Forbidden @(
+      "mode204OpenXrAdapter && cpuMailboxRoute",
+      "mode204OpenXrAdapter || cpuMailboxRoute"
     )
 Assert-SourceTokens `
     -Source $cpuPublishBlock `
-    -Label "Mode58 immediate atomic CPU mailbox" `
+    -Label "legacy direct-mode CPU mailbox" `
     -Required @(
       "pair.verifiedParentDualStereo",
       "const bool splitTemporalReadback =",
@@ -827,7 +753,7 @@ Assert-SourceTokens `
     )
 Assert-SourceTokens `
     -Source $producerDescriptorBlock `
-    -Label "Mode58 shared descriptor flags" `
+    -Label "shared descriptor observation flags" `
     -Required @(
       "lastPair_.verifiedParentDualStereo",
       "gtaiv_xr_bridge::VerifiedParentDualStereo",
@@ -843,18 +769,77 @@ $hostQualityBlock = Get-CppBraceBlock `
     -Label "OpenXR host transaction quality"
 Assert-SourceTokens `
     -Source $hostQualityBlock `
-    -Label "Mode58 host proof and temporal exclusion" `
+    -Label "Mode204 submit proof with observational first-person/head state" `
     -Required @(
       "gtaiv_xr_bridge::VerifiedParentDualStereo",
       "gtaiv_xr_bridge::FirstPersonCamera",
       "gtaiv_xr_bridge::NativeHeadHidden",
       "verifiedParentDualStereo",
-      "&& firstPersonCamera",
-      "&& nativeHeadHidden",
       "&& result.sameTick",
       "&& !temporalStereoFlag",
+      "result.firstPersonCamera = firstPersonCamera;",
+      "result.nativeHeadHidden = nativeHeadHidden;"
+    )
+Assert-SourceExcludes `
+    -Source $hostQualityBlock `
+    -Label "Mode204 host transport does not gate on presentation telemetry" `
+    -Forbidden @(
       "verifiedParentDualStereo != firstPersonCamera",
-      "verifiedParentDualStereo != nativeHeadHidden"
+      "verifiedParentDualStereo != nativeHeadHidden",
+      "&& firstPersonCamera`r`n",
+      "&& nativeHeadHidden`r`n"
+    )
+
+$mode204BridgeLeaseBlock = Get-CppBraceBlock `
+    -Source $openXrSource `
+    -StartToken "bool acquireMode204WorldPair(" `
+    -Label "OpenXrFrameProducer::acquireMode204WorldPair"
+$mode204BridgeUiBlock = Get-CppBraceBlock `
+    -Source $openXrSource `
+    -StartToken "bool captureMode204UiPair(" `
+    -Label "OpenXrFrameProducer::captureMode204UiPair"
+Assert-SourceTokens `
+    -Source $mode204BridgeLeaseBlock `
+    -Label "bridge-owned Mode204 transaction metadata" `
+    -Required @(
+      "StereoAcquireMode204SubmitPair(output)",
+      "stampMode204Pair(",
+      "StereoReleaseOpenXrPair(output)"
+    )
+Assert-SourceTokens `
+    -Source $mode204BridgeUiBlock `
+    -Label "bridge-owned stationary UI capture" `
+    -Required @(
+      "StereoGetMode204EyeTextureDesc(&worldDescription)",
+      "mode204UiTexture_",
+      "gameDevice->StretchRect(",
+      "output->eyes[0] = mode204UiTexture_.Get();",
+      "backBufferDescription.Width",
+      "backBufferDescription.Height"
+    )
+Assert-SourceExcludes `
+    -Source (Get-CppExecutableText $mode204BridgeUiBlock) `
+    -Label "stationary UI never overwrites Mode204 eye textures" `
+    -Forbidden @(
+      "g_texL",
+      "g_texR",
+      "StereoAcquireMode204SubmitPair("
+    )
+
+$submitCopyBlock = Get-CppBraceBlock `
+    -Source $openXrSource `
+    -StartToken "bool submitCopy(" `
+    -Label "OpenXrFrameProducer::submitCopy"
+Assert-SourceTokens `
+    -Source $submitCopyBlock `
+    -Label "nonblocking but synchronized external-slot reuse" `
+    -Required @(
+      "const uint64_t waitValue = slot.transactionId;",
+      "timeline.waitSemaphoreValueCount =",
+      "&releaseSemaphore_",
+      "VK_PIPELINE_STAGE_TRANSFER_BIT",
+      "signalSemaphoreValueCount = 1u",
+      "&readySemaphore_"
     )
 
 # Direct OpenXR runtime isolation is checked only on reachable mixed-source
@@ -905,15 +890,17 @@ foreach ($boundedDirectOpenXrPath in @(
   @{ Label = "BeginPinnedOpenXrBuildPose"; Source = $beginPinnedPoseBlock },
   @{ Label = "GetCachedEyeOffset"; Source = $cachedEyeOffsetBlock },
   @{ Label = "GetHmdPoseMatrix"; Source = $cachedHmdPoseBlock },
-  @{ Label = "ApplyHmdToCam"; Source = $applyHmdToCamBlock },
-  @{ Label = "GetCanvasCoverFovTangents"; Source = $canvasCoverBlock },
-  @{ Label = "GetCanvasEyeRawProjection"; Source = $canvasEyeBlock },
+  @{ Label = "CopySurfToEyeCanvas"; Source = $canvasEyeBlock },
   @{ Label = "ComputeCanvasSize"; Source = $canvasSizeBlock },
   @{ Label = "HookDrawWalk"; Source = $hookDrawWalkBlock },
   @{ Label = "RunMode200ParentDualGuarded"; Source = $parentDualBlock },
+  @{ Label = "StereoAcquireMode204SubmitPair"; Source = $mode204LeaseBlock },
+  @{ Label = "StereoGetMode204EyeTextureDesc"; Source = $mode204DescBlock },
   @{ Label = "InstallStereoRenderHooks"; Source = $installStereoBlock },
   @{ Label = "StereoRenderOnDevice"; Source = $stereoOnDeviceBlock },
   @{ Label = "OpenXrFrameProducer::publish"; Source = $producerPublishBlock },
+  @{ Label = "OpenXrFrameProducer::acquireMode204WorldPair"; Source = $mode204BridgeLeaseBlock },
+  @{ Label = "OpenXrFrameProducer::captureMode204UiPair"; Source = $mode204BridgeUiBlock },
   @{ Label = "OpenXrFrameProducer::publishCpuMailboxFrame"; Source = $cpuPublishBlock },
   @{ Label = "HookEndScene"; Source = $hookEndSceneBlock },
   @{ Label = "HookThread"; Source = $hookThreadBlock }
@@ -927,7 +914,7 @@ foreach ($boundedDirectOpenXrPath in @(
 Write-Host (
   "OpenXR frame isolation source check: PASS " +
   "(Mode55 mono + Mode56 diagnostic + Mode57 ordered temporal L/R + " +
-  "Mode58 Mode204 parent-dual first-person CPU mailbox; no OpenVR/temporal opt-in)")
+  "literal Mode204 passive exact-eye GPU transport; no OpenVR cross-call)")
 
 foreach ($requiredResetSource in @(
   "HookReset(",

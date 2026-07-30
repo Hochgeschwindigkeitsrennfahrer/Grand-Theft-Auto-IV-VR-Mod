@@ -22,8 +22,9 @@ struct OpenXrStereoPair {
   bool poseStamped = false;
   bool verifiedWvpStereo = false;
   bool verifiedDrawSceneStereo = false;
-  // Mode 58 proof bits. These remain false for every legacy/OpenVR route and
-  // for direct-OpenXR Modes 54-57.
+  // Parent-dual seam proof plus observational camera/head state. Literal Mode
+  // 204 uses these only at the OpenXR presentation adapter; its renderer never
+  // gates on the observational fields.
   bool verifiedParentDualStereo = false;
   bool firstPersonCamera = false;
   bool nativeHeadHidden = false;
@@ -52,6 +53,14 @@ void StereoSetOpenXrRenderPose(
 // If mode >= 4 and RTs ready, Submit L/R from eye textures. Returns true if handled.
 bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop);
 
+// Passive OpenXR presentation lease over the exact textures Mode 204 would
+// hand to OpenVR. This does not clear, stamp, validate, or otherwise mutate
+// renderer state. Release with StereoReleaseOpenXrPair.
+bool StereoAcquireMode204SubmitPair(OpenXrStereoPair* output);
+// Passive descriptor query for allocating bridge-owned UI transport resources
+// before Mode 204 has completed its first world pair.
+bool StereoGetMode204EyeTextureDesc(D3DSURFACE_DESC* output);
+
 // Acquires AddRef'd L/R textures from the most recently completed capture
 // transaction. The caller must release with StereoReleaseOpenXrPair.
 bool StereoAcquireOpenXrPair(OpenXrStereoPair* output);
@@ -62,6 +71,10 @@ bool StereoInDualPass();
 
 // Mode193: true while DrawScene is paused after a door/interior AV.
 bool StereoMode193SkipDrawActive();
+
+// Current GTA render epoch. Mode58 stamps its CCam+0x60 write with this value
+// and accepts it only for the exact parent-dual source-frame attempt.
+uint64_t GetStereoRenderFrameSequence();
 
 // Broader than dual: Left natural PhaseA..Draw + Right dual (mode 7/8).
 bool StereoProjWindowActive();

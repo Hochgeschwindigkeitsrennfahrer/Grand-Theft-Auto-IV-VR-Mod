@@ -8,8 +8,4 @@ namespace asi {
 // Mode 120 path is untouched.
 void UpdatePedHeadHide();
 
-// Runtime gate for direct-OpenXR first-person publication. A fused world pair
-// is not exposed until at least one native hide transaction succeeded.
-bool IsPedHeadHideOperational();
-
 }  // namespace asi

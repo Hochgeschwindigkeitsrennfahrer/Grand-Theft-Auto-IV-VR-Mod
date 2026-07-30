@@ -1,8 +1,220 @@
 # CURRENT-STATE — gtaiv-dxvk-vr
 
-**As of:** 2026-07-28 15:10 PT
+**As of:** 2026-07-28 23:36 PT
 
-## Current primary: Mode 58 direct OpenXR first-person stereo (full proof PASS)
+## Current release gate: BLOCKED — physical Quest run disproved parity
+
+Do not launch, package, push, or describe the current dirty OpenXR build as
+ready. The later physical Quest run disproved the simulator acceptance claim
+below:
+
+- Mode 204 was launched without the upstream 1440x1440 square command line, so
+  GTA created a 3840x2160 backbuffer and baked a 16:9 rectangle into each
+  2048x2048 eye canvas. This produced the visible floating/letterboxed world.
+- Once gameplay loaded, the x64 host presented only about 13–17 new projection
+  frames per second. The prior "smooth" proof video contained only 53 unique
+  captures over 12.18 seconds (4.35 unique fps); duplicated encoding frames were
+  not valid smoothness proof.
+- After controller yaw reached about 32.6 degrees, successive Mode 204 eye pairs
+  alternated between camera centers about 8.6 cm apart. That matches the live
+  8 cm ped-forward camera nudge being sampled against old/new ped bases.
+- The branch also added OpenXR-specific camera, pose-gating, frame-transport,
+  and input ownership behavior. It therefore did not preserve upstream Mode 204
+  as claimed.
+
+Origin itself is not the regression. Fetched refs are:
+
+```text
+origin/master                           715d40f  Mode 204 fused stereo LKG
+origin/feature/first-person-controller 4916e3f  experimental Mode 216
+```
+
+Mode 216 is newer and contains useful deferred HEAD-bone work plus the square
+render preset, but its own upstream notes still report jumping/spazzing. Do not
+cherry-pick it wholesale or call it proven.
+
+Correction is in progress on `codex/openxr-origin-parity`, based directly on
+`715d40f`. Preserve the origin renderer/camera/input behavior and attach OpenXR
+only after the completed L/R submit pair. The first isolated correction is
+already offline-green: the supervised Mode 204 launcher now transactionally
+installs the exact 1440x1440 preset and restores the user's prior
+`commandline.txt`; `tests/openxr_launcher_safety_contract_test.ps1` passes.
+No further GTA, Steam, simulator, or headset launch is authorized without a new
+explicit `go`.
+
+## Historical simulator gate: literal Mode 204 transport proof PASS
+
+The authoritative headless/file-IPC simulator run is:
+
+```text
+out-openxr/runs/20260728-214242-steam-safe/
+```
+
+Its `result.txt` reports `outcome=PROOF_COMPLETE` for `backend=openxr`,
+`stereo=204`. This is the first complete acceptance run of the final provider
+architecture: upstream Mode 204 remains the GTA renderer, camera, movement, and
+stereo implementation; the OpenXR branch leases its completed L/R textures at
+the existing submit seam and transports them through the separate x64 host.
+Neither GTA nor the host initialized OpenVR, and SteamVR remained absent.
+
+The run proved all of the following in one uninterrupted game session:
+
+- the exact Mode 204 parent-dual route, GPU producer, isolated GPU ingest queue,
+  and x64 OpenXR host were active;
+- the host presented `world-parent-dual-stereo` with the exact capture pose;
+- producer transactions advanced `2280 -> 6840` and host transactions advanced
+  `2265 -> 6823`;
+- first-person hard hooks, gameplay first-person lock, and native five-component
+  player-head hide were active;
+- the stationary bridge-owned menu/loading/pause quad worked independently of
+  the Mode 204 world-eye textures;
+- exact Start, A, left-stick forward, release, and neutral packets were consumed,
+  including a complete world -> pause UI -> world round trip;
+- the accepted 60-second forward-stick interval advanced the producer by `4080`
+  transactions and the host by `3883`, with zero heartbeat pauses;
+- the first-person camera moved `7.118 m`, from
+  `(892.425, -499.725, 20.079)` to `(892.796, -492.617, 20.057)`;
+- the sRGB decode path and OpenXR swapchain format `29` were active;
+- D3D9 Reset recovery, Quest-like simulator profile reset, final controller
+  neutral, process cleanup, and exact configuration restoration all passed.
+
+The tested artifact SHA-256 values are:
+
+```text
+x86 ASI  8E6E9CBC242869535C983518A15502EC92DC11785819B8F6ECB7224A10E1EE07
+x64 host C40C2A1D3CF5F8AE02F97108B44D8EA5E210FC001515AB21D7A9030662C2FF1F
+```
+
+Legacy CPU-mailbox result fields such as `stereoRawRgbReady` and the old
+Mode 58 camera-distance receipt are not acceptance gates for literal Mode 204's
+GPU texture lease. Its authoritative gates are `mode204*`,
+`parentDualProofComplete`, `firstPersonProofComplete`, continuous producer/host
+transactions, and `walkQualityReady`; all passed.
+
+This clears the no-headset transport, first-person, UI, controller, and sustained
+gameplay gate without changing upstream Mode 204. A physical Quest test is still
+required to judge optical fusion, full-view coverage, scale, comfort, and Link
+behavior. Meta XR Operator can later wrap only the x64 host for richer automated
+pose/controller/image inspection; it is experimental test tooling and is not a
+renderer or production dependency.
+
+## Historical gate: repaired Mode 58 full-game Elliott proof PASS
+
+The authoritative headless/file-IPC simulator run is:
+
+```text
+out-openxr/runs/20260728-200914-steam-safe/
+```
+
+It reports `outcome=PROOF_COMPLETE` for direct OpenXR Mode 58, with SteamVR
+absent and no simulator-window control. The complete automated route passed:
+
+- stationary menu/loading quad and sRGB swapchain/color path;
+- exact Start and A consumption to enter gameplay;
+- current-frame Mode 204 parent-dual stereo with exact OpenXR capture pose,
+  `9.11 cm` camera separation, and fresh producer/host transactions
+  `1732 -> 4800` / `1734 -> 4740`;
+- hard first-person hooks, gameplay first-person lock, and native player-head
+  hide;
+- sustained world presentation, world -> pause UI -> world, a six-second
+  forward-stick interval, release, neutral, and controlled pose sweep;
+- D3D9 Reset recovery, proof cleanup, command-file removal, and exact
+  restoration of ASI/backend/stereo/OpenVR/command-line state.
+
+The preceding run `20260728-200408-steam-safe` reproduced the reported
+approximately one-frame-per-second slideshow without a headset. GTA can call
+the Mode 58 parent more than once before the same `EndScene`. The new
+current-frame FOV gate ran before the existing duplicate-source guard, so each
+duplicate call erased the already-proved L/R pair before `EndScene` could
+publish it. The fix retains a proved same-source pair before applying the
+one-FOV-receipt-per-frame freshness gate. The stereo source-contract test now
+locks that ordering.
+
+Tested artifact SHA-256 values are:
+
+```text
+x86 ASI  467DFF3BBB76309BDCCBE6C336D0083E4044049A920B08EEFC1B28F0B6C1CB0C
+x64 host 33EC22DC1C2F53FD3168E0A88A3163D75D2D163F393B9A27E4A2061A7B5EC8D6
+```
+
+This clears the no-headset code/transport gate. A single physical Quest run is
+still required to judge optical full-view coverage, scale, comfort, and Meta
+Dashboard/focus behavior; the simulator cannot certify those headset-only
+properties.
+
+## Physical Quest 3 visual gate: RETEST REQUIRED — blocker fixed offline
+
+The first physical Meta Quest Link run is:
+
+```text
+out-openxr/runs/20260728-172253-steam-safe/
+```
+
+SteamVR remained absent, the x64 host continuously submitted genuine
+`world-parent-dual-stereo` OpenXR projection layers, Touch input worked, and
+cleanup restored the pre-run game state. The headset nevertheless showed the
+world as a lower, framed rectangle instead of filling the view. This is a
+release blocker; do not push or request another headset test from this build.
+
+The trace identifies the exact cause. Mode 58 wrote the intended 110-degree GTA
+camera FOV and then called the legacy `PublishGameFovFromCover()` path. That path
+reached `vr::VRSystem()` even though direct OpenXR deliberately runs without
+`openvr_api.dll`. The delayed-load exception disabled the FOV site before any
+OpenXR tangent receipt was published:
+
+```text
+FovSite: EXCEPTION reading/writing CCam+0x60 — disabled for process
+gameTan=(1.000,0.562) trueFov=0 gen=0
+```
+
+Against the Quest eye frusta, the fallback tangents filled only
+`y=121..459` of the 720-pixel eye canvas: 338 pixels, or about 47% vertically.
+The black area was therefore baked into the ASI eye textures before the correct
+full-swapchain OpenXR projection submission. Host-side stretching/cropping is
+not an acceptable fix because it would break angular geometry, stereo, and
+reprojection.
+
+The correction is now implemented and offline-green:
+
+- derive the actual symmetric GTA raster tangents from the verified
+  110-degree `CCam` write and the captured square source aspect using the
+  production Mode 16 conversion (`45 CCam -> about 58.7 degrees vertical`);
+  at 110 degrees this is about 143.5 degrees of square raster coverage;
+- use the validated OpenXR `PoseBridge` eye FOVs only as the required Quest
+  frusta, then crop the wider GTA raster into each asymmetric eye at full
+  destination coverage; never claim the narrower runtime cover as GTA's
+  rendered FOV and never stretch it to manufacture a passing receipt;
+- require the 110-degree `CCam` read-back to carry the exact current source
+  frame sequence, an advancing engine generation, a current tangent
+  generation, a 0.95–1.05 source aspect, both real sub-rect eye captures,
+  source-crop proof, and at least 90% destination width and height before
+  accepting a Mode 58 world pair;
+- activate, verify, archive, and transactionally restore the square GTA render
+  preset for Mode 58 only; Modes 55–57 and the normal user command line remain
+  untouched;
+- use the complete HMD basis including roll, integrate right-stick yaw from a
+  bounded high-resolution clock, and leave the Mode 58 ped controller-owned
+  instead of rewriting its matrix from head yaw.
+
+The x86 build, stereo/FOV math, CPU readback, controller, x64 host self-test,
+launcher safety, runtime classification, recorder, Elliott proof, movement,
+and release-hygiene contracts all pass without launching GTA, Steam, SteamVR,
+Quest Link, or another GUI. Current locally built artifact hashes are:
+
+```text
+x86 ASI  481959FA586EDA3F758263C33FF44EBFBF36E4706671C9F3733A952CD7E97825
+x64 host 33EC22DC1C2F53FD3168E0A88A3163D75D2D163F393B9A27E4A2061A7B5EC8D6
+```
+
+The one remaining gate is a single physical Quest first-person run confirming
+full optical coverage and comfortable movement. Do not push before that result.
+
+The run ended through the Meta runtime's orderly `EXITING` state after GTA lost
+focus; the host did not crash. The launcher now classifies an ordered
+`session EXITING` followed by `clean shutdown requested` separately from an
+abort.
+
+## Historical primary: Mode 58 direct OpenXR first-person stereo (simulator proof PASS)
 
 The authoritative supervised run is:
 

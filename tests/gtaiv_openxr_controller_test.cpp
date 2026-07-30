@@ -119,6 +119,7 @@ int main()
     std::cout
         << "OpenXrControllerTest: PASS "
         << "sticks=1 triggers=1 face=1 shoulders=1 "
-        << "thumbs=1 dpad=1 menu=1 recenter=1 haptics=1\n";
+        << "thumbs=1 dpad=1 menu=1 recenter=1 haptics=1 "
+        << "poseBridgeOnly=1\n";
     return 0;
 }

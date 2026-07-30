@@ -88,8 +88,10 @@ HRESULT STDMETHODCALLTYPE HookReset(IDirect3DDevice9* self, D3DPRESENT_PARAMETER
 void EnsureDeviceHooks(IDirect3DDevice9* device) {
   void** vt = *reinterpret_cast<void***>(device);
   // IDirect3DDevice9: Reset=16, Present=17, EndScene=42.
-  HookFn(vt[16], reinterpret_cast<void*>(&HookReset), reinterpret_cast<void**>(&g_realReset),
-         "Reset");
+  if (asi::IsOpenXrBridgeRequested()) {
+    HookFn(vt[16], reinterpret_cast<void*>(&HookReset), reinterpret_cast<void**>(&g_realReset),
+           "Reset");
+  }
   HookFn(vt[17], reinterpret_cast<void*>(&HookPresent), reinterpret_cast<void**>(&g_realPresent),
          "Present");
   HookFn(vt[42], reinterpret_cast<void*>(&HookEndScene), reinterpret_cast<void**>(&g_realEndScene),
@@ -212,7 +214,11 @@ bool InstallCreate9Hook() {
   if (!HookFn(proc, reinterpret_cast<void*>(&HookDirect3DCreate9),
               reinterpret_cast<void**>(&g_realCreate9), "Direct3DCreate9"))
     return false;
-  PrimeExistingDeviceHooks();
+  // Direct OpenXR can arrive after GTA has already created its device, so it
+  // needs the probe to arm the shared DXVK vtable. Upstream OpenVR hooks the
+  // real GTA CreateDevice path and must not create or Reset a probe device.
+  if (asi::IsOpenXrBridgeRequested())
+    PrimeExistingDeviceHooks();
   return true;
 }
 

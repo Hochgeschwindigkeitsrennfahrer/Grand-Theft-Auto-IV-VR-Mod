@@ -25,8 +25,6 @@ std::atomic<bool> g_resolved{false};
 std::atomic<bool> g_dead{false};
 std::atomic<uint32_t> g_calls{0};
 std::atomic<uint32_t> g_ok{0};
-std::atomic<uint32_t> g_nativeHidePasses{0};
-std::atomic<int> g_nativeSuccessMode{-1};
 std::atomic<bool> g_nativeLogged{false};
 
 bool ResolveSetDraw() {
@@ -59,23 +57,13 @@ void HideOneHelper(int component) {
   }
 }
 
-bool HideOneNative(int component) {
+void HideOneNative(int component) {
   __try {
-    const uint32_t args[] = {
-        static_cast<uint32_t>(component), 0u};
-    if (!InvokeNativeRaw(
-            kSetDrawPlayerComponent, args, 2u, nullptr)) {
-      g_dead.store(true);
-      Log("PedHide: native handler rejected component %d - DISABLED",
-          component);
-      return false;
-    }
+    InvokeNativeVoid_I32_I32(kSetDrawPlayerComponent, component, 0);
     ++g_ok;
-    return true;
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     g_dead.store(true);
     Log("PedHide: NATIVE EXCEPTION on component %d — DISABLED", component);
-    return false;
   }
 }
 
@@ -86,7 +74,7 @@ void UpdatePedHeadHide() {
   if (!nativeMode && !IsPedHideEnabled()) {
     static std::atomic<bool> s_offLogged{false};
     if (!s_offLogged.exchange(true))
-      Log("PedHide: OFF (gtaiv_dxvk_vr.pedhide=0; forced-FP modes use native)");
+      Log("PedHide: OFF (gtaiv_dxvk_vr.pedhide=0; Mode150/151 force native)");
     return;
   }
   if (g_dead.load())
@@ -103,24 +91,12 @@ void UpdatePedHeadHide() {
       return;
     }
     if (!g_nativeLogged.exchange(true))
-      Log("PedHide: NATIVE SET_DRAW_PLAYER_COMPONENT path ON (forced FP)");
-    const bool pass =
-        HideOneNative(0) &&
-        HideOneNative(7) &&
-        HideOneNative(8) &&
-        HideOneNative(9) &&
-        HideOneNative(10);
-    if (pass) {
-      const int mode =
-          static_cast<int>(GetStereoMode());
-      const uint32_t passNumber =
-          g_nativeHidePasses.fetch_add(1u) + 1u;
-      g_nativeSuccessMode.store(mode);
-      if (passNumber == 1u) {
-        Log("PedHide: native proof pass=1 mode=%d components=5",
-            mode);
-      }
-    }
+      Log("PedHide: NATIVE SET_DRAW_PLAYER_COMPONENT path ON (Mode150/151)");
+    HideOneNative(0);
+    HideOneNative(7);
+    HideOneNative(8);
+    HideOneNative(9);
+    HideOneNative(10);
   } else {
     if (!ResolveSetDraw())
       return;
@@ -132,20 +108,9 @@ void UpdatePedHeadHide() {
   }
 
   if (n == 1 || (n % 300) == 0) {
-    Log("PedHide: #%u ok=%u dead=%d native=%d passes=%u mode=%d",
-        n, g_ok.load(), g_dead.load() ? 1 : 0,
-        nativeMode ? 1 : 0, g_nativeHidePasses.load(),
-        static_cast<int>(GetStereoMode()));
+    Log("PedHide: #%u ok=%u dead=%d native=%d", n, g_ok.load(), g_dead.load() ? 1 : 0,
+        nativeMode ? 1 : 0);
   }
-}
-
-bool IsPedHeadHideOperational() {
-  const StereoMode mode = GetStereoMode();
-  return !g_dead.load() &&
-         g_nativeHidePasses.load() > 0u &&
-         g_nativeSuccessMode.load() ==
-             static_cast<int>(mode) &&
-         WantsNativePedHide(mode);
 }
 
 }  // namespace asi

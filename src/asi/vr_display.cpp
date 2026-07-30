@@ -1,5 +1,8 @@
 #include "vr_display.h"
+#include "../bridge/gtaiv_xr_fov_math.h"
+#include "../bridge/gtaiv_xr_pose_bridge.h"
 #include "log.h"
+#include "openxr_bridge.h"
 #include "stereo_config.h"
 
 #ifndef NOMINMAX
@@ -13,6 +16,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 
 #include <openvr.h>
 
@@ -35,6 +39,16 @@ float g_tanHalfV = 0.f;
 float g_rawL[4]{};  // l, r, t, b
 float g_rawR[4]{};
 
+struct OpenXrDisplayCache {
+  float tanHalfH = 0.f;
+  float tanHalfV = 0.f;
+  float raw[2][4]{};
+};
+
+std::mutex g_openXrDisplayMutex;
+OpenXrDisplayCache g_openXrDisplay{};
+std::atomic<bool> g_openXrDisplayReady{false};
+
 std::atomic<float> g_gameTanH{std::tan(0.5f * 70.f * 3.14159265f / 180.f)};
 std::atomic<float> g_gameTanV{std::tan(0.5f * 70.f * 3.14159265f / 180.f) * 9.f / 16.f};
 std::atomic<bool> g_loggedInset{false};
@@ -54,6 +68,8 @@ float FovFromProjectionRaw(float left, float right) {
 }
 
 void EnsureBoundsCache() {
+  if (GetVrBackend() != VrBackend::OpenVr)
+    return;
   if (g_boundsReady.load())
     return;
   vr::IVRSystem* sys = vr::VRSystem();
@@ -179,6 +195,27 @@ bool BuildSoftInset(float tanGameH, float tanGameV, vr::VRTextureBounds_t* out) 
 }  // namespace
 
 float GetVrHorizontalFovDegrees() {
+  const VrBackend backend = GetVrBackend();
+  if (backend == VrBackend::OpenXr) {
+    if (!g_openXrDisplayReady.load(std::memory_order_acquire))
+      return 0.f;
+    std::lock_guard<std::mutex> lock(g_openXrDisplayMutex);
+    if (g_openXrDisplayReady.load(std::memory_order_relaxed)) {
+      const float fovL =
+          FovFromProjectionRaw(
+              g_openXrDisplay.raw[0][0],
+              g_openXrDisplay.raw[0][1]);
+      const float fovR =
+          FovFromProjectionRaw(
+              g_openXrDisplay.raw[1][0],
+              g_openXrDisplay.raw[1][1]);
+      if (fovL > 1.f && fovR > 1.f)
+        return 0.5f * (fovL + fovR);
+    }
+    return 0.f;
+  }
+  if (backend != VrBackend::OpenVr)
+    return 0.f;
   vr::IVRSystem* sys = vr::VRSystem();
   if (!sys)
     return 0.f;
@@ -194,7 +231,7 @@ float GetVrHorizontalFovDegrees() {
 }
 
 bool GetEyeSubmitBounds(vr::EVREye eye, vr::VRTextureBounds_t* out) {
-  if (!out)
+  if (!out || GetVrBackend() != VrBackend::OpenVr)
     return false;
   EnsureBoundsCache();
   if (!g_boundsReady.load())
@@ -206,12 +243,103 @@ bool GetEyeSubmitBounds(vr::EVREye eye, vr::VRTextureBounds_t* out) {
 bool GetCoverFovTangents(float* tanHalfHoriz, float* tanHalfVert) {
   if (!tanHalfHoriz || !tanHalfVert)
     return false;
+  const VrBackend backend = GetVrBackend();
+  if (backend == VrBackend::OpenXr) {
+    if (!g_openXrDisplayReady.load(std::memory_order_acquire))
+      return false;
+    std::lock_guard<std::mutex> lock(g_openXrDisplayMutex);
+    if (g_openXrDisplayReady.load(std::memory_order_relaxed)) {
+      *tanHalfHoriz = g_openXrDisplay.tanHalfH;
+      *tanHalfVert = g_openXrDisplay.tanHalfV;
+      return *tanHalfHoriz > 0.05f && *tanHalfVert > 0.05f;
+    }
+    return false;
+  }
+  if (backend != VrBackend::OpenVr)
+    return false;
   EnsureBoundsCache();
   if (!g_boundsReady.load())
     return false;
   *tanHalfHoriz = g_tanHalfH;
   *tanHalfVert = g_tanHalfV;
   return g_tanHalfH > 0.05f && g_tanHalfV > 0.05f;
+}
+
+bool UpdateVrDisplayFromOpenXr(
+    const gtaiv_xr_bridge::PoseBridge& pose) {
+  if (GetVrBackend() != VrBackend::OpenXr) {
+    InvalidateVrDisplayFromOpenXr();
+    return false;
+  }
+  if ((pose.flags &
+       gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u) {
+    InvalidateVrDisplayFromOpenXr();
+    return false;
+  }
+
+  OpenXrDisplayCache next{};
+  if (!gtaiv_xr_bridge::ComputeOpenXrCoverTangents(
+          pose.eyeFovs,
+          &next.tanHalfH,
+          &next.tanHalfV)) {
+    InvalidateVrDisplayFromOpenXr();
+    return false;
+  }
+  for (uint32_t eye = 0u; eye < 2u; ++eye) {
+    if (!gtaiv_xr_bridge::ComputeOpenXrEyeRawTangents(
+            pose.eyeFovs,
+            eye,
+            &next.raw[eye][0],
+            &next.raw[eye][1],
+            &next.raw[eye][2],
+            &next.raw[eye][3])) {
+      InvalidateVrDisplayFromOpenXr();
+      return false;
+    }
+  }
+
+  bool changed = true;
+  {
+    std::lock_guard<std::mutex> lock(g_openXrDisplayMutex);
+    changed =
+        !g_openXrDisplayReady.load(std::memory_order_relaxed) ||
+        std::fabs(next.tanHalfH - g_openXrDisplay.tanHalfH) > 1.0e-4f ||
+        std::fabs(next.tanHalfV - g_openXrDisplay.tanHalfV) > 1.0e-4f;
+    g_openXrDisplay = next;
+    g_openXrDisplayReady.store(true, std::memory_order_release);
+  }
+
+  static std::atomic<uint32_t> s_publications{0u};
+  const uint32_t publication =
+      s_publications.fetch_add(1u, std::memory_order_relaxed) + 1u;
+  if (changed || publication <= 3u || (publication % 600u) == 0u) {
+    Log(
+        "VrDisplayInput: OpenXR -> Mode204 cache #%u "
+        "cover=(%.3f,%.3f) "
+        "L=(%.3f,%.3f,%.3f,%.3f) "
+        "R=(%.3f,%.3f,%.3f,%.3f)",
+        publication,
+        next.tanHalfH,
+        next.tanHalfV,
+        next.raw[0][0],
+        next.raw[0][1],
+        next.raw[0][2],
+        next.raw[0][3],
+        next.raw[1][0],
+        next.raw[1][1],
+        next.raw[1][2],
+        next.raw[1][3]);
+  }
+  return true;
+}
+
+void InvalidateVrDisplayFromOpenXr() {
+  g_openXrDisplayReady.store(false, std::memory_order_release);
+}
+
+bool IsVrDisplayFromOpenXr() {
+  return GetVrBackend() == VrBackend::OpenXr &&
+      g_openXrDisplayReady.load(std::memory_order_acquire);
 }
 
 void SetBackbufferAspect(float aspectWH) {
@@ -229,6 +357,111 @@ bool IsGameFovFromCCamActive() {
 
 uint32_t GetGameFovPublishGeneration() {
   return g_fovPublishGen.load();
+}
+
+bool PublishGameFovTangents(
+    float tanHalfHorizontal,
+    float tanHalfVertical,
+    GameFovPublishReceipt* receipt) {
+  if (receipt)
+    *receipt = {};
+  if (!std::isfinite(tanHalfHorizontal) ||
+      !std::isfinite(tanHalfVertical) ||
+      !(tanHalfHorizontal > 0.05f) ||
+      !(tanHalfVertical > 0.05f) ||
+      !(tanHalfHorizontal < 16.f) ||
+      !(tanHalfVertical < 16.f)) {
+    return false;
+  }
+
+  const float currentHorizontal = g_gameTanH.load();
+  const float currentVertical = g_gameTanV.load();
+  const bool wasTrueFov = g_fovFromCCam.load();
+  const bool changed =
+      !wasTrueFov ||
+      !(currentHorizontal > 0.05f) ||
+      !(currentVertical > 0.05f) ||
+      std::fabs(tanHalfHorizontal - currentHorizontal) >
+          0.025f * currentHorizontal ||
+      std::fabs(tanHalfVertical - currentVertical) >
+          0.025f * currentVertical;
+
+  g_gameTanH.store(tanHalfHorizontal);
+  g_gameTanV.store(tanHalfVertical);
+  // "True FOV" means the canvas owns an explicit, validated game-frustum
+  // publication. It is deliberately independent of where those tangents came
+  // from; the direct OpenXR caller supplies them without a runtime query.
+  g_fovFromCCam.store(true);
+
+  uint32_t generation = g_fovPublishGen.load();
+  if (changed || generation == 0u)
+    generation = g_fovPublishGen.fetch_add(1u) + 1u;
+
+  if (receipt) {
+    receipt->generation = generation;
+    receipt->tanHalfHorizontal = tanHalfHorizontal;
+    receipt->tanHalfVertical = tanHalfVertical;
+    receipt->trueFov = true;
+  }
+  if (changed &&
+      (generation <= 6u || (generation % 120u) == 0u)) {
+    Log("VrDisplay: gameTan from query-free publication "
+        "tan=(%.3f,%.3f) trueFov=1 gen=%u",
+        tanHalfHorizontal,
+        tanHalfVertical,
+        generation);
+  }
+  return generation != 0u;
+}
+
+bool IsGameFovPublishReceiptCurrent(
+    const GameFovPublishReceipt& receipt) {
+  if (!receipt.trueFov || receipt.generation == 0u ||
+      !g_fovFromCCam.load() ||
+      g_fovPublishGen.load() != receipt.generation) {
+    return false;
+  }
+  const float horizontal = g_gameTanH.load();
+  const float vertical = g_gameTanV.load();
+  return std::isfinite(horizontal) &&
+      std::isfinite(vertical) &&
+      std::fabs(horizontal - receipt.tanHalfHorizontal) <=
+          1.0e-4f * (std::max)(1.f, std::fabs(horizontal)) &&
+      std::fabs(vertical - receipt.tanHalfVertical) <=
+          1.0e-4f * (std::max)(1.f, std::fabs(vertical));
+}
+
+bool ComputeGameFovTangentsFromCCamDegrees(
+    float ccamDeg,
+    float aspectWH,
+    float* tanHalfHorizontal,
+    float* tanHalfVertical) {
+  if (!tanHalfHorizontal || !tanHalfVertical ||
+      !(ccamDeg >= 5.f) || !(ccamDeg <= 160.f) ||
+      !std::isfinite(ccamDeg) ||
+      !(aspectWH > 0.5f) || !(aspectWH < 3.f) ||
+      !std::isfinite(aspectWH)) {
+    return false;
+  }
+  constexpr float kEng = 58.7f / 45.f;
+  float verticalDegrees = ccamDeg * kEng;
+  if (verticalDegrees > 170.f)
+    verticalDegrees = 170.f;
+  const float vertical = std::tan(
+      0.5f * verticalDegrees *
+      3.14159265f / 180.f);
+  const float horizontal = vertical * aspectWH;
+  if (!(horizontal > 0.05f) ||
+      !(vertical > 0.05f) ||
+      !(horizontal < 16.f) ||
+      !(vertical < 16.f) ||
+      !std::isfinite(horizontal) ||
+      !std::isfinite(vertical)) {
+    return false;
+  }
+  *tanHalfHorizontal = horizontal;
+  *tanHalfVertical = vertical;
+  return true;
 }
 
 void PublishGameFovFromCCamDegrees(float ccamDeg, float aspectWH) {
@@ -426,6 +659,25 @@ void UpdateGameFovFromDevice(IDirect3DDevice9* device) {
 bool GetEyeRawProjection(vr::EVREye eye, float* left, float* right, float* top, float* bottom) {
   if (!left || !right || !top || !bottom)
     return false;
+  const VrBackend backend = GetVrBackend();
+  if (backend == VrBackend::OpenXr) {
+    if (!g_openXrDisplayReady.load(std::memory_order_acquire))
+      return false;
+    std::lock_guard<std::mutex> lock(g_openXrDisplayMutex);
+    if (g_openXrDisplayReady.load(std::memory_order_relaxed)) {
+      const float* raw =
+          g_openXrDisplay.raw[
+              eye == vr::Eye_Right ? 1u : 0u];
+      *left = raw[0];
+      *right = raw[1];
+      *top = raw[2];
+      *bottom = raw[3];
+      return true;
+    }
+    return false;
+  }
+  if (backend != VrBackend::OpenVr)
+    return false;
   EnsureBoundsCache();
   if (!g_boundsReady.load())
     return false;
@@ -496,6 +748,15 @@ bool GetNativeFovInsetBounds(vr::EVREye eye, vr::VRTextureBounds_t* out) {
 void LogVrDisplayInfo() {
   if (g_loggedInfo.exchange(true))
     return;
+  const VrBackend backend = GetVrBackend();
+  if (backend == VrBackend::OpenXr) {
+    Log("VrDisplay: OpenXR display geometry comes from the pose bridge");
+    return;
+  }
+  if (backend != VrBackend::OpenVr) {
+    Log("VrDisplay: backend off");
+    return;
+  }
   vr::IVRSystem* sys = vr::VRSystem();
   if (!sys) {
     Log("VrDisplay: VRSystem null");

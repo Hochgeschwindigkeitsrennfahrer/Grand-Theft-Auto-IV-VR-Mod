@@ -2,6 +2,7 @@
 #include "aob.h"
 #include "hmd_pose.h"
 #include "log.h"
+#include "openxr_bridge.h"
 #include "ped_hide.h"
 #include "stereo_config.h"
 #include "stereo_eye.h"
@@ -45,6 +46,19 @@ FindPlayerVehicle_t g_FindPlayerVehicle = nullptr;
 std::atomic<bool> g_hooksOk{false};
 std::atomic<bool> g_gameplayActive{false};  // false until past title (avoids blackscreen)
 std::atomic<uint32_t> g_applyCount{0};
+
+constexpr bool UsesCompleteHmdCameraBasis(StereoMode mode) {
+  return mode == StereoMode::HeadOwnedCamFullPose;
+}
+
+static_assert(
+    !UsesCompleteHmdCameraBasis(
+        StereoMode::OpenXrFusedFirstPerson),
+    "Mode58 must preserve upstream Mode204's leveled camera basis");
+static_assert(
+    !UsesCompleteHmdCameraBasis(
+        StereoMode::OpenXrTemporalStereo),
+    "Legacy direct modes keep their established leveled basis");
 
 // Mode 171: freeze ped eye ORIGIN for one DrawScene L→R pair (driving flicker).
 std::atomic<bool> g_dualCamFreeze{false};
@@ -652,11 +666,13 @@ void ApplyHmdToCam(Matrix44* mat) {
   if (leveledPitchFlip)
     fz = -fz;
 
-  // Mode 46 keeps the complete HMD basis. The forward + world-up rebuild
+  // Mode 46 keeps the complete HMD basis. Mode58 deliberately follows
+  // upstream Mode204's leveled camera basis. The
+  // forward + world-up rebuild
   // deliberately discarded physical roll, which makes a head tilt look like
   // the game camera is resisting/inverting it. OpenVR matrix columns are the
   // HMD local axes in tracking space; apply OvrToGta to each column once.
-  const bool fullHeadPose = sm == StereoMode::HeadOwnedCamFullPose;
+  const bool fullHeadPose = UsesCompleteHmdCameraBasis(sm);
   float hRightX = 0.f, hRightY = 0.f, hRightZ = 0.f;
   float hUpX = 0.f, hUpY = 0.f, hUpZ = 0.f;
   if (fullHeadPose) {
@@ -667,7 +683,7 @@ void ApplyHmdToCam(Matrix44* mat) {
   }
 
   // Right-stick yaw offset (controller camera L/R) + optional vehicle follow, on top of HMD.
-  // Rotate every HMD axis together so Mode 46 retains physical pitch and roll.
+  // Rotate every HMD axis together so full-basis modes retain pitch and roll.
   {
     const float yawOff = GetControllerYawOffset() + ComputeVehicleYawOffset();
     const float c = std::cos(yawOff);
@@ -713,8 +729,9 @@ void ApplyHmdToCam(Matrix44* mat) {
     }
   }
 
-  // Modes through 45 and Mode 47+ level the horizon by rebuilding right/up from
-  // world-up. Mode 46 uses the HMD's rigid basis: right=X, forward=Y, up=Z in RAGE.
+  // Modes other than 46 level the horizon by rebuilding right/up from
+  // world-up. Mode 46 uses the HMD's rigid basis:
+  // right=X, forward=Y, up=Z in RAGE.
   const bool pitchStableMode =
       static_cast<int>(sm) >= static_cast<int>(StereoMode::HeadOwnedCamPitchStable);
   constexpr float kPitchStableHoriz = 0.26f;  // ~75 deg from horizontal
@@ -882,9 +899,30 @@ void ApplyHmdToCam(Matrix44* mat) {
     // Optional EyeToHead forward (OpenVR col2 translation) like L4D2 m_EyeZ.
     float eyeZ = 0.f;
     EyeOffset eyeOffset{};
-    const bool haveEyeOffset = GetCachedEyeOffset(rightEye, &eyeOffset);
-    if (haveEyeOffset)
-      eyeZ = eyeOffset.z;
+    bool haveEyeOffset = false;
+    const VrBackend backend = GetVrBackend();
+    if (backend == VrBackend::OpenXr) {
+      // Provider swap only: OpenXR fills the same cached EyeToHead values.
+      // Fail closed here rather than ever falling through to OpenVR.
+      haveEyeOffset = GetCachedEyeOffset(rightEye, &eyeOffset);
+      if (haveEyeOffset)
+        eyeZ = eyeOffset.z;
+    } else if (backend == VrBackend::OpenVr) {
+      // Preserve the upstream Mode 204/OpenVR behavior exactly: query the
+      // active OpenVR eye transform at the camera write.
+      vr::IVRSystem* system = vr::VRSystem();
+      if (system) {
+        const vr::HmdMatrix34_t eyeToHead =
+            system->GetEyeToHeadTransform(
+                rightEye ? vr::Eye_Right : vr::Eye_Left);
+        eyeOffset = {
+            eyeToHead.m[0][3],
+            eyeToHead.m[1][3],
+            eyeToHead.m[2][3]};
+        eyeZ = eyeOffset.z;
+        haveEyeOffset = true;
+      }
+    }
 
     if ((sm == StereoMode::OpenXrDrawSceneStereo ||
          sm == StereoMode::OpenXrTemporalStereo) &&
@@ -1504,6 +1542,10 @@ using CamFovSite_t = void(__fastcall*)(void* self, void* edx);
 CamFovSite_t g_origCamFovSite = nullptr;
 std::atomic<bool> g_fovSiteOk{false};
 std::atomic<uint32_t> g_fovSiteCalls{0};
+std::atomic<uint32_t> g_mode58EngineFovNextGeneration{0u};
+SRWLOCK g_mode58EngineFovReceiptLock =
+    SRWLOCK_INIT;
+Mode58EngineFovReceipt g_mode58EngineFovReceipt{};
 
 void __fastcall HookCamFovSite(void* self, void* edx) {
   if (g_origCamFovSite)
@@ -1549,7 +1591,46 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
         s_lastWritten = -1.f;
         after = before;
       }
-      if (IsOursFpWideAspectFit(sm))
+      // Mode58 publishes the exact pinned PoseBridge cover tangents at the
+      // world-pair boundary. Both legacy helpers below query OpenVR, which is
+      // intentionally absent from the direct OpenXR process path.
+      if (IsOpenXrFusedFirstPerson(sm)) {
+        // Keep the 110-degree engine write above; wait for a valid OpenXR
+        // publication receipt before any Mode58 world pair is accepted.
+        const float readback = *fov;
+        const uint64_t renderFrameSequence =
+            GetStereoRenderFrameSequence();
+        if (std::isfinite(readback) &&
+            renderFrameSequence != 0u &&
+            std::fabs(target - 110.f) <= 0.05f &&
+            std::fabs(after - 110.f) <= 0.05f &&
+            std::fabs(readback - 110.f) <= 0.05f) {
+          const uint32_t generation =
+              g_mode58EngineFovNextGeneration.fetch_add(
+                  1u, std::memory_order_acq_rel) + 1u;
+          AcquireSRWLockExclusive(
+              &g_mode58EngineFovReceiptLock);
+          g_mode58EngineFovReceipt.generation =
+              generation;
+          g_mode58EngineFovReceipt
+              .renderFrameSequence =
+              renderFrameSequence;
+          g_mode58EngineFovReceipt.ccamDegrees =
+              readback;
+          ReleaseSRWLockExclusive(
+              &g_mode58EngineFovReceiptLock);
+          if (generation <= 4u ||
+              (generation % 600u) == 0u) {
+            Log("Mode58FovSite: engine CCam write receipt "
+                "#%u frame=%llu target=110.0 "
+                "readback=%.3f hookHealthy=1",
+                generation,
+                static_cast<unsigned long long>(
+                    renderFrameSequence),
+                readback);
+          }
+        }
+      } else if (IsOursFpWideAspectFit(sm))
         PublishGameFovUnderPublishFit(after, GetBackbufferAspect(), GetUnderPublishOverscan());
       else
         PublishGameFovFromCover();
@@ -1653,7 +1734,8 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
       if (refreshes <= 4 || (refreshes % 600) == 0)
         Log("Mode%d: late head-owned CopyMat refresh #%u (CCam site; fullBasis=%d; "
             "leveledPitchFlip=%d; pitchStable=%d; pedCoupled=%d; collision unchanged)",
-            static_cast<int>(sm), refreshes, sm == StereoMode::HeadOwnedCamFullPose ? 1 : 0,
+            static_cast<int>(sm), refreshes,
+            UsesCompleteHmdCameraBasis(sm) ? 1 : 0,
             (sm == StereoMode::HeadOwnedCamLeveledPitchFlip ||
              sm == StereoMode::HeadOwnedCamPitchStable)
                 ? 1
@@ -1691,6 +1773,60 @@ void __fastcall HookCamFovSite(void* self, void* edx) {
   }
 }
 
+void ResetMode58EngineFovReceipt() {
+  AcquireSRWLockExclusive(
+      &g_mode58EngineFovReceiptLock);
+  g_mode58EngineFovReceipt = {};
+  ReleaseSRWLockExclusive(
+      &g_mode58EngineFovReceiptLock);
+}
+
+bool GetMode58EngineFovWriteReceipt(
+    uint64_t expectedRenderFrameSequence,
+    Mode58EngineFovReceipt* receipt) {
+  if (receipt)
+    *receipt = {};
+  if (!receipt ||
+      expectedRenderFrameSequence == 0u ||
+      !g_fovSiteOk.load(std::memory_order_acquire)) {
+    return false;
+  }
+  Mode58EngineFovReceipt current{};
+  AcquireSRWLockShared(
+      &g_mode58EngineFovReceiptLock);
+  current = g_mode58EngineFovReceipt;
+  ReleaseSRWLockShared(
+      &g_mode58EngineFovReceiptLock);
+  if (current.generation == 0u ||
+      current.renderFrameSequence !=
+          expectedRenderFrameSequence ||
+      !std::isfinite(current.ccamDegrees) ||
+      std::fabs(current.ccamDegrees - 110.f) >
+          0.05f) {
+    return false;
+  }
+  *receipt = current;
+  return true;
+}
+
+bool IsMode58EngineFovWriteReceiptCurrent(
+    uint64_t expectedRenderFrameSequence,
+    const Mode58EngineFovReceipt& receipt) {
+  if (receipt.generation == 0u ||
+      receipt.renderFrameSequence !=
+          expectedRenderFrameSequence) {
+    return false;
+  }
+  Mode58EngineFovReceipt current{};
+  return GetMode58EngineFovWriteReceipt(
+             expectedRenderFrameSequence,
+             &current) &&
+      current.generation == receipt.generation &&
+      std::fabs(
+          current.ccamDegrees -
+          receipt.ccamDegrees) <= 1.0e-4f;
+}
+
 bool InstallFovRecomputeSiteHook() {
   if (g_fovSiteOk.load())
     return true;
@@ -1718,6 +1854,7 @@ bool InstallFovRecomputeSiteHook() {
     return false;
   }
   g_origCamFovSite = reinterpret_cast<CamFovSite_t>(orig);
+  ResetMode58EngineFovReceipt();
   g_fovSiteOk.store(true);
   HMODULE exe = GetModuleHandleA(nullptr);
   const uintptr_t rva = site - reinterpret_cast<uintptr_t>(exe);

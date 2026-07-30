@@ -1,12 +1,117 @@
 # Elliott OpenXR Simulator headless full-game proof
 
-This is the repeatable, no-headset validation route for GTA IV's current
-direct-OpenXR primary, Mode **58**. It does not control a simulator window and it
-does not register a system OpenXR runtime. The launcher supplies the pinned
-Elliott manifest only to the x64 host through its child `XR_RUNTIME_JSON`
-environment.
+This is the repeatable, no-headset validation route for GTA IV's corrected
+literal Mode **204** OpenXR provider target. Mode 58 remains documented below as
+the historical OpenXR proof. The route does not control a simulator window or
+register a system OpenXR runtime. The launcher supplies the pinned Elliott
+manifest only to the x64 host through its child `XR_RUNTIME_JSON` environment.
 
-## Current verification status: Mode 58 PASS
+## Literal Mode 204 OpenXR provider proof
+
+The corrected OpenXR route does not change or reimplement upstream Mode 204.
+It treats OpenXR as a provider adapter at the same finished-eye, pose, and input
+seams used by the retained OpenVR/SteamVR provider:
+
+```text
+unchanged upstream Mode 204 render/camera/menu behavior
+  -> completed upstream left/right textures
+  -> thin x86 Mode 204 submit adapter
+  -> isolated GPU texture bridge
+  -> x64 OpenXR host presents the same eyes at the exact capture pose
+```
+
+The launcher transactionally stages the exact stable values from
+`scripts/pack-mode204-zip.ps1` (`stereo=204`, `vres=2048`, and the existing
+Mode 204 camera/input/HUD values). It does not stage `buildid`, overwrite other
+user extras, or install the Mode 58 square `commandline.txt`. Every staged file
+is restored to its original byte hash or original absence after the run.
+
+For Elliott proof only, the launcher selects the simulator's Quest 3-like
+asymmetric FOV/IPD profile through acknowledged JSON file IPC. That changes the
+simulated OpenXR view configuration; it does not change GTA's Mode 204 renderer
+or configuration. No simulator GUI is focused or controlled.
+
+After building the ASI and x64 host, the sustained command-file proof is:
+
+```powershell
+.\scripts\run-openxr-gta-steam-safe.ps1 `
+  -GameDir "D:\SteamLibrary\steamapps\common\Grand Theft Auto IV\GTAIV" `
+  -StereoMode 204 `
+  -RuntimeManifest "D:\code\gta-iv\out-openxr\external\OpenXR-Simulator\bin\openxr_simulator.json" `
+  -ElliottCliProof `
+  -ElliottWalkSeconds 60 `
+  -StopWhenProofComplete `
+  -MaxSeconds 900 `
+  -Authorized
+```
+
+This acceptance route is GPU-only. A live Mode 204 CPU-mailbox transaction
+fails the proof. Required evidence includes:
+
+- `OpenXRSubmitAdapter: Mode204 ... parent=0x4DE020 headHide=1`;
+- `OpenXRBridge: READY Vulkan-imported D3D11 NT frame resources`;
+- advancing `OpenXRBridge: frame ... presentation=world-stereo` transactions;
+- `GameBridge: isolated GPU ingest queue READY` and
+  `GameBridge: CONNECTED frame source`;
+- advancing, pixel-distinct host frames with
+  `presentation=world-parent-dual-stereo`;
+- exact parent-dual capture pose, stationary menu/pause quad, sRGB path,
+  acknowledged Start/A/stick/neutral input, and the 60-second pose/controller
+  interval.
+
+`result.txt` must report the Mode 204 config installed and restored, all four
+Mode 204 adapter/GPU gates true, the Quest profile acknowledged and reset, and
+`sustainedPoseControllerProof=True`.
+
+## Current verification status: literal Mode 204 PASS
+
+The authoritative complete run is:
+
+```text
+out-openxr/runs/20260728-214242-steam-safe/
+```
+
+It reports `outcome=PROOF_COMPLETE`, `stereoMode=204`,
+`parentDualProofComplete=True`, `firstPersonProofComplete=True`, and
+`walkQualityReady=True`. The automated route reached the apartment world,
+completed a menu -> world -> pause UI -> world round trip, and then held the
+simulated Touch left stick forward for 60 seconds.
+
+Measured proof facts:
+
+```text
+producer transactions:     2280 -> 6840
+host transactions:         2265 -> 6823
+walk producer advance:     4080
+walk host advance:         3883
+heartbeat pauses:          0
+first-person planar travel: 7.118 m
+accepted walk attempt:     1
+OpenXR swapchain format:   29 (sRGB)
+```
+
+The camera moved from `(892.425, -499.725, 20.079)` to
+`(892.796, -492.617, 20.057)`. The exact Mode 204 L/R texture route, exact
+capture pose, isolated GPU queue, stationary UI quad, first-person hard hooks,
+native head hide, Start/A/stick/release/neutral controller path, D3D9 Reset
+recovery, cleanup, and exact configuration restoration all passed. No
+simulator window was controlled and SteamVR remained absent.
+
+Tested binary hashes:
+
+```text
+x86 ASI SHA-256:
+8E6E9CBC242869535C983518A15502EC92DC11785819B8F6ECB7224A10E1EE07
+
+x64 host SHA-256:
+C40C2A1D3CF5F8AE02F97108B44D8EA5E210FC001515AB21D7A9030662C2FF1F
+```
+
+This simulator result proves the code/transport path and sustained automated
+gameplay. It cannot certify physical Quest optics, human fusion, perceived
+scale, comfort, or Link latency.
+
+## Historical verification status: Mode 58 PASS
 
 The authoritative full-game run is:
 

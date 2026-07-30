@@ -8,7 +8,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <limits>
+#include <string>
 #include <vector>
 
 namespace {
@@ -304,6 +307,455 @@ bool TestOpenXrCoverFovMath() {
       fovs, &horizontal, &vertical);
 }
 
+bool TestOpenXrCoverMapping() {
+  // Quest-class asymmetric tangents from the Mode58 physical proof. Publishing
+  // their two-eye cover must fill each eye destination; the old 16:9 fallback
+  // must remain visibly inset and therefore cannot satisfy the pair gate.
+  gtaiv_xr_bridge::EyeFov fovs[2] = {
+      {
+          std::atan(-1.376f),
+          std::atan(0.839f),
+          std::atan(0.966f),
+          std::atan(-1.428f),
+      },
+      {
+          std::atan(-0.839f),
+          std::atan(1.376f),
+          std::atan(0.966f),
+          std::atan(-1.428f),
+      },
+  };
+  float coverHorizontal = 0.f;
+  float coverVertical = 0.f;
+  if (!gtaiv_xr_bridge::ComputeOpenXrCoverTangents(
+          fovs, &coverHorizontal, &coverVertical) ||
+      !Near(coverHorizontal, 1.376, 1.0e-4) ||
+      !Near(coverVertical, 1.428, 1.0e-4)) {
+    return false;
+  }
+
+  bool fallbackRejected = false;
+  bool wideSourceProved = true;
+  constexpr float kCcamDegrees = 110.f;
+  constexpr float kCcamToRaster = 58.7f / 45.f;
+  const float wideVertical = std::tan(
+      0.5f * kCcamDegrees * kCcamToRaster *
+      3.14159265f / 180.f);
+  const float wideHorizontal = wideVertical * (16.f / 9.f);
+  if (!(wideHorizontal > 5.f) ||
+      !(wideVertical > coverVertical)) {
+    return false;
+  }
+  for (uint32_t eye = 0u; eye < 2u; ++eye) {
+    float left = 0.f;
+    float right = 0.f;
+    float top = 0.f;
+    float bottom = 0.f;
+    if (!gtaiv_xr_bridge::ComputeOpenXrEyeRawTangents(
+            fovs,
+            eye,
+            &left,
+            &right,
+            &top,
+            &bottom)) {
+      return false;
+    }
+
+    gtaiv_xr_bridge::FrustumCanvasMapping coverMapping{};
+    if (!gtaiv_xr_bridge::ComputeFrustumCanvasMapping(
+            coverHorizontal,
+            coverVertical,
+            left,
+            right,
+            top,
+            bottom,
+            &coverMapping)) {
+      return false;
+    }
+    const float destinationWidth =
+        coverMapping.destinationRight -
+        coverMapping.destinationLeft;
+    const float destinationHeight =
+        coverMapping.destinationBottom -
+        coverMapping.destinationTop;
+    if (destinationWidth < 0.999f ||
+        destinationHeight < 0.999f) {
+      return false;
+    }
+
+    gtaiv_xr_bridge::FrustumCanvasMapping fallbackMapping{};
+    if (!gtaiv_xr_bridge::ComputeFrustumCanvasMapping(
+            1.0f,
+            0.562f,
+            left,
+            right,
+            top,
+            bottom,
+            &fallbackMapping)) {
+      return false;
+    }
+    const float fallbackWidth =
+        fallbackMapping.destinationRight -
+        fallbackMapping.destinationLeft;
+    const float fallbackHeight =
+        fallbackMapping.destinationBottom -
+        fallbackMapping.destinationTop;
+    fallbackRejected =
+        fallbackRejected ||
+        fallbackWidth < 0.90f ||
+        fallbackHeight < 0.90f;
+
+    gtaiv_xr_bridge::FrustumCanvasMapping wideMapping{};
+    if (!gtaiv_xr_bridge::ComputeFrustumCanvasMapping(
+            wideHorizontal,
+            wideVertical,
+            left,
+            right,
+            top,
+            bottom,
+            &wideMapping)) {
+      return false;
+    }
+    const float wideDestinationWidth =
+        wideMapping.destinationRight -
+        wideMapping.destinationLeft;
+    const float wideDestinationHeight =
+        wideMapping.destinationBottom -
+        wideMapping.destinationTop;
+    const float wideSourceWidth =
+        wideMapping.sourceRight -
+        wideMapping.sourceLeft;
+    const float wideSourceHeight =
+        wideMapping.sourceBottom -
+        wideMapping.sourceTop;
+    wideSourceProved =
+        wideSourceProved &&
+        wideDestinationWidth >= 0.999f &&
+        wideDestinationHeight >= 0.999f &&
+        wideSourceWidth < 0.50f &&
+        wideSourceHeight < 0.50f;
+  }
+  return fallbackRejected && wideSourceProved;
+}
+
+bool ReadTextFile(const char* path, std::string* output) {
+  if (!path || !output)
+    return false;
+  std::ifstream input(path, std::ios::binary);
+  if (!input)
+    return false;
+  *output = std::string(
+      std::istreambuf_iterator<char>(input),
+      std::istreambuf_iterator<char>());
+  return !output->empty();
+}
+
+std::string SourceSlice(
+    const std::string& source,
+    const char* beginMarker,
+    const char* endMarker) {
+  const size_t begin = source.find(beginMarker);
+  if (begin == std::string::npos)
+    return {};
+  const size_t end = source.find(endMarker, begin);
+  if (end == std::string::npos || end <= begin)
+    return {};
+  return source.substr(begin, end - begin);
+}
+
+bool Contains(
+    const std::string& source,
+    const char* token) {
+  return source.find(token) != std::string::npos;
+}
+
+bool TestMode204PassiveOpenXrSeamSourceContract() {
+  std::string stereoSource;
+  std::string bridgeSource;
+  if (!ReadTextFile(
+          "src/asi/stereo_render.cpp",
+          &stereoSource) ||
+      !ReadTextFile(
+          "src/asi/openxr_bridge.cpp",
+          &bridgeSource)) {
+    return false;
+  }
+
+  const std::string drawWalk =
+      SourceSlice(
+          stereoSource,
+          "void __fastcall HookDrawWalk(",
+          "bool InstallDrawWalkAt(");
+  const std::string parentDual =
+      SourceSlice(
+          stereoSource,
+          "bool RunMode200ParentDualGuarded(void* self, void* edx) {",
+          "// Mode 202:");
+  const std::string passiveLease =
+      SourceSlice(
+          stereoSource,
+          "bool StereoAcquireMode204SubmitPair(",
+          "bool InstallStereoRenderHooks()");
+  const std::string passiveDescription =
+      SourceSlice(
+          stereoSource,
+          "bool StereoGetMode204EyeTextureDesc(",
+          "bool StereoAcquireMode204SubmitPair(");
+  const std::string bridgeWorld =
+      SourceSlice(
+          bridgeSource,
+          "bool acquireMode204WorldPair(",
+          "bool captureMode204UiPair(");
+  const std::string bridgeUi =
+      SourceSlice(
+          bridgeSource,
+          "bool captureMode204UiPair(",
+          "uint8_t* cpuSlotPixels(");
+  const std::string publishFrame =
+      SourceSlice(
+          bridgeSource,
+          "void PublishOpenXrFrame(",
+          "void ShutdownOpenXrBridge(");
+
+  return !drawWalk.empty() &&
+      Contains(
+          drawWalk,
+          "IsOursFpSameTickParentDual(GetStereoMode())") &&
+      Contains(
+          drawWalk,
+          "RunMode200ParentDualGuarded(self, edx)") &&
+      !Contains(drawWalk, "OpenXrFusedFirstPerson") &&
+      !Contains(drawWalk, "OpenXrCaptureStamp") &&
+      !parentDual.empty() &&
+      Contains(
+          parentDual,
+          "CopyBbToEyeCanvasGated(g_device, g_texL, vr::Eye_Left)") &&
+      Contains(
+          parentDual,
+          "CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Right)") &&
+      Contains(parentDual, "g_haveL = g_haveR = true") &&
+      !Contains(parentDual, "CompleteOpenXrPair") &&
+      !Contains(parentDual, "StereoCamBuildReceipt") &&
+      !Contains(parentDual, "IsPedHeadHideOperational") &&
+      !passiveLease.empty() &&
+      Contains(passiveLease, "IsStereoRenderArmed()") &&
+      Contains(passiveLease, "!g_haveL") &&
+      Contains(passiveLease, "!g_haveR") &&
+      Contains(passiveLease, "g_texL->AddRef()") &&
+      Contains(passiveLease, "g_texR->AddRef()") &&
+      Contains(passiveLease, "output->eyes[0] = g_texL") &&
+      Contains(passiveLease, "output->eyes[1] = g_texR") &&
+      !Contains(passiveLease, "CompleteOpenXrPair") &&
+      !Contains(passiveLease, "g_mode200DualN") &&
+      !Contains(passiveLease, "pairId") &&
+      !passiveDescription.empty() &&
+      Contains(
+          passiveDescription,
+          "g_texL->GetLevelDesc(0, output)") &&
+      !Contains(passiveDescription, "g_haveL") &&
+      !bridgeWorld.empty() &&
+      Contains(
+          bridgeWorld,
+          "StereoAcquireMode204SubmitPair(output)") &&
+      Contains(bridgeWorld, "stampMode204Pair(") &&
+      !bridgeUi.empty() &&
+      Contains(
+          bridgeUi,
+          "StereoGetMode204EyeTextureDesc(&worldDescription)") &&
+      Contains(bridgeUi, "mode204UiTexture_") &&
+      Contains(bridgeUi, "gameDevice->StretchRect(") &&
+      Contains(
+          bridgeUi,
+          "output->eyes[0] = mode204UiTexture_.Get()") &&
+      !Contains(
+          bridgeUi,
+          "output->eyes[0] = g_texL") &&
+      !Contains(
+          bridgeUi,
+          "StereoAcquireMode204SubmitPair(") &&
+      !publishFrame.empty() &&
+      Contains(
+          publishFrame,
+          "completedFrameRenderPose") &&
+      Contains(
+          publishFrame,
+          "g_openXrPoseForNextFrame = pose") &&
+      Contains(
+          publishFrame,
+          "UpdateHmdPoseFromOpenXr(pose)") &&
+      Contains(
+          publishFrame,
+          "UpdateVrDisplayFromOpenXr(pose)");
+}
+
+bool TestMode58FovAndBasisSourceContract() {
+  std::string displaySource;
+  std::string cameraSource;
+  std::string stereoSource;
+  if (!ReadTextFile(
+          "src/asi/vr_display.cpp",
+          &displaySource) ||
+      !ReadTextFile(
+          "src/asi/cam_matrix.cpp",
+          &cameraSource) ||
+      !ReadTextFile(
+          "src/asi/stereo_render.cpp",
+          &stereoSource)) {
+    return false;
+  }
+
+  const std::string queryFreePublisher =
+      SourceSlice(
+          displaySource,
+          "bool PublishGameFovTangents(",
+          "bool IsGameFovPublishReceiptCurrent(");
+  if (queryFreePublisher.empty() ||
+      !Contains(
+          queryFreePublisher,
+          "receipt->trueFov = true") ||
+      !Contains(
+          queryFreePublisher,
+          "g_fovPublishGen.fetch_add") ||
+      Contains(
+          queryFreePublisher,
+          "GetCoverFovTangents(") ||
+      Contains(queryFreePublisher, "VRSystem(") ||
+      Contains(queryFreePublisher, "openvr")) {
+    return false;
+  }
+
+  const std::string directCameraBranch =
+      SourceSlice(
+          cameraSource,
+          "if (IsOpenXrFusedFirstPerson(sm)) {",
+          "} else if (IsOursFpWideAspectFit(sm))");
+  const std::string rasterConversion =
+      SourceSlice(
+          displaySource,
+          "bool ComputeGameFovTangentsFromCCamDegrees(",
+          "void PublishGameFovFromCCamDegrees(");
+  const std::string completeBasisPolicy =
+      SourceSlice(
+          cameraSource,
+          "constexpr bool UsesCompleteHmdCameraBasis(",
+          "static_assert(");
+  if (directCameraBranch.empty() ||
+      !Contains(directCameraBranch, "target - 110.f") ||
+      !Contains(
+          directCameraBranch,
+          "g_mode58EngineFovNextGeneration.fetch_add") ||
+      !Contains(
+          directCameraBranch,
+          "renderFrameSequence") ||
+      Contains(
+          directCameraBranch,
+          "PublishGameFovFromCover(") ||
+      Contains(
+          directCameraBranch,
+          "PublishGameFovUnderPublishFit(") ||
+      completeBasisPolicy.empty() ||
+      !Contains(
+          completeBasisPolicy,
+          "StereoMode::HeadOwnedCamFullPose") ||
+      !Contains(
+          completeBasisPolicy,
+          "return mode == StereoMode::HeadOwnedCamFullPose;") ||
+      Contains(
+          completeBasisPolicy,
+          "StereoMode::OpenXrFusedFirstPerson") ||
+      Contains(
+          completeBasisPolicy,
+          "StereoMode::OpenXrTemporalStereo") ||
+      rasterConversion.empty() ||
+      !Contains(rasterConversion, "58.7f / 45.f") ||
+      !Contains(rasterConversion, "vertical * aspectWH")) {
+    return false;
+  }
+
+  const std::string mode58ParentPath =
+      SourceSlice(
+          stereoSource,
+          "gtaiv_xr_bridge::PoseBridge mode58Pose{};",
+          "if (freeze)");
+  const std::string guardedPair =
+      SourceSlice(
+          stereoSource,
+          "bool RunMode200ParentDualGuarded(",
+          "// Mode 202:");
+  const std::string canvasCopy =
+      SourceSlice(
+          stereoSource,
+          "bool CopySurfToEyeCanvas(",
+          "bool CopyBbToEyeCanvas(");
+  const size_t duplicateGuard =
+      mode58ParentPath.find(
+          "previousSource == mode58Stamp.sourceFrameId");
+  const size_t fovFreshnessGate =
+      mode58ParentPath.find(
+          "GetMode58EngineFovWriteReceipt(");
+  return
+      !mode58ParentPath.empty() &&
+      duplicateGuard != std::string::npos &&
+      fovFreshnessGate != std::string::npos &&
+      duplicateGuard < fovFreshnessGate &&
+      Contains(
+          mode58ParentPath,
+          "ComputeOpenXrCoverTangents(") &&
+      Contains(
+          mode58ParentPath,
+          "ComputeGameFovTangentsFromCCamDegrees(") &&
+      Contains(
+          mode58ParentPath,
+          "PublishGameFovTangents(") &&
+      Contains(mode58ParentPath, "actualHorizontal") &&
+      Contains(mode58ParentPath, "actualVertical") &&
+      Contains(mode58ParentPath, "actualCoversRuntime") &&
+      Contains(
+          mode58ParentPath,
+          "GetMode58EngineFovWriteReceipt(") &&
+      Contains(mode58ParentPath, "mode58Stamp.sourceFrameId") &&
+      Contains(
+          mode58ParentPath,
+          "CaptureMode58BackbufferGeometry(") &&
+      !guardedPair.empty() &&
+      Contains(
+          guardedPair,
+          "IsGameFovPublishReceiptCurrent(") &&
+      Contains(
+          guardedPair,
+          "IsMode58EngineFovWriteReceiptCurrent(") &&
+      Contains(
+          guardedPair,
+          "mode58Stamp->sourceFrameId") &&
+      Contains(guardedPair, "sourceAspect > 0.5f") &&
+      Contains(guardedPair, "sourceAspect < 3.f") &&
+      !Contains(
+          guardedPair,
+          "mode58FovReceipt->sourceNearSquare &&") &&
+      Contains(
+          guardedPair,
+          ".destinationWidth[eyeIndex] >=") &&
+      Contains(guardedPair, "0.90f") &&
+      Contains(guardedPair, "canvasCaptureReady") &&
+      Contains(guardedPair, ".sourceCropWidth[eyeIndex] <") &&
+      Contains(
+          guardedPair,
+          "g_mode58LastAcceptedEngineFovGeneration.store") &&
+      Contains(
+          guardedPair,
+          "trueFov=1 fovGen=%u") &&
+      Contains(
+          guardedPair,
+          "dstCoverage=L%.1f%%x%.1f%%") &&
+      !canvasCopy.empty() &&
+      Contains(
+          canvasCopy,
+          "!ok && !IsOpenXrFusedFirstPerson(") &&
+      Contains(
+          canvasCopy,
+          "Mode58 sub-rect StretchRect FAILED — pair withheld");
+}
+
 }  // namespace
 
 int main() {
@@ -320,6 +772,9 @@ int main() {
       {"synthetic-ctab", &TestSyntheticCtab},
       {"strict-pair-audit", &TestPairAuditRejectsLooseStereo},
       {"openxr-cover-fov", &TestOpenXrCoverFovMath},
+      {"openxr-cover-mapping", &TestOpenXrCoverMapping},
+      {"mode204-passive-openxr-seam",
+       &TestMode204PassiveOpenXrSeamSourceContract},
   };
   for (const Test& test : tests) {
     if (!test.run()) {
@@ -329,8 +784,13 @@ int main() {
   }
   std::printf(
       "StereoWvpTest: PASS math=%u ctab=%u pairAudit=%u "
-      "openxrFov=%u openxrEyeRaw=%u runtimeUntouched=1\n",
+      "openxrFov=%u openxrEyeRaw=%u "
+      "openxrCoverMapping=%u mode204PassiveLease=%u "
+      "mode204RendererUntouched=%u runtimeUntouched=1\n",
       5u,
+      1u,
+      1u,
+      1u,
       1u,
       1u,
       1u,

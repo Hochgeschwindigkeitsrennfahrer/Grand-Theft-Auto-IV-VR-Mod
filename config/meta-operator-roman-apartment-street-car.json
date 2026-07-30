@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "name": "roman-apartment-downstairs-street-car-attempt",
+  "runtimeKind": "MetaSimulator",
+  "stereoMode": 204,
+  "requireVehicleEntry": false,
+  "operatorBundle": {
+    "version": "205.1",
+    "manifestSha256": "12C2AB514A2EDE8B3B9A0511CD60D8893B15266445E921D496D1E0BB23954AEA",
+    "librarySha256": "53E145C9677C627EDB540DF13D9131F835C47F6EE0185A020CD38E6671F653FD",
+    "proxySha256": "291317F892BCC6776CF7B27EA46DCEFF6FE34C9AFE83BC55A18EECEEC7E0EB62"
+  },
+  "coordinateNotes": {
+    "source": "Local SGTA400 metadata plus the proved Mode 204 first-person camera trace",
+    "savePlayerPosition": [892.437927, -499.804688, 18.4023],
+    "saveExteriorPosition": [898.766785, -504.968414, 13.9801],
+    "cameraHeightOffsetMeters": 1.65,
+    "saveFilesAreReadOnly": true,
+    "teleportOrWarpUsed": false
+  },
+  "expectedStart": {
+    "cameraPosition": [892.438, -499.805, 20.052],
+    "radiusMeters": 2.0
+  },
+  "route": [
+    {
+      "id": "cabinet-clear-south",
+      "target": [893.200, -502.613, 20.0],
+      "radiusMeters": 0.45,
+      "pulseSeconds": 0.30,
+      "maxPulses": 12
+    },
+    {
+      "id": "central-lane",
+      "target": [895.141, -502.613, 20.0],
+      "radiusMeters": 0.50,
+      "pulseSeconds": 0.30,
+      "maxPulses": 8
+    },
+    {
+      "id": "door-approach",
+      "target": [897.441, -504.240, 20.0],
+      "radiusMeters": 0.60,
+      "pulseSeconds": 0.30,
+      "maxPulses": 12
+    },
+    {
+      "id": "door-square",
+      "target": [898.141, -504.240, 20.0],
+      "radiusMeters": 0.45,
+      "pulseSeconds": 0.30,
+      "maxPulses": 6
+    },
+    {
+      "id": "apartment-door",
+      "target": [899.341, -504.240, 20.0],
+      "radiusMeters": 0.55,
+      "pulseSeconds": 0.30,
+      "maxPulses": 8
+    },
+    {
+      "id": "stairs-bottom",
+      "target": [897.6, -504.0, 17.4],
+      "radiusMeters": 1.5,
+      "pulseSeconds": 0.65,
+      "maxPulses": 14,
+      "maxCameraZ": 18.5,
+      "minDropFromStartMeters": 1.5
+    },
+    {
+      "id": "outside-sidewalk",
+      "target": [898.767, -504.968, 15.63],
+      "radiusMeters": 1.75,
+      "pulseSeconds": 0.65,
+      "maxPulses": 14,
+      "maxCameraZ": 17.0,
+      "minDropFromStartMeters": 3.0
+    },
+    {
+      "id": "street-lane",
+      "target": [905.5, -504.968, 15.63],
+      "radiusMeters": 2.0,
+      "pulseSeconds": 0.65,
+      "maxPulses": 14,
+      "maxCameraZ": 17.0,
+      "minDropFromStartMeters": 3.0,
+      "minPlanarFromStartMeters": 10.0
+    }
+  ],
+  "vehicleAttempts": [
+    {
+      "id": "safehouse-front",
+      "target": [905.5, -504.968, 15.63],
+      "radiusMeters": 2.0,
+      "pulseSeconds": 0.65,
+      "maxPulses": 4
+    },
+    {
+      "id": "north-curb",
+      "target": [905.5, -497.5, 15.63],
+      "radiusMeters": 2.5,
+      "pulseSeconds": 0.65,
+      "maxPulses": 14
+    },
+    {
+      "id": "south-curb",
+      "target": [905.5, -512.0, 15.63],
+      "radiusMeters": 2.5,
+      "pulseSeconds": 0.65,
+      "maxPulses": 20
+    }
+  ],
+  "vehicleDriveProof": {
+    "triggerValue": 0.8,
+    "pulseSeconds": 1.25,
+    "maxPulses": 4,
+    "minPlanarDistanceMeters": 1.0
+  }
+}

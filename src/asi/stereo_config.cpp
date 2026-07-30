@@ -1,7 +1,10 @@
 #include "stereo_config.h"
+#include "cam_matrix.h"
 #include "game_timer.h"
+#include "hmd_pose.h"
 #include "hud_layout.h"
 #include "log.h"
+#include "openxr_bridge.h"
 #include "vr_display.h"
 
 #include <windows.h>
@@ -119,6 +122,26 @@ void SaveScaleFile(int pct) {
 }
 
 float ReadHmdIpdMeters() {
+  const VrBackend backend = GetVrBackend();
+  if (backend == VrBackend::OpenXr) {
+    EyeOffset left{};
+    EyeOffset right{};
+    if (GetCachedEyeOffset(false, &left) &&
+        GetCachedEyeOffset(true, &right)) {
+      const float dx = right.x - left.x;
+      const float dy = right.y - left.y;
+      const float dz = right.z - left.z;
+      const float ipd = std::sqrt(
+          dx * dx + dy * dy + dz * dz);
+      if (std::isfinite(ipd) &&
+          ipd > 0.04f && ipd < 0.12f) {
+        return ipd;
+      }
+    }
+    return 0.06f;
+  }
+  if (backend != VrBackend::OpenVr)
+    return 0.06f;
   vr::IVRSystem* sys = vr::VRSystem();
   if (!sys)
     return 0.06f;
@@ -456,6 +479,7 @@ void ReloadStereoMode() {
     // legacy OpenVR display. OpenXR supplies the eye geometry to the x86 side.
     ReloadIpdScale();
     ReloadStereoScale();
+    ResetMode58EngineFovReceipt();
     ApplyMode162SquareWideBase();
     ForceFpFovDegrees(110, 110, 110);
     EnsureVehicleCamOffDefaults();
@@ -2400,14 +2424,17 @@ void PollVrResHotkey() {
   static const uint32_t kFixed[] = {1024, 1280, 1536, 1792, 2048};
   constexpr int kFixedN = 5;
   uint32_t rec = 0;
-  if (vr::VRSystem()) {
-    uint32_t rw = 0, rh = 0;
-    vr::VRSystem()->GetRecommendedRenderTargetSize(&rw, &rh);
-    rec = rw > rh ? rw : rh;
-    if (rec < 512)
-      rec = 0;
-    if (rec > 4096)
-      rec = 4096;
+  if (GetVrBackend() == VrBackend::OpenVr) {
+    vr::IVRSystem* sys = vr::VRSystem();
+    if (sys) {
+      uint32_t rw = 0, rh = 0;
+      sys->GetRecommendedRenderTargetSize(&rw, &rh);
+      rec = rw > rh ? rw : rh;
+      if (rec < 512)
+        rec = 0;
+      if (rec > 4096)
+        rec = 4096;
+    }
   }
 
   const uint32_t cur = GetCanvasMaxDim();

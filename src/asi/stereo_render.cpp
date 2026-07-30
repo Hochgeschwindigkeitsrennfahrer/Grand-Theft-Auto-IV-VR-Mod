@@ -150,6 +150,38 @@ struct OpenXrCaptureStamp {
   bool valid = false;
 };
 
+struct Mode58FovPairReceipt {
+  GameFovPublishReceipt publication{};
+  Mode58EngineFovReceipt engineFov{};
+  uint64_t producerEpoch = 0u;
+  uint32_t sourceWidth = 0u;
+  uint32_t sourceHeight = 0u;
+  float coverHorizontal = 0.f;
+  float coverVertical = 0.f;
+  float destinationWidth[2] = {};
+  float destinationHeight[2] = {};
+  float sourceCropWidth[2] = {};
+  float sourceCropHeight[2] = {};
+  bool sourceNearSquare = false;
+  bool actualCoversRuntime = false;
+  bool valid = false;
+};
+
+struct Mode58CanvasCaptureAudit {
+  uint32_t sourceWidth[2] = {};
+  uint32_t sourceHeight[2] = {};
+  float destinationWidth[2] = {};
+  float destinationHeight[2] = {};
+  float sourceCropWidth[2] = {};
+  float sourceCropHeight[2] = {};
+  bool captured[2] = {};
+};
+
+thread_local Mode58CanvasCaptureAudit
+    g_mode58CanvasCaptureAudit{};
+thread_local Mode58FovPairReceipt
+    g_mode58ActiveFovReceipt{};
+
 OpenXrCaptureStamp g_holdOpenXrStamp[2]{};
 OpenXrCaptureStamp g_submitOpenXrStamp[2]{};
 std::atomic<uint64_t> g_openXrPairId{0};
@@ -285,6 +317,46 @@ bool IsValidOpenXrTemporalBuildPose(
       (pose.flags & requiredFlags) == requiredFlags &&
       pose.frameId != 0u &&
       pose.predictedDisplayTime != 0;
+}
+
+bool CaptureMode58BackbufferGeometry(
+    Mode58FovPairReceipt* receipt) {
+  if (!receipt || !g_device)
+    return false;
+  IDirect3DSurface9* backbuffer = nullptr;
+  if (FAILED(g_device->GetBackBuffer(
+          0,
+          0,
+          D3DBACKBUFFER_TYPE_MONO,
+          &backbuffer)) ||
+      !backbuffer) {
+    return false;
+  }
+  D3DSURFACE_DESC description{};
+  const HRESULT result =
+      backbuffer->GetDesc(&description);
+  backbuffer->Release();
+  if (FAILED(result) ||
+      description.Width < 16u ||
+      description.Height < 16u) {
+    return false;
+  }
+  receipt->sourceWidth = description.Width;
+  receipt->sourceHeight = description.Height;
+  const float aspect =
+      static_cast<float>(description.Width) /
+      static_cast<float>(description.Height);
+  receipt->sourceNearSquare =
+      std::isfinite(aspect) &&
+      aspect >= 0.95f &&
+      aspect <= 1.05f;
+  // The tracked square preset is a performance preference, not a geometry
+  // assumption. Rockstar may restore the user's fullscreen resolution after
+  // parsing commandline.txt. Mode58 derives the actual raster tangents from
+  // this captured aspect and must remain correct for that real backbuffer.
+  return std::isfinite(aspect) &&
+      aspect > 0.5f &&
+      aspect < 3.f;
 }
 
 bool BindOpenXrTemporalThread(
@@ -456,13 +528,10 @@ void CompleteOpenXrPair(const OpenXrCaptureStamp& left,
   g_openXrPairVerifiedDrawScene =
       g_openXrPairSameTick && verifiedDrawSceneStereo;
   g_openXrPairVerifiedParentDual =
-      g_openXrPairVerifiedDrawScene &&
-      verifiedParentDualStereo;
+      g_openXrPairSameTick && verifiedParentDualStereo;
   g_openXrPairFirstPersonCamera =
-      g_openXrPairVerifiedParentDual &&
       firstPersonCamera;
   g_openXrPairNativeHeadHidden =
-      g_openXrPairFirstPersonCamera &&
       nativeHeadHidden;
   const bool orderedTemporalPair =
       left.valid && right.valid &&
@@ -901,24 +970,17 @@ void Mode199OnEndScene() {
 constexpr uint32_t kMode200TargetRva = 0x4D8BF0;
 constexpr uint32_t kMode204TargetRva = 0x4DE020;  // Mode198 ret 0x4DE0DC → thiscall-56
 uint32_t ParentDualTargetRva() {
-  return UsesMode204ParentDualPath(GetStereoMode())
-             ? kMode204TargetRva
-             : kMode200TargetRva;
+  return IsOursFpSameTickParentDualTry2(GetStereoMode()) ? kMode204TargetRva : kMode200TargetRva;
 }
 std::atomic<uint32_t> g_mode200Es{0};
 std::atomic<uint32_t> g_mode200DualN{0};
 std::atomic<bool> g_mode200HookOk{false};
 std::atomic<bool> g_mode200TooHot{false};
 std::atomic<LONG> g_mode200EntrySum{0};
-std::atomic<uint64_t> g_mode58LastAttemptedSourceFrame{0u};
 bool InstallMode200ParentDualHook();
 void Mode200OnEndScene();
 void Mode200Kill(const char* why);
-bool
-RunMode200ParentDualGuarded(
-    void* self,
-    void* edx,
-    const OpenXrCaptureStamp* mode58Stamp = nullptr);
+bool RunMode200ParentDualGuarded(void* self, void* edx);
 bool RunMode202ParentDualVsGuarded(void* self, void* edx);
 
 // Mode 198: at most ONE VsRet stack sample per EndScene — find rare parents above
@@ -1082,8 +1144,6 @@ void ReleaseEyeRts() {
   g_openXrPairNativeHeadHidden = false;
   g_openXrPairVerifiedTemporal = false;
   g_openXrTemporalStereoProved.store(false);
-  g_mode58LastAttemptedSourceFrame.store(
-      0u, std::memory_order_release);
   g_holdOpenXrBuildEpoch[0] = 0u;
   g_holdOpenXrBuildEpoch[1] = 0u;
 }
@@ -1382,77 +1442,6 @@ constexpr uint32_t kCanvasMaxDim = 2048;
 // Mode 37 comfort: tighter cap for StretchRect/Submit cost after true-FOV fill.
 constexpr uint32_t kCanvasMaxDimComfort = 1536;
 
-bool GetCanvasCoverFovTangents(float* horizontal, float* vertical) {
-  if (!IsOpenXrDirectMode(GetStereoMode()))
-    return GetCoverFovTangents(horizontal, vertical);
-
-  const gtaiv_xr_bridge::PoseBridge* pose =
-      g_openXrCanvasPoseOverride
-          ? g_openXrCanvasPoseOverride
-          : g_openXrRenderPoseValid
-              ? &g_openXrRenderPose
-              : nullptr;
-  if (!pose ||
-      (pose->flags &
-       gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
-      !gtaiv_xr_bridge::ComputeOpenXrCoverTangents(
-          pose->eyeFovs,
-          horizontal,
-          vertical)) {
-    return false;
-  }
-
-  static bool logged = false;
-  if (!logged) {
-    logged = true;
-    Log(
-        "StereoCanvasSize: OpenXR cover tangents=(%.3f,%.3f); "
-        "no OpenVR display query",
-        *horizontal,
-        *vertical);
-  }
-  return true;
-}
-
-bool GetCanvasEyeRawProjection(vr::EVREye eye,
-                               float* left,
-                               float* right,
-                               float* top,
-                               float* bottom) {
-  if (!IsOpenXrDirectMode(GetStereoMode()))
-    return GetEyeRawProjection(eye, left, right, top, bottom);
-
-  const uint32_t eyeIndex =
-      eye == vr::Eye_Right ? 1u : 0u;
-  const gtaiv_xr_bridge::PoseBridge* pose =
-      g_openXrCanvasPoseOverride
-          ? g_openXrCanvasPoseOverride
-          : g_openXrRenderPoseValid
-              ? &g_openXrRenderPose
-              : nullptr;
-  if (!pose ||
-      (pose->flags &
-       gtaiv_xr_bridge::PoseBridgeViewsValid) == 0u ||
-      !gtaiv_xr_bridge::ComputeOpenXrEyeRawTangents(
-          pose->eyeFovs,
-          eyeIndex,
-          left,
-          right,
-          top,
-          bottom)) {
-    return false;
-  }
-
-  static bool logged = false;
-  if (!logged) {
-    logged = true;
-    Log(
-        "StereoCanvasEye: OpenXR per-eye tangents active; "
-        "no OpenVR projection query");
-  }
-  return true;
-}
-
 void ComputeCanvasSize(uint32_t bbW, uint32_t bbH, uint32_t* outW, uint32_t* outH) {
   *outW = bbW;
   *outH = bbH;
@@ -1477,7 +1466,7 @@ void ComputeCanvasSize(uint32_t bbW, uint32_t bbH, uint32_t* outW, uint32_t* out
     return;
   }
   float coverH = 0.f, coverV = 0.f;
-  if (!GetCanvasCoverFovTangents(&coverH, &coverV))
+  if (!GetCoverFovTangents(&coverH, &coverV))
     return;
   float gameH = 0.f, gameV = 0.f;
   GetGameFovTangents(&gameH, &gameV);
@@ -1675,8 +1664,7 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
     return false;
 
   float l = 0.f, r = 0.f, t = 0.f, b = 0.f;
-  if (!GetCanvasEyeRawProjection(eye, &l, &r, &t, &b) ||
-      !(r > l) || !(b > t))
+  if (!GetEyeRawProjection(eye, &l, &r, &t, &b) || !(r > l) || !(b > t))
     return CopySurfaceToTexture(dev, bb, tex);
   float gameH = 0.f, gameV = 0.f;
   if (!GetLatchedGameFovTangents(&gameH, &gameV))
@@ -1741,11 +1729,9 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
   // Where the game renders MORE than the eye sees (FOV patch), crop the SOURCE;
   // where it renders less, inset the DEST. Clamping only the dest (old code)
   // squeezed the image differently per eye → objects jumped left/right.
-  const float txLo = (std::max)(-gameH, l);
-  const float txHi = (std::min)(gameH, r);
-  const float tyLo = (std::max)(-gameV, t);
-  const float tyHi = (std::min)(gameV, b);
-  if (txHi - txLo < 0.05f || tyHi - tyLo < 0.05f) {
+  gtaiv_xr_bridge::FrustumCanvasMapping mapping{};
+  if (!gtaiv_xr_bridge::ComputeFrustumCanvasMapping(
+          gameH, gameV, l, r, t, b, &mapping)) {
     const bool copied = SUCCEEDED(
         dev->StretchRect(bb, nullptr, dst, nullptr, D3DTEXF_NONE));
     dst->Release();
@@ -1754,15 +1740,15 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
   }
 
   RECT src{};
-  src.left = static_cast<LONG>(SW * (txLo + gameH) / (2.f * gameH));
-  src.right = static_cast<LONG>(SW * (txHi + gameH) / (2.f * gameH));
-  src.top = static_cast<LONG>(SH * (tyLo + gameV) / (2.f * gameV));
-  src.bottom = static_cast<LONG>(SH * (tyHi + gameV) / (2.f * gameV));
+  src.left = static_cast<LONG>(SW * mapping.sourceLeft);
+  src.right = static_cast<LONG>(SW * mapping.sourceRight);
+  src.top = static_cast<LONG>(SH * mapping.sourceTop);
+  src.bottom = static_cast<LONG>(SH * mapping.sourceBottom);
   RECT rc{};
-  rc.left = static_cast<LONG>(W * (txLo - l) / (r - l));
-  rc.right = static_cast<LONG>(W * (txHi - l) / (r - l));
-  rc.top = static_cast<LONG>(H * (tyLo - t) / (b - t));
-  rc.bottom = static_cast<LONG>(H * (tyHi - t) / (b - t));
+  rc.left = static_cast<LONG>(W * mapping.destinationLeft);
+  rc.right = static_cast<LONG>(W * mapping.destinationRight);
+  rc.top = static_cast<LONG>(H * mapping.destinationTop);
+  rc.bottom = static_cast<LONG>(H * mapping.destinationBottom);
 
   auto clampRect = [](RECT* rr, LONG w, LONG h) {
     if (rr->left < 0)
@@ -1811,7 +1797,10 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
       dev->ColorFill(dst, nullptr, D3DCOLOR_XRGB(0, 0, 0));
     ok = SUCCEEDED(dev->StretchRect(bb, &src, dst, &rc, D3DTEXF_LINEAR));
   }
-  if (!ok)
+  // A full-surface fallback discards the asymmetric per-eye source crop. That
+  // is tolerable only for legacy diagnostics; Mode58 must fail closed rather
+  // than authorize a geometrically false "full" projection.
+  if (!ok && !IsOpenXrFusedFirstPerson(GetStereoMode()))
     ok = SUCCEEDED(
         dev->StretchRect(bb, nullptr, dst, nullptr, D3DTEXF_NONE));
   dst->Release();
@@ -1820,10 +1809,38 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
     static bool s_warned = false;
     if (!s_warned) {
       s_warned = true;
-      Log("StereoCanvas: sub-rect StretchRect FAILED — falling back to full stretch "
-          "(geometry will be wrong; report this log line)");
+      Log(IsOpenXrFusedFirstPerson(GetStereoMode())
+              ? "StereoCanvas: Mode58 sub-rect StretchRect FAILED — pair withheld"
+              : "StereoCanvas: sub-rect StretchRect and full-stretch fallback FAILED");
     }
     return false;
+  }
+
+  if (IsOpenXrFusedFirstPerson(GetStereoMode())) {
+    const uint32_t eyeIndex =
+        eye == vr::Eye_Right ? 1u : 0u;
+    g_mode58CanvasCaptureAudit
+        .sourceWidth[eyeIndex] = sd.Width;
+    g_mode58CanvasCaptureAudit
+        .sourceHeight[eyeIndex] = sd.Height;
+    g_mode58CanvasCaptureAudit
+        .destinationWidth[eyeIndex] =
+        mapping.destinationRight -
+        mapping.destinationLeft;
+    g_mode58CanvasCaptureAudit
+        .destinationHeight[eyeIndex] =
+        mapping.destinationBottom -
+        mapping.destinationTop;
+    g_mode58CanvasCaptureAudit
+        .sourceCropWidth[eyeIndex] =
+        mapping.sourceRight -
+        mapping.sourceLeft;
+    g_mode58CanvasCaptureAudit
+        .sourceCropHeight[eyeIndex] =
+        mapping.sourceBottom -
+        mapping.sourceTop;
+    g_mode58CanvasCaptureAudit
+        .captured[eyeIndex] = true;
   }
 
   static bool s_loggedL = false, s_loggedR = false;
@@ -3218,86 +3235,20 @@ void __fastcall HookDrawWalk(void* self, void* edx) {
       CallDrawWalkOnceGuarded(self, edx);
       return;
     }
-    const StereoMode parentMode = GetStereoMode();
-    const bool openXrFirstPerson =
-        IsOpenXrFusedFirstPerson(parentMode);
-    const bool freeze =
-        IsOursFpSameTickParentDualFreeze(parentMode);
-    const bool vsDual =
-        IsOursFpSameTickParentDualVs(parentMode);
-    const bool poseLatch =
-        IsOursFpSameTickParentDualPose(parentMode);
-    gtaiv_xr_bridge::PoseBridge mode58Pose{};
-    OpenXrCaptureStamp mode58Stamp{};
-    bool mode58PosePinned = false;
-    if (openXrFirstPerson) {
-      mode58PosePinned =
-          GetLatestOpenXrPoseBridge(&mode58Pose) &&
-          IsValidOpenXrTemporalBuildPose(mode58Pose) &&
-          mode58Pose.producerEpoch != 0u &&
-          BeginPinnedOpenXrBuildPose(mode58Pose);
-      if (mode58PosePinned) {
-        mode58Stamp =
-            CaptureOpenXrStampFromPose(mode58Pose);
-        mode58PosePinned = mode58Stamp.valid;
-      }
-      if (!mode58PosePinned) {
-        EndPinnedOpenXrBuildPose();
-        g_haveL = g_haveR = false;
-        static uint32_t s_mode58PoseWaits = 0u;
-        const uint32_t waits = ++s_mode58PoseWaits;
-        if (waits <= 8u || (waits % 120u) == 0u) {
-          Log("StereoOpenXRFused: exact OpenXR parent pose unavailable "
-              "#%u; native walk only, pair withheld",
-              waits);
-        }
-        CallDrawWalkOnceGuarded(self, edx);
-        return;
-      }
-      const uint64_t previousSource =
-          g_mode58LastAttemptedSourceFrame.exchange(
-              mode58Stamp.sourceFrameId,
-              std::memory_order_acq_rel);
-      if (previousSource == mode58Stamp.sourceFrameId) {
-        EndPinnedOpenXrBuildPose();
-        static uint32_t s_mode58DuplicateWalks = 0u;
-        const uint32_t duplicates =
-            ++s_mode58DuplicateWalks;
-        if (duplicates <= 4u ||
-            (duplicates % 120u) == 0u) {
-          Log("StereoOpenXRFused: extra parent call #%u "
-              "source=%llu; native walk only, proved eye pair retained",
-              duplicates,
-              static_cast<unsigned long long>(
-                  mode58Stamp.sourceFrameId));
-        }
-        CallDrawWalkOnceGuarded(self, edx);
-        return;
-      }
-      // Both parent walks and their per-eye canvas copies use this exact
-      // OpenXR pose/FOV sample. This thread-local pointer remains valid until
-      // the guarded parent call returns.
-      g_openXrCanvasPoseOverride = &mode58Pose;
-    }
+    const bool freeze = IsOursFpSameTickParentDualFreeze(GetStereoMode());
+    const bool vsDual = IsOursFpSameTickParentDualVs(GetStereoMode());
+    const bool poseLatch = IsOursFpSameTickParentDualPose(GetStereoMode());
     if (freeze)
       BeginStereoDualCamFreeze();
-    if (poseLatch && !openXrFirstPerson)
+    if (poseLatch)
       BeginDualHmdPoseLatch();
     g_inDrawWalkDual.store(true);
     // 202 = VS-translate (REJECT). 200/201/203 = full CCam±IPD L/R.
-    const bool ok = vsDual
-        ? RunMode202ParentDualVsGuarded(self, edx)
-        : RunMode200ParentDualGuarded(
-              self,
-              edx,
-              openXrFirstPerson ? &mode58Stamp : nullptr);
+    const bool ok =
+        vsDual ? RunMode202ParentDualVsGuarded(self, edx) : RunMode200ParentDualGuarded(self, edx);
     g_inDrawWalkDual.store(false);
-    if (poseLatch && !openXrFirstPerson)
+    if (poseLatch)
       EndDualHmdPoseLatch();
-    if (openXrFirstPerson) {
-      g_openXrCanvasPoseOverride = nullptr;
-      EndPinnedOpenXrBuildPose();
-    }
     if (freeze)
       EndStereoDualCamFreeze();
     if (!ok) {
@@ -3546,25 +3497,11 @@ bool InstallDrawWalkAt(uintptr_t start) {
   return true;
 }
 
-bool RunMode200ParentDualGuarded(
-    void* self,
-    void* edx,
-    const OpenXrCaptureStamp* mode58Stamp) {
+bool RunMode200ParentDualGuarded(void* self, void* edx) {
   __try {
-    const bool openXrFirstPerson =
-        IsOpenXrFusedFirstPerson(GetStereoMode());
-    StereoCamBuildReceipt leftReceipt{};
-    StereoCamBuildReceipt rightReceipt{};
-    const uint32_t leftGenerationBefore =
-        GetStereoCamApplyGeneration();
     g_execViewStage = 1;
     SetStereoEye(StereoEye::Left);
-    if (openXrFirstPerson)
-      BeginStereoCamBuildReceipt(false);
     RefreshLiveCamForStereoEye();
-    const bool leftReceiptReady =
-        !openXrFirstPerson ||
-        EndStereoCamBuildReceipt(&leftReceipt);
     if (g_device)
       PushLiveCamToD3D(g_device);
     g_execViewStage = 2;
@@ -3572,15 +3509,8 @@ bool RunMode200ParentDualGuarded(
     g_execViewStage = 3;
     const bool okL = CopyBbToEyeCanvasGated(g_device, g_texL, vr::Eye_Left);
     g_execViewStage = 4;
-    const uint32_t rightGenerationBefore =
-        GetStereoCamApplyGeneration();
     SetStereoEye(StereoEye::Right);
-    if (openXrFirstPerson)
-      BeginStereoCamBuildReceipt(true);
     RefreshLiveCamForStereoEye();
-    const bool rightReceiptReady =
-        !openXrFirstPerson ||
-        EndStereoCamBuildReceipt(&rightReceipt);
     if (g_device)
       PushLiveCamToD3D(g_device);
     g_execViewStage = 5;
@@ -3588,141 +3518,8 @@ bool RunMode200ParentDualGuarded(
     g_execViewStage = 6;
     const bool okR = CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Right);
     g_execViewStage = 7;
-    bool firstPersonCameraPair = true;
-    if (openXrFirstPerson) {
-      const float dx =
-          rightReceipt.position[0] - leftReceipt.position[0];
-      const float dy =
-          rightReceipt.position[1] - leftReceipt.position[1];
-      const float dz =
-          rightReceipt.position[2] - leftReceipt.position[2];
-      const float distanceMeters =
-          std::sqrt(dx * dx + dy * dy + dz * dz);
-      const float centerDx =
-          rightReceipt.preEyePosition[0] -
-          leftReceipt.preEyePosition[0];
-      const float centerDy =
-          rightReceipt.preEyePosition[1] -
-          leftReceipt.preEyePosition[1];
-      const float centerDz =
-          rightReceipt.preEyePosition[2] -
-          leftReceipt.preEyePosition[2];
-      const float centerDistanceMeters =
-          std::sqrt(
-              centerDx * centerDx +
-              centerDy * centerDy +
-              centerDz * centerDz);
-      float maxBasisDelta = 0.f;
-      for (uint32_t i = 0u; i < 9u; ++i) {
-        const float delta = std::fabs(
-            rightReceipt.basis[i] -
-            leftReceipt.basis[i]);
-        if (delta > maxBasisDelta)
-          maxBasisDelta = delta;
-      }
-      const DWORD currentThread = GetCurrentThreadId();
-      firstPersonCameraPair =
-          mode58Stamp && mode58Stamp->valid &&
-          leftReceiptReady && rightReceiptReady &&
-          leftReceipt.applyGeneration >
-              leftGenerationBefore &&
-          rightReceipt.applyGeneration >
-              rightGenerationBefore &&
-          rightReceipt.applyGeneration >
-              leftReceipt.applyGeneration &&
-          leftReceipt.writerThreadId == currentThread &&
-          rightReceipt.writerThreadId == currentThread &&
-          !leftReceipt.rightEye &&
-          rightReceipt.rightEye &&
-          leftReceipt.eyeOffsetApplied &&
-          rightReceipt.eyeOffsetApplied &&
-          leftReceipt.firstPersonAnchor &&
-          rightReceipt.firstPersonAnchor &&
-          std::isfinite(distanceMeters) &&
-          distanceMeters >= 0.01f &&
-          distanceMeters <= 0.20f &&
-          std::isfinite(centerDistanceMeters) &&
-          centerDistanceMeters <= 0.005f &&
-          std::isfinite(maxBasisDelta) &&
-          maxBasisDelta <= 0.002f;
-      const bool headHideReady =
-          IsPedHeadHideOperational();
-      const bool mode58PairReady =
-          firstPersonCameraPair &&
-          headHideReady &&
-          okL && okR;
-      g_haveL = mode58PairReady;
-      g_haveR = mode58PairReady;
-
-      if (mode58PairReady) {
-        CompleteOpenXrPair(
-            *mode58Stamp,
-            *mode58Stamp,
-            false,
-            g_rtW,
-            g_rtH,
-            false,
-            false,
-            true,
-            false,
-            true,
-            true,
-            true);
-        static uint32_t s_mode58AcceptedPairs = 0u;
-        const uint32_t pair = ++s_mode58AcceptedPairs;
-        if (pair <= 8u || (pair % 120u) == 0u) {
-          Log("StereoOpenXRFused: accepted pair #%u "
-              "pose=%llu source=%llu sameTick=1 "
-              "parentDual=1 firstPerson=1 headHide=1 "
-              "thread=%u parentCall=%u "
-              "camGen=%u/%u camDist=%.2fcm "
-              "centerDelta=%.3fcm basisDelta=%.5f "
-              "parent=0x%X",
-              pair,
-              static_cast<unsigned long long>(
-                  mode58Stamp->poseSequence),
-              static_cast<unsigned long long>(
-                  mode58Stamp->sourceFrameId),
-              currentThread,
-              g_mode200DualN.load(
-                  std::memory_order_relaxed) + 1u,
-              leftReceipt.applyGeneration,
-              rightReceipt.applyGeneration,
-              distanceMeters * 100.f,
-              centerDistanceMeters * 100.f,
-              maxBasisDelta,
-              ParentDualTargetRva());
-        }
-      } else if (!mode58PairReady) {
-        static uint32_t s_mode58CameraRejects = 0u;
-        const uint32_t rejects = ++s_mode58CameraRejects;
-        if (rejects <= 8u || (rejects % 120u) == 0u) {
-          Log("StereoOpenXRFused: pair withheld #%u "
-              "receipt=%d/%d camGen=%u>%u/%u>%u "
-              "eye=%d/%d fpAnchor=%d/%d "
-              "camDist=%.2fcm centerDelta=%.3fcm "
-              "basisDelta=%.5f capture=%d/%d headHide=%d",
-              rejects,
-              leftReceiptReady ? 1 : 0,
-              rightReceiptReady ? 1 : 0,
-              leftReceipt.applyGeneration,
-              leftGenerationBefore,
-              rightReceipt.applyGeneration,
-              rightGenerationBefore,
-              leftReceipt.eyeOffsetApplied ? 1 : 0,
-              rightReceipt.eyeOffsetApplied ? 1 : 0,
-              leftReceipt.firstPersonAnchor ? 1 : 0,
-              rightReceipt.firstPersonAnchor ? 1 : 0,
-              distanceMeters * 100.f,
-              centerDistanceMeters * 100.f,
-              maxBasisDelta,
-              okL ? 1 : 0,
-              okR ? 1 : 0,
-              headHideReady ? 1 : 0);
-        }
-      }
-    } else if (IsOursFpAtomicEyePair(GetStereoMode())) {
-      if (okL && okR && firstPersonCameraPair)
+    if (IsOursFpAtomicEyePair(GetStereoMode())) {
+      if (okL && okR)
         g_haveL = g_haveR = true;
     } else {
       if (okL)
@@ -3734,9 +3531,6 @@ bool RunMode200ParentDualGuarded(
     RefreshLiveCamForStereoEye();
     return true;
   } __except (ExecViewFilter(GetExceptionInformation())) {
-    StereoCamBuildReceipt discardedReceipt{};
-    EndStereoCamBuildReceipt(&discardedReceipt);
-    g_haveL = g_haveR = false;
     SetStereoEye(StereoEye::Left);
     return false;
   }
@@ -3806,8 +3600,7 @@ bool InstallMode200ParentDualHook() {
   const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
   const uintptr_t addr = base + targetRva;
   const auto* b = reinterpret_cast<const uint8_t*>(addr);
-  const int kill = IsOpenXrFusedFirstPerson(GetStereoMode())          ? 57
-                   : IsOursFpSameTickParentDualTry2(GetStereoMode())   ? 203
+  const int kill = IsOursFpSameTickParentDualTry2(GetStereoMode())     ? 203
                    : IsOursFpSameTickParentDualPose(GetStereoMode())   ? 200
                                                                         : 191;
   if (b[0] != 0x56 || b[1] != 0x8B || b[2] != 0xF1) {
@@ -3856,8 +3649,7 @@ void Mode200Kill(const char* why) {
   g_mode200HookOk.store(false);
   SetStereoEye(StereoEye::Left);
   RefreshLiveCamForStereoEye();
-  const int kill = IsOpenXrFusedFirstPerson(GetStereoMode())          ? 57
-                   : IsOursFpSameTickParentDualTry2(GetStereoMode())   ? 203
+  const int kill = IsOursFpSameTickParentDualTry2(GetStereoMode())     ? 203
                    : IsOursFpSameTickParentDualPose(GetStereoMode())   ? 200
                    : IsOursFpSameTickParentDualFreeze(GetStereoMode()) ? 200
                    : IsOursFpSameTickParentDualVs(GetStereoMode())     ? 200
@@ -7841,6 +7633,11 @@ bool InstallAllThreePhases() {
 
 }  // namespace
 
+uint64_t GetStereoRenderFrameSequence() {
+  return static_cast<uint64_t>(
+      g_frameSeq.load(std::memory_order_acquire));
+}
+
 void StereoMode57BeginScene(IDirect3DDevice9* device) {
   if (GetStereoMode() !=
       StereoMode::OpenXrTemporalStereo) {
@@ -8383,6 +8180,38 @@ void StereoSetOpenXrRenderPose(
   }
   g_openXrRenderPose = *pose;
   g_openXrRenderPoseValid = true;
+}
+
+bool StereoGetMode204EyeTextureDesc(D3DSURFACE_DESC* output) {
+  if (!output)
+    return false;
+  *output = {};
+  if (GetStereoMode() != StereoMode::OursFpSameTickParentDualTry2 ||
+      !g_texL)
+    return false;
+  return SUCCEEDED(g_texL->GetLevelDesc(0, output));
+}
+
+bool StereoAcquireMode204SubmitPair(OpenXrStereoPair* output) {
+  if (!output)
+    return false;
+  *output = {};
+  if (GetStereoMode() != StereoMode::OursFpSameTickParentDualTry2 ||
+      !IsStereoRenderArmed() || !g_haveL || !g_haveR || !g_texL ||
+      !g_texR)
+    return false;
+
+  D3DSURFACE_DESC description{};
+  if (FAILED(g_texL->GetLevelDesc(0, &description)))
+    return false;
+
+  g_texL->AddRef();
+  g_texR->AddRef();
+  output->eyes[0] = g_texL;
+  output->eyes[1] = g_texR;
+  output->width = description.Width;
+  output->height = description.Height;
+  return true;
 }
 
 bool InstallStereoRenderHooks() {
@@ -9466,7 +9295,8 @@ void StereoRenderOnDevice(IDirect3DDevice9* device) {
             &temporalTicket,
             &temporalD3dThreadId);
   }
-  if (uiState) {
+  if (uiState &&
+      mode != StereoMode::OursFpSameTickParentDualTry2) {
     if (!CaptureOpenXrUiPair(device)) {
       static uint64_t lastFailureTick = 0u;
       const uint64_t now = GetTickCount64();

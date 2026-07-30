@@ -169,4 +169,5 @@ inline bool synthesizeGamepad(
         gamepad.wButtons |= XINPUT_GAMEPAD_START;
     return true;
 }
+
 }

@@ -103,7 +103,8 @@ HRESULT STDMETHODCALLTYPE HookSetTransform(IDirect3DDevice9* self, D3DTRANSFORMS
 HRESULT STDMETHODCALLTYPE HookBeginScene(IDirect3DDevice9* self) {
   const HRESULT hr = g_origBeginScene(self);
   if (SUCCEEDED(hr)) {
-    StereoMode57BeginScene(self);
+    if (GetStereoMode() == StereoMode::OpenXrTemporalStereo)
+      StereoMode57BeginScene(self);
     if (ModeWantsCoverFov())
       StereoProjApplyForCurrentEye(self);
   }
