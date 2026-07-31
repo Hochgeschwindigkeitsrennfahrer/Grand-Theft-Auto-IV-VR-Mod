@@ -51,3 +51,6 @@
 /dxvk/**/Release/
 /dxvk/**/Debug/
 /dxvk/build.w32/
+
+# Offline overlay render test output (screenshots are copied into docs/menu-integration/)
+/out-preview/

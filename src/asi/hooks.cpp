@@ -2,6 +2,7 @@
 #include "log.h"
 #include "openvr_mono.h"
 #include "stereo_proj.h"
+#include "vr_menu.h"
 
 #include "../../thirdparty/minhook/include/MinHook.h"
 
@@ -43,6 +44,11 @@ bool HookFn(void* target, void* detour, void** original, const char* name) {
 }
 
 HRESULT STDMETHODCALLTYPE HookEndScene(IDirect3DDevice9* self) {
+  // The settings overlay is composited into the backbuffer FIRST, because
+  // TryMonoSubmit copies that same backbuffer into the eye textures. One draw
+  // therefore reaches the monitor and both eyes — and it still works with no
+  // headset connected, where TryMonoSubmit returns immediately.
+  asi::VrMenuOnEndScene(self);
   // Frame finished — mono Submit to SteamVR, then EndScene
   asi::TryMonoSubmit(self);
   return g_realEndScene(self);

@@ -2948,4 +2948,81 @@ void PollVrResHotkey() {
     Log("VrRes: F5 picked SteamVR recommended maxDim=%u", next);
 }
 
+// --- in-game overlay menu accessors ----------------------------------------
+// Thin wrappers over the same set+save pairs the F5..F11 cyclers use, so the
+// menu cannot drift from the hotkeys. Clamping stays inside the Set* helpers.
+
+void MenuSetSepCm(int cm) {
+  SetSepCm(cm);
+  SaveIpdFile(MenuGetSepCm());
+  Log("StereoSep: %d cm (menu) — L4D2 IpdScale knob", MenuGetSepCm());
+}
+
+int MenuGetSepCm() {
+  return static_cast<int>(g_sepM.load() * 100.f + 0.5f);
+}
+
+void MenuSetStereoScalePercent(int pct) {
+  SetStereoScalePercent(pct);
+  const int applied = MenuGetStereoScalePercent();
+  SaveStereoScaleFile(applied);
+  Log("StereoScale: %.2f (menu) — HIGHER = stronger 3D / smaller world", applied / 100.f);
+}
+
+int MenuGetStereoScalePercent() {
+  return static_cast<int>(g_stereoScale.load() * 100.f + 0.5f);
+}
+
+void MenuSetWorldScalePercent(int pct) {
+  SetWorldScalePercent(pct);
+  const int applied = MenuGetWorldScalePercent();
+  SaveScaleFile(applied);
+  Log("TrueWorldScale: %d%% (menu) — HIGHER = smaller world; fusion may break above ~150%%",
+      applied);
+}
+
+int MenuGetWorldScalePercent() {
+  return static_cast<int>(g_worldScale.load() * 100.f + 0.5f);
+}
+
+void MenuSetWorldScalePreset(int idx) {
+  if (idx < 0 || idx >= kWorldScalePresetN)
+    return;
+  ApplyWorldScalePreset(idx, true);
+}
+
+int MenuGetWorldScalePreset() {
+  const int idx = g_worldScalePreset.load();
+  return (idx < 0 || idx >= kWorldScalePresetN) ? kWorldScaleDefaultIdx : idx;
+}
+
+int MenuWorldScalePresetCount() {
+  return kWorldScalePresetN;
+}
+
+const char* MenuWorldScalePresetName(int idx) {
+  if (idx < 0 || idx >= kWorldScalePresetN)
+    return "?";
+  return kWorldScalePresets[idx].name;
+}
+
+void MenuSetFovAddDegrees(int deg) {
+  if (deg < 0)
+    deg = 0;
+  if (deg > 40)
+    deg = 40;
+  SetFovAddDegrees(static_cast<float>(deg));
+  SaveFovAddFile(deg);
+  Log("FovAdd: %d deg (menu) — HIGHER = more canvas crop / zoom-IN", deg);
+}
+
+int MenuGetFovAddDegrees() {
+  return static_cast<int>(GetFovAddDegrees() + 0.5f);
+}
+
+int MenuGetEyeForwardCm() {
+  // GetEyeForwardMeters() also performs the one-time file read + log.
+  return static_cast<int>(GetEyeForwardMeters() * 100.f + 0.5f);
+}
+
 }  // namespace asi

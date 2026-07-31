@@ -883,4 +883,31 @@ bool GetFovPatchConfig(int* offsetBytes, float* scale);
 // Mode 120 default via worldscale "Open12" = 12 (less H crop than old Out22/28).
 float GetFovAddDegrees();
 
+// --- in-game overlay menu accessors (docs/menu-integration/) ----------------
+//
+// The F5..F11 hotkeys above are cyclers: they own both the clamp and the file
+// write, but only expose "next preset". The menu needs to jump to an arbitrary
+// value, so these wrap the same internal set+save pairs — identical clamping,
+// identical files, identical log lines. Nothing here is a new tuning path.
+// All are safe from the render thread.
+
+void MenuSetSepCm(int cm);  // F8: gtaiv_dxvk_vr.ipd
+int MenuGetSepCm();
+
+void MenuSetStereoScalePercent(int pct);  // F6: gtaiv_dxvk_vr.stereoscale
+int MenuGetStereoScalePercent();
+
+void MenuSetWorldScalePercent(int pct);  // F11: gtaiv_dxvk_vr.scale (6DoF lean)
+int MenuGetWorldScalePercent();
+
+void MenuSetWorldScalePreset(int idx);  // F7: fovadd + stereoscale pair
+int MenuGetWorldScalePreset();
+int MenuWorldScalePresetCount();
+const char* MenuWorldScalePresetName(int idx);
+
+void MenuSetFovAddDegrees(int deg);  // gtaiv_dxvk_vr.fovadd, 0..40
+int MenuGetFovAddDegrees();
+
+int MenuGetEyeForwardCm();  // pairs with SetEyeForwardCm above
+
 }  // namespace asi
