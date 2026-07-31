@@ -79,9 +79,14 @@ if (-not (Test-Path $bak)) {
   Write-Host "backed up -> $(Split-Path $bak -Leaf)"
 }
 
+# The Aiming Mode row is a PLACEHOLDER: MENUOPT_NONE + PREF_NULL, so it renders
+# a label and nothing else. It cannot be selected, cannot be changed, and touches
+# no preference - there is nothing behind it yet. When head-aim / motion-controls
+# land it becomes a real MENUOPT_ADJUST row with its own donor pref.
 $insert = @"
 <optionspc action="MENUOPT_NONE" label="" value="PREF_NULL" scaler="0" displayValue="MENU_DISPLAY_NONE" />
 <optionspc action="MENUOPT_ADJUST" label="VR Render Mode" value="PREF_LEDILLUMINATION" scaler="$States" displayValue="$Display" />
+<optionspc action="MENUOPT_NONE" label="VR Aiming Mode" value="PREF_NULL" scaler="0" displayValue="MENU_DISPLAY_NONE" />
 
 "@ -replace "`r`n", "`n"
 

@@ -142,3 +142,93 @@ Mitigation instead of RE: the default profile list is ordered **worst to best**
 (`0=0 flat, 1=53 AER, 2=170 Clean, 3=243 TrueStereo`), so the borrowed quality
 words are honest — Low really is the least stereo, Very High really is
 TrueStereo.
+
+---
+
+## Custom text, without a debugger
+
+The value strings CAN be renamed, and it needs no hook and no memory patch.
+
+`update\common\text\americanFF.gxt` is an 8 KB GXT overlay FusionFix already
+ships and the game already loads. It carries not just labels but per-state value
+strings: `Lampposts`, `Lampposts and Headlights`, `Lampposts and Headlights +
+Vehicle Night Shadows` are the four states of FusionFix's **Extra Night
+Shadows**, which itself borrows the multiplayer-only
+`MENU_DISPLAY_NETSTATS_SCORES` enum — the same trick, one layer down.
+
+So the VR row points at that same enum and the strings are rewritten in place:
+
+| state | text | mode |
+|---|---|---|
+| 0 | Off (stock string, left alone) | 0 flat |
+| 1 | AER (53) | 53 |
+| 2 | Clean (170) | 170 |
+| 3 | TrueStereo (243) | 243 |
+
+### Format
+
+```
+u16 version, u16 ?                    4 bytes  (04 00 10 00)
+'TKEY', u32 size, size/8 x (u32 offset, u32 hash)
+'TDAT', u32 size, UTF-16LE NUL-terminated strings
+```
+
+TKEY is **not** sorted, and TDAT is **not** padded — the shipped TDAT is 7466
+bytes. `tools/gxt/ff_gxt.py` round-trips the file byte-identically (sha1
+`e982888f933abc90`, 8158 bytes); that check caught a 2-byte padding bug before
+anything was written, and any rebuild that does not round-trip should be treated
+as corrupt.
+
+### The key is the string
+
+Keys are `atStringHash` — Jenkins one-at-a-time over the **lowercased** key.
+Verified: `oaat("skip intro") == 0xAEAE49BB`, plus 17 more of the first 40. For
+labels FusionFix uses the literal text as its own key, which is exactly why
+`label="VR Render Mode"` works in the XML at all.
+
+That means keys can be **added**, not just overwritten (`ff_gxt.py add`). Useful
+for labels — but not for value strings, whose key names come from the display
+enum, not from the text. Two of the three Lampposts strings hash to something
+other than their own text, so **rename value strings with `patch` (match on
+text), never with `add`**. Getting that backwards silently leaves the old text in
+place at the real hash.
+
+### Collateral
+
+Graphics → Extra Night Shadows now shows the VR mode names too, because it
+shares the enum. FusionFix's own warning string calls that setting
+"Extremely broken, not recommended", so the trade is accepted deliberately.
+
+Backups, independently restorable:
+
+```
+update\common\text\americanFF.gxt.gtaiv-dxvk-vr.bak
+update\common\data\frontend_menus.xml.gtaiv-dxvk-vr.bak
+```
+
+---
+
+## VR Aiming Mode — placeholder
+
+```xml
+<optionspc action="MENUOPT_NONE" label="VR Aiming Mode" value="PREF_NULL" scaler="0" displayValue="MENU_DISPLAY_NONE" />
+```
+
+`MENUOPT_NONE` + `PREF_NULL` renders a label and nothing else: it cannot be
+selected, cannot be changed, and touches no preference. The GXT gives it
+`VR Aiming Mode  ~r~(not integrated yet)` — `~r~` is the red colour code
+FusionFix uses for its own warnings.
+
+To make it real (head aim / motion controls) it needs:
+
+1. **A donor pref.** `PREF_LEDILLUMINATION` was a genuinely free ride and there
+   is no second one that clean. The `PREF_EPISODIC_RACENAME_RACE_*` family is the
+   best lead — FusionFix already repurposes `PREF_EPISODIC_RACECLASS_RACE_*` for
+   its sliders (`MO_FOV` → `RACECLASS_RACE_3`, persisted as `FieldOfView` in the
+   cfg), and only `RACENAME_RACE_5` of the RACENAME family is currently used.
+2. **A display enum with spare states.** `MENU_DISPLAY_NETSTATS_RACETYPE`
+   (5 states, multiplayer-only, untouched by FusionFix) is the obvious pick.
+3. Its strings renamed by the same `ff_gxt.py patch` route.
+4. A `menukey`-style follow in `menu_bridge.cpp`, IF the donor pref persists to
+   the cfg — that is the thing to verify first, exactly as was done for
+   `LightSyncRGB`.
