@@ -20,6 +20,12 @@
 
 param(
   [string] $GameDir = "C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV",
+  # scaler IS the number of states the row cycles through (ON_OFF rows use 2,
+  # PREF_BUTTONS uses 13). Must be <= the number of entries in the menumap.
+  [int] $States = 4,
+  # Which string set the row draws. QUALITY_SETTINGS gives four words
+  # (Low/Medium/High/Very High); MENU_DISPLAY_ON_OFF only ever gives two.
+  [string] $Display = "MENU_DISPLAY_QUALITY_SETTINGS",
   [switch] $Uninstall
 )
 
@@ -75,7 +81,7 @@ if (-not (Test-Path $bak)) {
 
 $insert = @"
 <optionspc action="MENUOPT_NONE" label="" value="PREF_NULL" scaler="0" displayValue="MENU_DISPLAY_NONE" />
-<optionspc action="MENUOPT_ADJUST" label="VR Render Mode" value="PREF_LEDILLUMINATION" scaler="2" displayValue="MENU_DISPLAY_ON_OFF" />
+<optionspc action="MENUOPT_ADJUST" label="VR Render Mode" value="PREF_LEDILLUMINATION" scaler="$States" displayValue="$Display" />
 
 "@ -replace "`r`n", "`n"
 

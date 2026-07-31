@@ -87,10 +87,14 @@ void MakeLabel(Profile* p) {
 }
 
 void SetDefaultProfiles() {
-  // The shipped milestones, newest first, then flat. Which builds are worth
-  // A/B-ing is a taste call — override the whole list in gtaiv_dxvk_vr.menumap
-  // rather than editing this.
-  static const int kDefaultModes[] = {243, 170, 53, 0};
+  // Ordered WORST to BEST on purpose. The pause-menu row borrows a four-state
+  // display whose strings are "Low / Medium / High / Very High" (see
+  // docs/menu-integration/NATIVE_MENU.md — the strings come from the display
+  // enum, not from the label, and cannot be renamed without an RE session).
+  // Ascending fidelity makes those words mean something: Low = flat, Very High
+  // = TrueStereo. Override the whole list in gtaiv_dxvk_vr.menumap rather than
+  // editing this.
+  static const int kDefaultModes[] = {0, 53, 170, 243};
   g_profileCount = static_cast<int>(sizeof(kDefaultModes) / sizeof(kDefaultModes[0]));
   for (int i = 0; i < g_profileCount; ++i) {
     g_profiles[i].value = i;

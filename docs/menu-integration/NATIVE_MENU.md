@@ -126,9 +126,19 @@ which already shows nine settings with no patching at all.
 **Settings under Stats** — the eight rows there are `MENUOPT_NONE` display-only
 slots fed by the stat system. They render text; they do not take input.
 
-**More than two states** — `MENU_DISPLAY_ON_OFF` gives On/Off. A three-state row
-needs a different `displayValue` enum, and the strings it shows come from that
-enum, not from `label`, so they would read wrong ("DX9/DX11/Vulkan") without the
-GXT hook this design otherwise avoids. `MENU_DISPLAY_*` is documented as already
-at capacity. Two profiles from the pause menu plus all four from the F3 overlay
-is the sensible split.
+**Custom strings for the values.** The row is four-state — `scaler` IS the state
+count, and `PREF_LEDILLUMINATION` happily persists 0..3 despite FusionFix
+treating it as a boolean (measured: `LightSyncRGB = 3`). What cannot be changed
+cheaply is the *words*. They come from the `displayValue` enum, not from
+`label`, so the row reads "Low / Medium / High / Very High".
+
+Renaming them means inline-hooking `CText::GetTextByKey` and overriding only the
+keys that enum requests — doc section 3 step 4. That does not touch FusionFix's
+preference table, so it carries none of the table-patch risk, but it does need an
+AOB pattern for `GetTextByKey` on this Complete Edition build, which we do not
+have. A key-logging hook would find it; that is a whole RE session.
+
+Mitigation instead of RE: the default profile list is ordered **worst to best**
+(`0=0 flat, 1=53 AER, 2=170 Clean, 3=243 TrueStereo`), so the borrowed quality
+words are honest — Low really is the least stereo, Very High really is
+TrueStereo.
