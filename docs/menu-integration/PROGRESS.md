@@ -115,3 +115,31 @@ not survive — see the screenshots in this folder.
 The draw-site, threading, state-save and DXVK constraints above were cross-checked
 against the source by a separate review pass before the code was written; the
 DrawWalk-dual gap came out of that pass, not out of testing.
+
+---
+
+## Row naming, and what actually applies on Mode 243
+
+Two rows originally both said "world scale" and are unrelated knobs. Renamed to
+match the hotkey and the log lines:
+
+* **Framing preset (F7)** — `gtaiv_dxvk_vr.worldscale`. A *pair*: `fovadd` plus
+  stereo strength. One axis, zoom vs open. The name is the fovadd value
+  (Open12 = 12 deg). Higher fovadd renders wider, so the canvas overfills the
+  eye and the StretchRect crops it — that reads as zoom-in. Lower opens out;
+  MatchH6 is ~100% horizontal match on a G2 at 16:9, Window0 can show V bars.
+  Stereo strength moves the other way (115 -> 130) to cancel the apparent size
+  change; capped at 130 because 150% x IPD broke fusion.
+* **6DoF move scale (F11)** — `gtaiv_dxvk_vr.scale`. How far the world moves
+  when the head moves. On Mode 187+ it also multiplies the IPD baseline.
+
+**The fovadd half of the framing preset is inert on every mode past 162,
+including 243.** `WantsFpAbsoluteFov` is true there (`IsOursFpPost162`), and
+that branch of `HookCamFovSite` (cam_matrix.cpp:1781) writes `fpfov` straight
+into `CCam+0x60` and never reaches the `add` branch at cam_matrix.cpp:1806.
+On those modes **First-person FOV** is the live FOV knob; the framing preset
+only moves stereo strength. The row help now says so.
+
+Stereo strength itself is separately force-ignored on modes 231-240
+(`GetStereoScale` returns 1.0 for `IsTrueStereoExact`). 243 is not in that set,
+so it does apply there.
