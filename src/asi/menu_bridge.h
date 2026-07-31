@@ -28,6 +28,27 @@ void MenuBridgeInit();
 // F4 cycles to the next profile. Render-thread safe: touches no game natives.
 void MenuBridgeTickHotkey();
 
+// Follows a row in GTA IV's OWN pause menu (Pause > Controls).
+//
+// docs/MENU_INTEGRATION.md routes this through the chained
+// GET_NUMBER_OF_INSTANCES_OF_STREAMED_SCRIPT native. We do not: FusionFix also
+// persists its menu prefs to plugins\GTAIV.EFLC.FusionFix.cfg, and it writes
+// that file the moment the row is toggled, with the game still running
+// (measured 2026-07-31). Reading a file needs no script native, so this is safe
+// from the EndScene thread and — unlike the native route — works on flat, where
+// the CopyMat game-thread hooks never arm because they wait on 360 VR submits.
+//
+//   gtaiv_dxvk_vr.menukey   cfg key to follow, e.g. "LightSyncRGB".
+//                           Missing = this path is off entirely.
+//
+// The key's value is matched against the `value=` column of
+// gtaiv_dxvk_vr.menumap, so a two-state On/Off row picks between the profiles
+// numbered 0 and 1. The first reading is only recorded, never applied, so
+// gtaiv_dxvk_vr.stereo still decides the mode at startup.
+//
+// Install the row with scripts/install-vr-menu-row.ps1.
+void MenuBridgeTickPrefFile();
+
 int MenuBridgeProfileCount();
 // Stereo mode number for a profile, or -1 when idx is out of range.
 int MenuBridgeProfileMode(int idx);

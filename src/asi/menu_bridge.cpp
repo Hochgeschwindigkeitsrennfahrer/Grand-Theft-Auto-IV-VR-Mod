@@ -8,7 +8,9 @@
 #endif
 #include <windows.h>
 
+#include <climits>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 #include <openvr.h>
@@ -201,6 +203,107 @@ void MenuBridgeApplyProfile(int idx, const char* why) {
     if (r != vr::k_unTrackedDeviceIndexInvalid)
       vr::VRSystem()->TriggerHapticPulse(r, 0, 3000);
   }
+}
+
+void MenuBridgeTickPrefFile() {
+  MenuBridgeInit();
+
+  static bool s_read = false;
+  static char s_key[48]{};
+  static DWORD s_lastPoll = 0;
+  static FILETIME s_lastWrite{};
+  static int s_lastValue = INT_MIN;
+
+  if (!s_read) {
+    s_read = true;
+    char buf[64]{};
+    const size_t n = ReadTextFile("gtaiv_dxvk_vr.menukey", buf, sizeof(buf));
+    size_t end = n;
+    while (end > 0 && (buf[end - 1] == '\r' || buf[end - 1] == '\n' || buf[end - 1] == ' ' ||
+                       buf[end - 1] == '\t'))
+      --end;
+    if (end > 0 && end < sizeof(s_key)) {
+      memcpy(s_key, buf, end);
+      Log("MenuBridge: following pause-menu pref \"%s\" in FusionFix.cfg "
+          "(kill: delete gtaiv_dxvk_vr.menukey)",
+          s_key);
+    }
+  }
+  if (!s_key[0])
+    return;
+
+  const DWORD now = GetTickCount();
+  if (now - s_lastPoll < 500)
+    return;
+  s_lastPoll = now;
+
+  char path[MAX_PATH]{};
+  if (!GetAsiDirLocal(path, MAX_PATH))
+    return;
+  strcat_s(path, "plugins\\GTAIV.EFLC.FusionFix.cfg");
+
+  // Skip the read entirely unless FusionFix actually rewrote the file.
+  WIN32_FILE_ATTRIBUTE_DATA fad{};
+  if (!GetFileAttributesExA(path, GetFileExInfoStandard, &fad))
+    return;
+  if (fad.ftLastWriteTime.dwLowDateTime == s_lastWrite.dwLowDateTime &&
+      fad.ftLastWriteTime.dwHighDateTime == s_lastWrite.dwHighDateTime)
+    return;
+  s_lastWrite = fad.ftLastWriteTime;
+
+  FILE* f = nullptr;
+  if (fopen_s(&f, path, "rb") != 0 || !f)
+    return;
+  char cfg[4096]{};
+  const size_t n = fread(cfg, 1, sizeof(cfg) - 1, f);
+  fclose(f);
+  cfg[n] = 0;
+
+  // "Key = 1" anywhere in the file. Match on a line start so a key that is a
+  // suffix of another key cannot win.
+  const size_t keyLen = strlen(s_key);
+  int value = INT_MIN;
+  for (const char* p = cfg; *p;) {
+    const char* eol = strchr(p, '\n');
+    if (_strnicmp(p, s_key, keyLen) == 0) {
+      const char* q = p + keyLen;
+      while (*q == ' ' || *q == '\t')
+        ++q;
+      if (*q == '=') {
+        ++q;
+        while (*q == ' ' || *q == '\t')
+          ++q;
+        value = atoi(q);
+        break;
+      }
+    }
+    if (!eol)
+      break;
+    p = eol + 1;
+  }
+  if (value == INT_MIN)
+    return;
+
+  if (s_lastValue == INT_MIN) {
+    // First sighting: adopt it silently so gtaiv_dxvk_vr.stereo still wins at
+    // startup. Only a change the player makes in the pause menu switches modes.
+    s_lastValue = value;
+    Log("MenuBridge: pause-menu pref \"%s\" = %d at startup (mode left at %d)", s_key, value,
+        static_cast<int>(GetStereoMode()));
+    return;
+  }
+  if (value == s_lastValue)
+    return;
+  s_lastValue = value;
+
+  for (int i = 0; i < g_profileCount; ++i) {
+    if (g_profiles[i].value == value) {
+      MenuBridgeApplyProfile(i, "pause menu");
+      return;
+    }
+  }
+  Log("MenuBridge: pause-menu pref \"%s\" = %d has no profile in gtaiv_dxvk_vr.menumap — ignored",
+      s_key, value);
 }
 
 void MenuBridgeTickHotkey() {

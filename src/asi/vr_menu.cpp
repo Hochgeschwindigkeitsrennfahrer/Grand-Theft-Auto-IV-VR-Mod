@@ -476,6 +476,7 @@ void VrMenuOnEndScene(IDirect3DDevice9* dev) {
     return;
 
   MenuBridgeTickHotkey();
+  MenuBridgeTickPrefFile();
   TickInput(dev);
 
   if (!g_open)
