@@ -60,27 +60,41 @@ size_t ReadTextFile(const char* name, char* buf, size_t bufLen) {
   return n;
 }
 
+// Names for the modes that shipped as milestones. A bare number in a menu row
+// tells you nothing; anything not listed still falls back to the number.
+struct ModeName {
+  int mode;
+  const char* name;
+};
+constexpr ModeName kModeNames[] = {
+    {243, "243 TrueStereo"},  // late-latch checkpoint (prebuilt/mode243)
+    {204, "204 Fused"},       // fused stereo milestone (prebuilt/mode204)
+    {170, "170 Clean"},       // clean branch milestone (prebuilt/mode170)
+    {53, "53 AER"},           // AER temporal family
+    {0, "0 Flat"},
+};
+
 void MakeLabel(Profile* p) {
-  // Mode 0 is the only one with a name everybody knows; the rest are numbers
-  // and the log tells you what they are.
-  if (p->stereoMode == 0)
-    strcpy_s(p->label, "0 (flat)");
-  else
-    sprintf_s(p->label, "%d", p->stereoMode);
+  for (const ModeName& n : kModeNames) {
+    if (n.mode == p->stereoMode) {
+      strcpy_s(p->label, n.name);
+      return;
+    }
+  }
+  sprintf_s(p->label, "%d", p->stereoMode);
 }
 
 void SetDefaultProfiles() {
-  // 243 = TrueStereo late-latch checkpoint (prebuilt/mode243).
-  // 53  = AER temporal family (UsesAerPoseSubmit + distinct L/R, no flatten).
-  // 0   = flat DXVK.
-  // Which AER build to compare against is a taste call — override the whole list
-  // in gtaiv_dxvk_vr.menumap rather than editing this.
-  g_profiles[0] = {0, 243};
-  g_profiles[1] = {1, 53};
-  g_profiles[2] = {2, 0};
-  g_profileCount = 3;
-  for (int i = 0; i < g_profileCount; ++i)
+  // The shipped milestones, newest first, then flat. Which builds are worth
+  // A/B-ing is a taste call — override the whole list in gtaiv_dxvk_vr.menumap
+  // rather than editing this.
+  static const int kDefaultModes[] = {243, 170, 53, 0};
+  g_profileCount = static_cast<int>(sizeof(kDefaultModes) / sizeof(kDefaultModes[0]));
+  for (int i = 0; i < g_profileCount; ++i) {
+    g_profiles[i].value = i;
+    g_profiles[i].stereoMode = kDefaultModes[i];
     MakeLabel(&g_profiles[i]);
+  }
 }
 
 void ParseProfileMap() {

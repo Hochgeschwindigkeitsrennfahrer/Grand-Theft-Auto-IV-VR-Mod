@@ -32,6 +32,12 @@ Rows: VR render mode, eye separation, stereo strength, world-scale preset,
 world scale (6DoF), FOV add, eye canvas, eye forward, first-person FOV, plus
 "re-read settings files" and "close".
 
+The render-mode row lists the shipped milestones by name — `243 TrueStereo`,
+`170 Clean`, `53 AER`, `0 Flat`. Override the whole list with
+`gtaiv_dxvk_vr.menumap` (one `value=stereoMode` per line) rather than editing
+the source; the file is read once at startup, so a game restart picks it up
+without redeploying the ASI.
+
 **Kill switch:** put a single `0` in `gtaiv_dxvk_vr.menu` next to the ASI. The
 overlay then never allocates, never polls keys and never touches device state.
 
