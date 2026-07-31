@@ -232,3 +232,47 @@ To make it real (head aim / motion controls) it needs:
 4. A `menukey`-style follow in `menu_bridge.cpp`, IF the donor pref persists to
    the cfg — that is the thing to verify first, exactly as was done for
    `LightSyncRGB`.
+
+---
+
+## IPD and FOV in the pause menu — tried, reverted
+
+Both were built and reverted on 2026-07-31. Keeping the notes so the next
+attempt starts from what was learned rather than from scratch.
+
+Donor prefs and their cfg keys, **discovered, not guessed** — the ASI logs every
+FusionFix.cfg key that changes, so one run with the row moved names it:
+
+| row | donor pref | cfg key |
+|---|---|---|
+| VR Eye Separation | `PREF_EPISODIC_RACECLASS_RACE_4` | `DelayBeforeCenteringCameraKB` |
+| VR Field of View | `PREF_EPISODIC_RACECLASS_RACE_3` | `FieldOfView` |
+
+That discovery mechanism is worth keeping: which cfg key a repurposed `PREF_` writes
+is whatever FusionFix named it, and it is not derivable from the pref name.
+
+**Why they were dropped:** with `MENU_DISPLAY_VALUE_SLIDERBAR` the number shown
+next to the bar did not track the slider — it sat on a constant. So the rows moved
+the underlying value (the log shows the cfg key changing) while displaying
+something meaningless. A slider you cannot read is worse than no slider.
+
+Unresolved: whether `VALUE_SLIDERBAR` needs a `scaler` the exe recognises (the
+stock users all run `scaler="100"` — `PREF_VIEW_DISTANCE`, `PREF_DETAIL_QUALITY`,
+`PREF_CAR_DENSITY`), or whether the displayed number comes from somewhere other
+than the pref value entirely. **Try `scaler="100"` first** — that is the one
+configuration known to render a live number in the stock Graphics page.
+
+Also note `FieldOfView` is NOT inert: FusionFix's own FOV handling applies it on
+flat. In VR the mod wins anyway, because `WantsFpAbsoluteFov` stamps `CCam+0x60`
+from `fpfov` every frame on modes past 162. Stretching that pref's range to show
+true degrees risks breaking FusionFix's FOV maths on flat.
+
+The follow plumbing stays in `menu_bridge.cpp` and is config-driven, so bringing
+the rows back needs no code change — add the rows to
+`scripts/install-vr-menu-row.ps1` and the keys to `gtaiv_dxvk_vr.menufollow`:
+
+```
+mode=LightSyncRGB
+ipd=DelayBeforeCenteringCameraKB
+fov=FieldOfView
+```

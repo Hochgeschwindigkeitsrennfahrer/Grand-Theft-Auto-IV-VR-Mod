@@ -209,32 +209,141 @@ void MenuBridgeApplyProfile(int idx, const char* why) {
   }
 }
 
+// --- FusionFix cfg follow -------------------------------------------------
+// A pause-menu row's value reaches us through plugins\GTAIV.EFLC.FusionFix.cfg.
+// Which cfg key a given PREF_ writes is NOT guessable — it is whatever FusionFix
+// named it — so every cfg key change is logged. One run of the game with the
+// row moved tells you the key to put in gtaiv_dxvk_vr.menufollow.
+
+enum class Follow { Mode, Ipd, Fov };
+
+struct FollowRow {
+  const char* tag;  // prefix in gtaiv_dxvk_vr.menufollow
+  Follow what;
+  char key[48];
+  int last;
+};
+
+FollowRow g_follow[] = {
+    {"mode=", Follow::Mode, {}, INT_MIN},
+    {"ipd=", Follow::Ipd, {}, INT_MIN},
+    {"fov=", Follow::Fov, {}, INT_MIN},
+};
+constexpr int kFollowN = static_cast<int>(sizeof(g_follow) / sizeof(g_follow[0]));
+
+struct CfgPair {
+  char key[48];
+  int value;
+};
+CfgPair g_cfgPrev[96];
+int g_cfgPrevN = 0;
+
+// Copies "Key" out of "  Key = 7  ". Returns false when the line is not a pair.
+bool ParseCfgLine(const char* line, const char* eol, char* outKey, size_t cap, int* outValue) {
+  while (*line == ' ' || *line == '\t')
+    ++line;
+  if (*line == '[' || *line == ';' || *line == '\r' || *line == '\n' || !*line)
+    return false;
+  const char* eq = strchr(line, '=');
+  if (!eq || (eol && eq > eol))
+    return false;
+  const char* keyEnd = eq;
+  while (keyEnd > line && (keyEnd[-1] == ' ' || keyEnd[-1] == '\t'))
+    --keyEnd;
+  const size_t len = static_cast<size_t>(keyEnd - line);
+  if (len == 0 || len >= cap)
+    return false;
+  memcpy(outKey, line, len);
+  outKey[len] = 0;
+  const char* v = eq + 1;
+  while (*v == ' ' || *v == '\t')
+    ++v;
+  *outValue = atoi(v);
+  return true;
+}
+
+void ReadFollowConfig() {
+  char buf[256]{};
+  if (ReadTextFile("gtaiv_dxvk_vr.menufollow", buf, sizeof(buf)) == 0) {
+    // Back-compat with the single-row file this started as.
+    char legacy[64]{};
+    const size_t n = ReadTextFile("gtaiv_dxvk_vr.menukey", legacy, sizeof(legacy));
+    size_t end = n;
+    while (end > 0 && (legacy[end - 1] == '\r' || legacy[end - 1] == '\n' ||
+                       legacy[end - 1] == ' ' || legacy[end - 1] == '\t'))
+      --end;
+    if (end > 0 && end < sizeof(g_follow[0].key)) {
+      memcpy(g_follow[0].key, legacy, end);
+      Log("MenuBridge: following pause-menu mode pref \"%s\" (legacy .menukey)",
+          g_follow[0].key);
+    }
+    return;
+  }
+  for (const char* p = buf; *p;) {
+    const char* eol = strchr(p, '\n');
+    for (int i = 0; i < kFollowN; ++i) {
+      const size_t tagLen = strlen(g_follow[i].tag);
+      if (_strnicmp(p, g_follow[i].tag, tagLen) != 0)
+        continue;
+      const char* v = p + tagLen;
+      size_t len = 0;
+      while (v[len] && v[len] != '\r' && v[len] != '\n' && v[len] != ' ')
+        ++len;
+      if (len > 0 && len < sizeof(g_follow[i].key)) {
+        memcpy(g_follow[i].key, v, len);
+        g_follow[i].key[len] = 0;
+        Log("MenuBridge: following pause-menu %s\"%s\"", g_follow[i].tag, g_follow[i].key);
+      }
+    }
+    if (!eol)
+      break;
+    p = eol + 1;
+  }
+}
+
+void ApplyFollow(FollowRow* r, int value) {
+  switch (r->what) {
+    case Follow::Mode:
+      for (int i = 0; i < g_profileCount; ++i) {
+        if (g_profiles[i].value == value) {
+          MenuBridgeApplyProfile(i, "pause menu");
+          return;
+        }
+      }
+      Log("MenuBridge: pause-menu \"%s\" = %d has no profile in gtaiv_dxvk_vr.menumap — ignored",
+          r->key, value);
+      return;
+    case Follow::Ipd: {
+      // The row runs scaler=13 with a VALUE_SLIDERBAR, so the number the player
+      // sees IS the value here — map it straight to centimetres. Floor at 1:
+      // a 0 cm baseline is mono, not stereo.
+      const int cm = value < 1 ? 1 : value;
+      MenuSetSepCm(cm);
+      Log("MenuBridge: pause menu set eye separation %d cm", cm);
+      return;
+    }
+    case Follow::Fov: {
+      // Slider 0..9 -> 70..115 deg in 5 deg steps.
+      const int deg = 70 + value * 5;
+      ForceFpFovDegrees(deg, static_cast<int>(GetFpRearFovDegrees() + 0.5f),
+                        static_cast<int>(GetFpFootFovDegrees() + 0.5f));
+      Log("MenuBridge: pause menu set first-person FOV %d deg (slider %d)", deg, value);
+      return;
+    }
+  }
+}
+
 void MenuBridgeTickPrefFile() {
   MenuBridgeInit();
 
   static bool s_read = false;
-  static char s_key[48]{};
   static DWORD s_lastPoll = 0;
   static FILETIME s_lastWrite{};
-  static int s_lastValue = INT_MIN;
 
   if (!s_read) {
     s_read = true;
-    char buf[64]{};
-    const size_t n = ReadTextFile("gtaiv_dxvk_vr.menukey", buf, sizeof(buf));
-    size_t end = n;
-    while (end > 0 && (buf[end - 1] == '\r' || buf[end - 1] == '\n' || buf[end - 1] == ' ' ||
-                       buf[end - 1] == '\t'))
-      --end;
-    if (end > 0 && end < sizeof(s_key)) {
-      memcpy(s_key, buf, end);
-      Log("MenuBridge: following pause-menu pref \"%s\" in FusionFix.cfg "
-          "(kill: delete gtaiv_dxvk_vr.menukey)",
-          s_key);
-    }
+    ReadFollowConfig();
   }
-  if (!s_key[0])
-    return;
 
   const DWORD now = GetTickCount();
   if (now - s_lastPoll < 500)
@@ -253,61 +362,69 @@ void MenuBridgeTickPrefFile() {
   if (fad.ftLastWriteTime.dwLowDateTime == s_lastWrite.dwLowDateTime &&
       fad.ftLastWriteTime.dwHighDateTime == s_lastWrite.dwHighDateTime)
     return;
+  const bool first = (s_lastWrite.dwLowDateTime == 0 && s_lastWrite.dwHighDateTime == 0);
   s_lastWrite = fad.ftLastWriteTime;
 
   FILE* f = nullptr;
   if (fopen_s(&f, path, "rb") != 0 || !f)
     return;
-  char cfg[4096]{};
+  char cfg[8192]{};
   const size_t n = fread(cfg, 1, sizeof(cfg) - 1, f);
   fclose(f);
   cfg[n] = 0;
 
-  // "Key = 1" anywhere in the file. Match on a line start so a key that is a
-  // suffix of another key cannot win.
-  const size_t keyLen = strlen(s_key);
-  int value = INT_MIN;
-  for (const char* p = cfg; *p;) {
+  CfgPair now_[96];
+  int nowN = 0;
+  for (const char* p = cfg; *p && nowN < 96;) {
     const char* eol = strchr(p, '\n');
-    if (_strnicmp(p, s_key, keyLen) == 0) {
-      const char* q = p + keyLen;
-      while (*q == ' ' || *q == '\t')
-        ++q;
-      if (*q == '=') {
-        ++q;
-        while (*q == ' ' || *q == '\t')
-          ++q;
-        value = atoi(q);
-        break;
-      }
-    }
+    if (ParseCfgLine(p, eol, now_[nowN].key, sizeof(now_[nowN].key), &now_[nowN].value))
+      ++nowN;
     if (!eol)
       break;
     p = eol + 1;
   }
-  if (value == INT_MIN)
-    return;
 
-  if (s_lastValue == INT_MIN) {
-    // First sighting: adopt it silently so gtaiv_dxvk_vr.stereo still wins at
-    // startup. Only a change the player makes in the pause menu switches modes.
-    s_lastValue = value;
-    Log("MenuBridge: pause-menu pref \"%s\" = %d at startup (mode left at %d)", s_key, value,
-        static_cast<int>(GetStereoMode()));
-    return;
-  }
-  if (value == s_lastValue)
-    return;
-  s_lastValue = value;
-
-  for (int i = 0; i < g_profileCount; ++i) {
-    if (g_profiles[i].value == value) {
-      MenuBridgeApplyProfile(i, "pause menu");
-      return;
+  // Report what moved. This is how you discover which cfg key a repurposed
+  // PREF_ actually writes — toggle the row, read the log.
+  if (!first) {
+    for (int i = 0; i < nowN; ++i) {
+      for (int j = 0; j < g_cfgPrevN; ++j) {
+        if (_stricmp(now_[i].key, g_cfgPrev[j].key) == 0) {
+          if (now_[i].value != g_cfgPrev[j].value)
+            Log("MenuBridge: FusionFix.cfg %s %d -> %d", now_[i].key, g_cfgPrev[j].value,
+                now_[i].value);
+          break;
+        }
+      }
     }
   }
-  Log("MenuBridge: pause-menu pref \"%s\" = %d has no profile in gtaiv_dxvk_vr.menumap — ignored",
-      s_key, value);
+  memcpy(g_cfgPrev, now_, sizeof(CfgPair) * static_cast<size_t>(nowN));
+  g_cfgPrevN = nowN;
+
+  for (int r = 0; r < kFollowN; ++r) {
+    if (!g_follow[r].key[0])
+      continue;
+    int value = INT_MIN;
+    for (int i = 0; i < nowN; ++i) {
+      if (_stricmp(now_[i].key, g_follow[r].key) == 0) {
+        value = now_[i].value;
+        break;
+      }
+    }
+    if (value == INT_MIN)
+      continue;
+    if (g_follow[r].last == INT_MIN) {
+      // First sighting is adopted, never applied: the gtaiv_dxvk_vr.* files
+      // still decide everything at startup.
+      g_follow[r].last = value;
+      Log("MenuBridge: pause-menu \"%s\" = %d at startup (not applied)", g_follow[r].key, value);
+      continue;
+    }
+    if (value == g_follow[r].last)
+      continue;
+    g_follow[r].last = value;
+    ApplyFollow(&g_follow[r], value);
+  }
 }
 
 void MenuBridgeTickHotkey() {
