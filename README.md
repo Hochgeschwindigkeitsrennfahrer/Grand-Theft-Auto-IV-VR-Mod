@@ -1,6 +1,11 @@
+<img width="2560" height="1707" alt="image" src="https://github.com/user-attachments/assets/4a9ccf21-f484-4f07-b106-7419fead62b3" />
+
+
+
+
 # gtaiv-dxvk-vr
 
-**WIP** VR glue for **GTA IV Complete Edition** (Steam): stock **DXVK 3.0.2** `d3d9.dll` + our **Win32 ASI** + **OpenVR / SteamVR**. Target headset in development: **HP Reverb G2**.
+**WIP** VR glue for **GTA IV Complete Edition** (Steam): stock **DXVK 3.0.2** `d3d9.dll` + our **Win32 ASI** + **OpenVR / SteamVR**.
 
 ```
 GTAIV.exe (x86 / D3D9)
