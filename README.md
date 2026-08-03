@@ -1,109 +1,97 @@
+<img width="2560" height="1707" alt="image" src="https://github.com/user-attachments/assets/4a9ccf21-f484-4f07-b106-7419fead62b3" />
+
 # gtaiv-dxvk-vr
 
-Standalone project: **GTA IV Complete Edition in VR** — stock DXVK **3.0.2** + ASI glue + **OpenVR (SteamVR)** (inspired by L4D2VR / HL2VR patterns).
+**WIP** VR glue for **GTA IV Complete Edition** (Steam): stock **DXVK** `d3d9.dll` + our **Win32 ASI** + **OpenVR / SteamVR**.
 
-```
-GTAIV.exe (32-bit, D3D9)
-  → d3d9.dll              (DXVK 3.0.2 — flat / desktop OK)
-  → gtaiv_dxvk_vr.asi     (OpenVR Submit via ID3D9VkInterop)
-  → SteamVR → headset (e.g. HP Reverb G2)
-```
-
-**Status (WIP):** Mono image in SteamVR works. Stereo modes are experimental (see `docs/CURRENT-STATE.md`).  
-Daily-driver baseline: stereo mode **0** (~90 FPS). Kill-switch file: `gtaiv_dxvk_vr.stereo` → `0`.
-
-This repository is **private**. A link alone is not enough — invite people as collaborators (see below).
+Experimental singleplayer / offline project â€” not a polished commercial VR port.
 
 ---
 
-## Quick start (build ASI) — local Windows PC
+## What works
 
-Daily work is **on your Windows PC** (Cursor Desktop local agent + VS2022). Not a Cloud Agent.
+| Supported | Notes / not supported yet |
+|-----------|---------------------------|
+| **SteamVR** only (OpenVR) | No OpenXR / standalone WMR / Meta runtime without SteamVR |
+| **Head tracking** (look around) | Motion controller hands / VR gun stock â€” not yet |
+| **Experimental head aiming** | Aim-with-headset while ADS (work in progress) |
+| **Xbox / gamepad recommended** | Other controllers **not tested** yet |
+| Stereo / mono submit to HMD | Full VR locomotion redesign â€” not yet |
 
-1. Clone with submodule:
-   ```powershell
-   git clone --recurse-submodules https://github.com/Hochgeschwindigkeitsrennfahrer/gtaiv-dxvk-vr.git
-   cd gtaiv-dxvk-vr
-   ```
-2. New PC / missing tools — one script (Git, VS2022 C++, MinHook, OpenVR **v2.12.14**):
-   ```powershell
-   .\scripts\setup-dev-pc.ps1
-   ```
-   Details: [`docs/NEW_PC_SETUP.md`](docs/NEW_PC_SETUP.md). Or deps only: `.\scripts\fetch-deps.ps1`
-3. Build + deploy + launch (default game dir is Steam GTAIV):
-   ```powershell
-   .\scripts\build-deploy-run.ps1
-   ```
-4. Requirements: SteamVR running, stock DXVK **3.0.2** `d3d9.dll` in the game folder, FusionFix ASI loader.
-
-Log file (next to the game EXE): `gtaiv_dxvk_vr.log`
+Developed on **HP Reverb G2** via SteamVR. Other SteamVR headsets may work; not tested as primary.
 
 ---
 
-## Stereo modes (`gtaiv_dxvk_vr.stereo`)
+## Controls
 
-| Mode | Meaning |
-|------|---------|
-| **0** | Off — mono Submit, best FPS (~90) |
-| 4 / 13 | Temporal L/R (real parallax; ~half FPS) |
-| 7 | Same-frame dual (experimental) |
-| 11 | **Do not use** (blackscreen / freeze) |
+| Input | Action |
+|-------|--------|
+| **F3** or **Xbox Select (Back)** | Open / close VR settings menu |
+| **F9** or **Right stick click** | Recenter view (SteamVR zero + heading baseline) |
+| Menu: WASD / arrows / left stick | Navigate |
+| Menu: Enter | Apply |
+| **F4** | Cycle stereo / render profiles |
 
-Hotkeys: **F6** stereo scale, **F7** world scale (VRScale), **F8** eye separation, **F9** recenter, **F10** 6DoF reset.
-
-Details: [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md), [`docs/STEREO_EYE_OFFSET.md`](docs/STEREO_EYE_OFFSET.md), [`docs/VR_MOD_PLAYBOOK.md`](docs/VR_MOD_PLAYBOOK.md).
-
----
-
-## Docs
-
-| File | Contents |
-|------|----------|
-| [docs/CURRENT-STATE.md](docs/CURRENT-STATE.md) | Current status / what works |
-| [docs/VR_STRATEGY.md](docs/VR_STRATEGY.md) | Strategy |
-| [docs/VR_MOD_PLAYBOOK.md](docs/VR_MOD_PLAYBOOK.md) | BotW / L4D2VR orientation |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Technical architecture |
-| [docs/BUILD.md](docs/BUILD.md) | Build notes |
-| [docs/HOME_CURSOR.md](docs/HOME_CURSOR.md) | Cursor setup (German) |
-| [AGENTS.md](AGENTS.md) | Agent contract |
-| [HANDOFF.md](HANDOFF.md) | Short handoff |
+Kill VR: set `gtaiv_dxvk_vr.stereo` to `0` next to `GTAIV.exe`, then restart. Or rename `gtaiv_dxvk_vr.asi` â†’ `.asi.off`.
 
 ---
 
-## Scripts
+## Requirements
 
-| Script | Purpose |
-|--------|---------|
-| `scripts/setup-dev-pc.ps1` | **New Windows PC:** winget tools + fetch deps |
-| `scripts/fetch-deps.ps1` | Submodule + MinHook + OpenVR v2.12.14 |
-| `scripts/fetch-openvr.ps1` | Clone pinned OpenVR |
-| `scripts/build-asi.ps1` | Build `gtaiv_dxvk_vr.asi` (Win32) |
-| `scripts/deploy-asi.ps1` | Copy ASI into game dir (`-Launch` optional) |
-| `scripts/build-deploy-run.ps1` | Build → stop game → deploy → Steam launch |
-| `scripts/fetch-minhook.ps1` | Clone MinHook into `thirdparty/minhook` |
-| `scripts/restart-gtaiv.ps1` | Quick restart via Steam |
-| `scripts/deploy.ps1` | Deploy a `d3d9.dll` (+ backup) |
+1. **GTA IV Complete Edition** (Steam) â€” 32-bit `GTAIV.exe`
+2. **[FusionFix](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix)** (ASI loader + CE fixes)
+3. **SteamVR** running with a tracked headset
+4. Our ASI + DXVK `d3d9.dll` drop (see friend / prebuilt packs when shared)
+
+Everything that loads into `GTAIV.exe` is **Win32 / x86**.
 
 ---
 
-## Invite someone (private repo)
+## External sources (files we rely on)
 
-GitHub private repos are **not** “unlisted with a link”. Viewers need an invite:
+| Component | What it is | Link |
+|-----------|------------|------|
+| **DXVK 3.0.2** | Deliverable `d3d9.dll` (x32) + Vulkan interop for HMD Submit | [doitsujin/dxvk Â· v3.0.2](https://github.com/doitsujin/dxvk/releases/tag/v3.0.2) |
+| **dxvk-gplasync** | Optional async DXVK A/B (shader stutter). Not required for VR Submit | [Ph42oN / dxvk-gplasync (GitLab)](https://gitlab.com/Ph42oN/dxvk-gplasync/-/releases) |
+| **GTAIV.dxvk-cache** | Optional DXVK state cache (less first-run stutter; version-sensitive) | Community / FusionFix ecosystem caches e.g. [Nexus Â· FusionFix files](https://www.nexusmods.com/gta4/mods/385?tab=files) â€” we also ship a multi-vendor copy under `inspo/dxvk cache/` |
+| **FusionFix** | CE fixes + `plugins\` + update assets; ships ASI loader as `dinput8.dll` | [ThirteenAG/GTAIV.EFLC.FusionFix](https://github.com/ThirteenAG/GTAIV.EFLC.FusionFix) |
+| **Ultimate ASI Loader** | Proxy that loads `.asi` plugins (`dinput8.dll`) â€” also bundled with FusionFix | [ThirteenAG/Ultimate-ASI-Loader](https://github.com/ThirteenAG/Ultimate-ASI-Loader) |
+| **MinHook** | Win32 / vtable hooks inside our ASI | [TsudaKageyu/minhook](https://github.com/TsudaKageyu/minhook) |
+| **ScriptHook.dll** (Aru) | Optional â€” name-resolve natives (`GetNativeAddress`) for phone/aim helpers | [dev-c.com Â· GTA IV Script Hook](http://dev-c.com/gtaiv/scripthook/) |
+| **aCompleteEditionHook.asi** | Optional CE bridge for Aru ScriptHook on Complete Edition | [LCPDFR Â· CE Compatibility Patch (LMS)](https://www.lcpdfr.com/downloads/gta4mods/g17media/26726-compatibility-patch-for-gta-iv-complete-edition/) Â· [ModDB mirror](https://www.moddb.com/downloads/compatibility-patch-for-gta-iv-complete-edition-04) |
+| **ScriptHookDotNet** | Optional .NET scripts (First Person ASI tests, etc.) | [HazardX/gta4_scripthookdotnet](https://github.com/HazardX/gta4_scripthookdotnet) Â· CE build [Tomasak v1.7.1.8](https://github.com/Tomasak/gta4_scripthookdotnet/releases/tag/release) |
 
-1. Open: https://github.com/Hochgeschwindigkeitsrennfahrer/gtaiv-dxvk-vr/settings/access  
-2. Click **Add people**  
-3. Enter their GitHub username or email  
-4. Choose a role (usually **Write** if they should push, else **Read**)  
-5. They accept the email / notification invite  
+### Important notes
 
-Or with GitHub CLI (your machine):
+- **`aCompleteEditionHook.asi` is not required for our VR ASI.** FusionFix alone is enough to load `gtaiv_dxvk_vr.asi`. On some CE + FusionFix setups the CE hook **crashes at boot** â€” leave it out unless you need ScriptHook scripts.
+- **ScriptHook** is optional for core VR; some HUD/native helpers work better when `ScriptHook.dll` + CE hook resolve names.
+- Prefer **stock DXVK 3.0.2** as `d3d9.dll` for VR. FusionFixâ€™s own `vulkan.dll` path is separate; do not treat a random gameâ€™s `d3d9.dll` as â€œGTA VRâ€.
 
-```powershell
-gh api -X PUT repos/Hochgeschwindigkeitsrennfahrer/gtaiv-dxvk-vr/collaborators/THEIR_USERNAME -f permission=push
-```
+### Architecture & technique references
+
+| Project | Link |
+|---------|------|
+| L4D2VR | [sd805/l4d2vr](https://github.com/sd805/l4d2vr) |
+| UEVR | [praydog/UEVR](https://github.com/praydog/UEVR) |
+| Breath of the Wild | Head / gyro aim design inspiration (Nintendo) |
+
+Full credit list: **[CREDITS.md](CREDITS.md)**.
+
+---
+
+## Status
+
+**Done:** flat DXVK + ASI Mono-Submit into SteamVR.  
+**Experimental:** **AER** and **TrueStereo 3D** paths in different stereo modes â€” both work for depth, with **look-around blur** as a known side effect depending on mode.  
+**Also:** experimental head aiming; Xbox pad recommended (other pads untested).  
+**Now:** stability / stereo / camera polish â€” one change per test build.
+
+Live lab notes (dev): [`docs/CURRENT-STATE.md`](docs/CURRENT-STATE.md).
+
+GTA IV belongs to Rockstar Games / Take-Two. This project redistributes **no** Rockstar game assets and **no** closed third-party VR binaries.
 
 ---
 
 ## License
 
-MIT for *our* scaffolding / ASI sources. DXVK, OpenVR, MinHook, and any referenced mods keep their own licenses.
+MIT for *our* ASI / scaffolding. DXVK, MinHook, FusionFix, ScriptHook, and all linked projects keep **their own** licenses â€” see [CREDITS.md](CREDITS.md).

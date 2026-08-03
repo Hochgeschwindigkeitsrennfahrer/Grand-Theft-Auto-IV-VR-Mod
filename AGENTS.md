@@ -16,7 +16,7 @@ Mono-Submit milestone reached. Next: Stability / Stereo / Camera (one thing per 
 
 1. **Win32 / x86** for everything that loads into `GTAIV.exe`.  
 2. Singleplayer / offline during development.  
-3. Do not distribute Rockstar assets or closed HL2VR/Luke-Ross binaries.  
+3. Do not distribute Rockstar assets or closed HL2VR/closed-VR binaries.  
 4. **OpenVR (SteamVR) is the compositor** — first milestone without OpenXR.  
 5. L4D2VR / IronWolf / sd805 are **references**; GTA needs its own glue.  
 6. Do not sell a foreign game `d3d9.dll` 1:1 as "VR for GTA".  
