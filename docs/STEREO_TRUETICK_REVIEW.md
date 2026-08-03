@@ -182,7 +182,7 @@ canvas that the compositor resamples again for lens distortion. Small compared t
 |---|---|---|
 | **L4D2VR** | Engine accepts a per-eye asymmetric frustum directly | Not available to us — Rage ignores `D3DTS_PROJECTION`. |
 | **UEVR** | Renders wide, crops per eye when it cannot own the projection | The crop path is legitimate and exact **if** the source FOV is known exactly. |
-| **Luke Ross R.E.A.L.** | Wide symmetric render, per-eye sub-rect at submit | Same shape as our Mode 232/233 target. |
+| **Third-party flat-to-VR approach** | Wide symmetric render, per-eye sub-rect at submit | Same shape as our Mode 232/233 target. |
 | **Halo MCC VR** | True per-eye same-frame, engine FOV as the primary display knob | FOV first, then stereo, then HUD — our order too. |
 
 Common denominator: nobody guesses the source FOV. They either own the projection or
