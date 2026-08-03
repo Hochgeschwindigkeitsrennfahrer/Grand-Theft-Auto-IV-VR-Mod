@@ -582,7 +582,7 @@ lines. Headset must confirm depth vs Mode 49/50. Kill to **`50`** or **`49`** if
 ### Session 2026-07-24 ~22:18 (Mode 51 AER + ipd=3 + Mode 53 soft guard — shipped)
 
 **One behavior change (deployed):** Mode **51** = Mode 50 always-distinct temporal L/R +
-capture-time `Submit_TextureWithPose` (Luke AER lesson). IPD bumped **`2` → `3` cm** for stronger
+capture-time `Submit_TextureWithPose` (pose-stamped AER lesson). IPD bumped **`2` → `3` cm** for stronger
 cam-matrix parallax (`CamMatrix ipd≈±0.016` vs ±0.009 at 2 cm).
 
 **Also shipped (not deployed):** Mode **53** = Mode 51 + soft motion guard: **8°/6 cm** → keep
@@ -888,7 +888,7 @@ VR camera.
 
 ### Session 2026-07-24 ~19:10 (Mode 38 AER pose submit)
 
-**User:** Mode 37 still huge/monitor, jump, bad FPS; F7 doesn’t feel like being in the world; read Luke AER v2 Patreon.  
+**User:** Mode 37 still huge/monitor, jump, bad FPS; F7 doesn’t feel like being in the world; read optical-flow AER synthesis Patreon.  
 **Takeaway:** AER v2 = optical-flow intermediates (skip). Transferable = stamp each eye with capture-time pose (`Submit_TextureWithPose`, OpenVR #1253).  
 **Shipped Mode 38:** Mode 37 path + pose cache on L/R capture + pose promote with pair-hold + `Submit_TextureWithPose`. Fallback to `Submit_Default` if pose missing/err.  
 **Deploy verified (`ASI_BUILD_ID 20260724-191333`):** `StereoMode: 38`, `mode 38 AER-POSE SUBMIT … ok=1`, pair promote `poseL=1 poseR=1`, `AERPose: eye=L/R submitWithPose=1 err=0`, `StereoSubmit … mode=38`. Kill **37** / **30**.  
@@ -914,7 +914,7 @@ VR camera.
 ### Session 2026-07-24 ~18:10–18:25 (Mode 35 FOV recompute — research + spike)
 
 **User ask:** feel inside the game with real 6DoF; Mode 30 fusion OK but warping + screen-on-face.  
-**Research:** Luke Ross / Halo / L4D2 / UEVR / FusionFix — kill monitor-on-face with **true engine FOV**, not canvas zoom / theater. FusionFix `fixes.ixx` = cam process CALL then `*(CCam+0x60) += n*5` = our Mode 17 recompute site.  
+**Research:**  / Halo / L4D2 / UEVR / FusionFix — kill monitor-on-face with **true engine FOV**, not canvas zoom / theater. FusionFix `fixes.ixx` = cam process CALL then `*(CCam+0x60) += n*5` = our Mode 17 recompute site.  
 **Shipped Mode 35:** Mode 30 pair-hold + chain-hook that CALL; `gtaiv_dxvk_vr.fovadd` ADD degrees (deployed **15**). Additive preserves aim zoom.  
 **Log proof:** 45→60 stable; thousands of FovSite calls; submits mode=35; game stayed up.  
 **Headset check:** less black-bar / monitor feel? No look-warp? If warp/bad → kill to 30 + delete fovadd. Keep FusionFix menu FOV at **0**.
@@ -928,9 +928,9 @@ VR camera.
 - Canvas zoom **forced OFF** in `vr_display.cpp` (always true FOV; file ignored). Game `zoom=100`.
 - Mode **30** + **`ipd=1`** redeploy (preserve scale/stereoscale/eyefwd/pedhide).
 - Read-only `VsRetStatic:` PE scan E8→`0x2C73E` on Mode 30 arm — live **`callSites=0`** (indirect callers only; dual stays off).
-- Docs: REFERENCES (OpenVR/Meta/parallel proj/Luke Ross), INSPIRATION_NOTES (R.E.A.L. pack), PLAN_NEXT (deferred independent cam).
+- Docs: REFERENCES (OpenVR/Meta/parallel proj/), INSPIRATION_NOTES (flat-to-VR pack), PLAN_NEXT (deferred independent cam).
 
-**Opinion on independent VR cam:** **Agree — defer.** Game cam collision/pitch clamps fight HMD look near walls; Luke Ross uses pitch overrides + render-time view fixes. Invasive; not this session.
+**Opinion on independent VR cam:** **Agree — defer.** Game cam collision/pitch clamps fight HMD look near walls;  uses pitch overrides + render-time view fixes. Invasive; not this session.
 
 ### Session 2026-07-24 ~17:30–17:40 (canvas zoom — REJECTED)
 
@@ -1232,7 +1232,7 @@ Mode 14 run (same rects, stable tangents, no FOV change) — and the user STILL 
 jumping left/right. → **The jumping is the inherent temporal alternating-eye artifact**, not a
 bug: at 30–50 game FPS each eye updates at 15–25 Hz, one frame apart; any motion (driving,
 walking, head turns) displaces the two eyes' images against each other. The first Mode 14 test
-was calm/standing, so it went unnoticed. Luke Ross needs high FPS + own motion compensation
+was calm/standing, so it went unnoticed.  needs high FPS + own motion compensation
 for exactly this reason. Mitigation: more FPS (lower resolution/settings). **Real fix: render
 both eyes in the SAME frame.**
 
@@ -1345,7 +1345,7 @@ overwritten** on mode enter. Next: Mode 28 dynamic caller of `0x2C6AC` for same-
 
 **Insight for full vertical fill later:** at 16:9 the horizontal hits the frustum limit long
 before the vertical fills. The proper endgame is SQUARE aspect (`commandline` 1080×1080) +
-engine FOV — Luke Ross' square+FOV combo now makes sense for us; canvas adapts automatically.
+engine FOV — ' square+FOV combo now makes sense for us; canvas adapts automatically.
 
 **New config toggles (all OFF by default, read once at start):**
 - `gtaiv_dxvk_vr.eyefwd` (cm, default 38) — smaller = less camera swing on head turns (comfort).
