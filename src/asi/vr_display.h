@@ -39,7 +39,7 @@ uint32_t GetGameFovPublishGeneration();
 void SetBackbufferAspect(float aspectWH);
 float GetBackbufferAspect();
 
-// Mode 13: game BB aspect + optional center-square crop (Luke Ross style) + HMD inset.
+// Mode 13: game BB aspect + optional center-square crop (square-aspect) + HMD inset.
 // Does NOT render at SteamVR recommended res — Submit uses the game backbuffer as-is.
 bool GetNativeFovInsetBounds(vr::EVREye eye, vr::VRTextureBounds_t* out);
 
