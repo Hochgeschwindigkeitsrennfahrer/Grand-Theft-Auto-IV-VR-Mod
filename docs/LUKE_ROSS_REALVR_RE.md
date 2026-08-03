@@ -1,9 +1,9 @@
-# Luke Ross R.E.A.L. VR — reverse-engineering notes
+# Third-party flat-to-VR approach VR — reverse-engineering notes
 
 **Date:** 2026-07-25 (updated same day — GTA5 vs CP2077 mode deep-dive)  
-**Scope:** Local Inspiration drop `inspiration/real vr all mods/` (gitignored).  
+**Scope:** Local Inspiration drop `inspiration/thirdparty-vr-inspo/` (gitignored).  
 **Goal:** Learn architecture / hooks / stereo+submit patterns for **our own** GTA IV CE ASI glue.  
-**Hard rule:** Do **not** copy or redistribute Luke Ross / 3DMigoto / closed binaries into our product.
+**Hard rule:** Do **not** copy or redistribute  / 3DMigoto / closed binaries into our product.
 
 ---
 
@@ -11,17 +11,17 @@
 
 ### Verdict (certainty ≥98%)
 
-**Luke Ross RealVR does not ship Halo-style same-frame dual-eye stereo.**  
+** thirdparty-vr does not ship Halo-style same-frame dual-eye stereo.**  
 All stereoscopic paths in this drop are **alternate-eye rendering (AER)**:
 
 | Family | What it is | Where |
 |--------|------------|-------|
-| **Legacy AER** | One engine eye per frame; hold other eye; compositor timewarp / ASW | GTA5 `d3d11.dll` (only path); RealVR64 menu mode |
-| **AER v2** (+ rate variants) | Still AER, plus CUDA optical-flow frame synthesis to hide ghosting | Pack-root `RealVR64.dll` only (CP2077 and other modern titles) |
-| **Mono** | No stereo; higher frame rate | RealVR64 menu only |
+| **Legacy AER** | One engine eye per frame; hold other eye; compositor timewarp / ASW | GTA5 `d3d11.dll` (only path); thirdparty-vr64 menu mode |
+| **AER v2** (+ rate variants) | Still AER, plus CUDA optical-flow frame synthesis to hide ghosting | Pack-root `thirdparty-vr.dll` only (CP2077 and other modern titles) |
+| **Mono** | No stereo; higher frame rate | thirdparty-vr64 menu only |
 | **Same-frame / Halo dual** | Both eyes from one game tick | **Not present** — no menu label, no string, no code path name in either DLL |
 
-**“Stereoscopic 3D”** in the RealVR64 overlay is a **category tag** on AER modes, not a separate true-stereo renderer.  
+**“Stereoscopic 3D”** in the thirdparty-vr64 overlay is a **category tag** on AER modes, not a separate true-stereo renderer.  
 **“Parallel projections”** is a separate aiming/OpenVR option string — **not** a stereo render mode.
 
 ### Module certainty (GTA5 folder)
@@ -29,10 +29,10 @@ All stereoscopic paths in this drop are **alternate-eye rendering (AER)**:
 | Role | Module | Evidence |
 |------|--------|----------|
 | **VR renderer + compositor path** | `GTA 5/d3d11.dll` | Exports `RVR*`; imports `openvr_api.dll`; RTTI `OpenVRMgr` / `OpenXRMgr` / `OculusVRMgr` / `RVRMgr`; PDB `…\3DmiGTA\x64\Release\d3d11.pdb` |
-| **Game camera / FOV glue** | `GTA 5/asi/RealVR.asi` | ScriptHookV; `GetProcAddress` `RVR*`; FOV/Proj/View patches; PDB `…\3DmiGTA\RealVR\bin\Release\RealVR.pdb` |
+| **Game camera / FOV glue** | `GTA 5/asi/thirdparty-vr.asi` | ScriptHookV; `GetProcAddress` `RVR*`; FOV/Proj/View patches; PDB `…\3DmiGTA\thirdparty-vr\bin\Release\thirdparty-vr.pdb` |
 | **Not the renderer** | `dinput8.dll` | ASI loader proxy |
 | **Not the renderer** | `nvapi64.dll` | 3DMigoto NVAPI stereo shim |
-| **Not used by GTA5 folder** | pack-root `RealVR64.dll` | Modern multi-game core (CP2077 etc.); GTA5 ships its **own** forked `d3d11.dll` |
+| **Not used by GTA5 folder** | pack-root `thirdparty-vr.dll` | Modern multi-game core (CP2077 etc.); GTA5 ships its **own** forked `d3d11.dll` |
 
 GTA5 stereo = **AER on/off** (`Stereo=1` → “alternate eyes”) + dual `Submit[%c]` with pose — **not** same-frame dual.
 
@@ -41,18 +41,18 @@ GTA5 stereo = **AER on/off** (`Stereo=1` → “alternate eyes”) + dual `Submi
 ## Files present (GTA 5 drop)
 
 ```
-inspiration/real vr all mods/
-  RealVR64.dll                 (~10.4 MB)  shared multi-game injector (other titles)
-  RealVR.ini                   pack stub
+inspiration/thirdparty-vr-inspo/
+  thirdparty-vr.dll                 (~10.4 MB)  shared multi-game injector (other titles)
+  thirdparty-vr.ini                   pack stub
   GTA 5/
-    d3d11.dll                  (~3.6 MB)   ★ RealVR renderer (3DMigoto fork + RVR)
+    d3d11.dll                  (~3.6 MB)   ★ thirdparty-vr renderer (3DMigoto fork + RVR)
     d3dx.ini                   3DMigoto config
-    asi/RealVR.asi             (~0.22 MB)  ★ ScriptHookV game glue
+    asi/thirdparty-vr.asi             (~0.22 MB)  ★ ScriptHookV game glue
     openvr_api.dll             OpenVR loader
     dinput8.dll                ASI loader
     nvapi64.dll                3DMigoto NVAPI shim
     ScriptHookV.dll
-    RealVR.ini                 hotkeys / Stereo / VRAPI / UniversalFOVFix
+    thirdparty-vr.ini                 hotkeys / Stereo / VRAPI / UniversalFOVFix
     commandline.txt            -width 1080 -height 1080
     ShaderFixes/*.txt          small 3DMigoto shader overrides
     Settings/{High,Medium,Low}/ …
@@ -68,10 +68,10 @@ No PDBs shipped in the drop; PDB **paths** remain inside the PE debug directorie
 GTA5.exe
   ├─ dinput8.dll          → loads scripts/*.asi
   ├─ ScriptHookV.dll
-  │    └─ RealVR.asi      → natives + memory patches (FOV/cam/heading)
+  │    └─ thirdparty-vr.asi      → natives + memory patches (FOV/cam/heading)
   │         GetProcAddress("d3d11.dll", "RVRWaitAndTrackHMD" | …)
   │         reads/writes g_RVRData / g_fRVRGameProj
-  └─ d3d11.dll (RealVR)   → wraps D3D11 + DXGI Present
+  └─ d3d11.dll (thirdparty-vr)   → wraps D3D11 + DXGI Present
        ├─ HackerDevice / HackerSwapChain / HackerContext   (3DMigoto)
        ├─ RVRMgr ──┬─ OpenVRMgr    (IVRSystem_021, IVRCompositor_022, IVROverlay_021)
        │           ├─ OpenXRMgr
@@ -79,7 +79,7 @@ GTA5.exe
        └─ openvr_api.dll / Oculus / OpenXR runtimes
 ```
 
-`RealVR.ini` `VRAPI`: `0=autodetect, 1=Oculus, 2=OpenVR, 3=OpenXR`.
+`thirdparty-vr.ini` `VRAPI`: `0=autodetect, 1=Oculus, 2=OpenVR, 3=OpenXR`.
 
 ---
 
@@ -100,11 +100,11 @@ GTA5.exe
 
 ---
 
-## How RealVR renders VR (call flow)
+## How thirdparty-vr renders VR (call flow)
 
 ### 1) Init
 
-1. Game loads `d3d11.dll` (RealVR fork of 3DMigoto).
+1. Game loads `d3d11.dll` (thirdparty-vr fork of 3DMigoto).
 2. Device/swapchain create wraps into `HackerDevice` / `HackerSwapChain`.
 3. `RVRMgr` picks backend:
    - OpenVR: `VR_InitInternal2` → `VR_GetGenericInterface`:
@@ -147,7 +147,7 @@ Three coordinated layers — **not** canvas zoom:
 | Layer | Where | Evidence |
 |-------|-------|----------|
 | Square RT | `commandline.txt` | `-width 1080 -height 1080` |
-| Engine FOV patches | `RealVR.asi` | `UniversalFOVFix`; patches `FOVUni`, `FOV1stCar`, `FOV3rd`, `Proj`, `ViewInverse`, `CamParams` |
+| Engine FOV patches | `thirdparty-vr.asi` | `UniversalFOVFix`; patches `FOVUni`, `FOV1stCar`, `FOV3rd`, `Proj`, `ViewInverse`, `CamParams` |
 | Projection CB rewrite | `d3d11.dll` | `"Unmap() overrode the FOV in the projection matrix"` — scales projection terms when mapped CB unmaps |
 | HMD tangents | `d3d11.dll` | `"Left/Right eye FOV: U=… D=… L=… R=…"` |
 | Shared proj float | both | `g_fRVRGameProj`; ASI logs `ProjFOV = … Near=… Far=…` |
@@ -167,14 +167,14 @@ This matches Luke’s public FAQ: game “wrestles” for camera ownership → s
 
 ### 5) Same-frame L/R?
 
-**No — not in GTA5, and not in modern RealVR64 / CP2077 either.**
+**No — not in GTA5, and not in modern thirdparty-vr64 / CP2077 either.**
 
 - GTA5 ini: stereo = **alternate eyes** (boolean).
 - One engine render pass per frame (eye bit in `RVRGetFrameDesc`).
 - Both eyes still **Submitted** each Present; the non-rendered eye is prior texture + pose stamp + SteamVR ASW/timewarp.
-- RealVR64 “Render mode” menu only lists AER v2 rate caps + Legacy AER + Mono (see matrix below). Zero Halo / same-frame / dual-render labels.
+- thirdparty-vr64 “Render mode” menu only lists AER v2 rate caps + Legacy AER + Mono (see matrix below). Zero Halo / same-frame / dual-render labels.
 
-AER v2 optical-flow synthesis lives in `RealVR64.dll` (CUDA: `cudart64_12.dll`, `nvcuda.dll`, `nvCreateOpticalFlowCuda`) — **out of scope / not portable** to our Win32 DXVK path.
+AER v2 optical-flow synthesis lives in `thirdparty-vr.dll` (CUDA: `cudart64_12.dll`, `nvcuda.dll`, `nvCreateOpticalFlowCuda`) — **out of scope / not portable** to our Win32 DXVK path.
 
 ---
 
@@ -184,18 +184,18 @@ AER v2 optical-flow synthesis lives in `RealVR64.dll` (CUDA: `cudart64_12.dll`, 
 
 | | **GTA 5** (this drop folder) | **CP2077** (this drop folder) |
 |--|------------------------------|-------------------------------|
-| **Renderer** | Forked `GTA 5/d3d11.dll` (3DMigoto + RVR) | Pack-root **`RealVR64.dll`** (`runtime_CP2077`) |
-| **Game glue** | `asi/RealVR.asi` (ScriptHookV) | In-DLL AOBs (`CP2077LocateCamera`, `CP2077PatchCamera`, …) |
+| **Renderer** | Forked `GTA 5/d3d11.dll` (3DMigoto + RVR) | Pack-root **`thirdparty-vr.dll`** (`runtime_CP2077`) |
+| **Game glue** | `asi/thirdparty-vr.asi` (ScriptHookV) | In-DLL AOBs (`CP2077LocateCamera`, `CP2077PatchCamera`, …) |
 | **Folder contents** | Full DLL/ASI/ini/settings | Thin: `Settings/option.replace` + `S0.dxbc`/`S1.dxbc` only |
-| **Menu UI** | Hotkeys via `RealVR.ini` (no “Render mode” cycle) | Full **R.E.A.L. VR overlay** / Quick Menu |
+| **Menu UI** | Hotkeys via `thirdparty-vr.ini` (no “Render mode” cycle) | Full **flat-to-VR overlay** / Quick Menu |
 | **Stereo family** | Legacy AER only | Legacy AER **or** AER v2 (+ rate variants) + Mono |
 | **CUDA / OF** | No | Yes (`cudart64_12`, optical flow) |
-| **Submit** | `Submit[%c]` ×2, `Submit_TextureWithPose` (flag 8) on OpenVR | Same pattern: `ERROR: Submit[%c] failed…` in RealVR64 |
+| **Submit** | `Submit[%c]` ×2, `Submit_TextureWithPose` (flag 8) on OpenVR | Same pattern: `ERROR: Submit[%c] failed…` in thirdparty-vr64 |
 | **Same-frame dual** | **No** | **No** |
 
-Note: RealVR64 also has `runtime_GTAVE` (GTA V Enhanced) — a **newer** shared-DLL path, separate from the classic `GTA 5/` folder fork.
+Note: thirdparty-vr64 also has `runtime_GTAVE` (GTA V Enhanced) — a **newer** shared-DLL path, separate from the classic `GTA 5/` folder fork.
 
-### GTA5 — all stereo/render-related menu options (`GTA 5/RealVR.ini`)
+### GTA5 — all stereo/render-related menu options (`GTA 5/thirdparty-vr.ini`)
 
 These are the **complete** VR-facing toggles in the GTA5 ini (Release 7). None select same-frame dual.
 
@@ -217,7 +217,7 @@ These are the **complete** VR-facing toggles in the GTA5 ini (Release 7). None s
 
 **Eye identity evidence (disasm):** `RVRGetFrameDesc` @ RVA `0x84B30`: `test cl,1` → `mov eax,'L'(0x4C)` / `cmovne eax,'R'(0x52)`.
 
-### CP2077 / RealVR64 — “Render mode” menu (exact UI names from binary)
+### CP2077 / thirdparty-vr64 — “Render mode” menu (exact UI names from binary)
 
 Overlay labels: `Render mode`, `VR rendering mode:`, `Previous/Next render mode`, `Force 60 fps for render modes with adaptive frame rates` (`ForceAdaptiveTo60`).
 
@@ -234,7 +234,7 @@ Exact mode **short names** in the string table (file ~`0x5BC140`…):
 | **`Mono`** | No 3D | Double frame rate without interpolation | Low ghosting | Mono |
 | **`Legacy AER`** | Stereoscopic 3D | Minimal latency / No frame interpolation | Some ghosting | **Legacy AER** |
 
-Supporting strings (same DLL): `Higher quality AER v2`, `Legacy AER mode should always be supported`, `No supported render modes`, `Camera rotation compensation (only relevant for Legacy AER)`, ASW warning *“not compatible with the alternate eye rendering tech used by R.E.A.L. VR mods”*.
+Supporting strings (same DLL): `Higher quality AER v2`, `Legacy AER mode should always be supported`, `No supported render modes`, `Camera rotation compensation (only relevant for Legacy AER)`, ASW warning *“not compatible with the alternate eye rendering tech used by flat-to-VR mods”*.
 
 **Absent from both DLLs (searched):** `Halo`, `same-frame`, `true stereo`, `dual render`, `both eyes same`, `simultaneous eye`. The only “same frame” hits are unrelated camera-debug errors.
 
@@ -292,9 +292,9 @@ Plus runtime helpers: `SetCamMetadataPitch`, world-rotation tracking for vehicle
 
 ---
 
-## Pack-root `RealVR64.dll` (CP2077 + modern titles)
+## Pack-root `thirdparty-vr.dll` (CP2077 + modern titles)
 
-- ~500 exports: proxies `D3D9/10/11/12` create + DXGI factories + window/input + Bink; Vulkan layer JSON in some game folders (`VK_LAYER_RealVR`).
+- ~500 exports: proxies `D3D9/10/11/12` create + DXGI factories + window/input + Bink; Vulkan layer JSON in some game folders (`VK_LAYER_thirdparty-vr`).
 - Depends on `openvr_api.dll` + CUDA (`cudart64_12`, `nvcuda`) for AER v2 optical flow.
 - Per-game RTTI: `runtime_CP2077`, `runtime_ELDEN`, `runtime_GTAVE`, … (GTA5 classic folder is **not** this path).
 - Overlay Quick Menu: Render mode / camera / tourist / game speed / presets.
@@ -314,14 +314,14 @@ Plus runtime helpers: `SetCamMetadataPitch`, world-rotation tracking for vehicle
    UniversalFOVFix + Unmap projection rewrite = same class as our FovSite / Mode 35/74.
 
 3. **Split game-glue vs submit-glue**  
-   RealVR’s split maps to: CE memory hooks for cam/FOV vs DXVK interop Submit (`g_RVRData` / `g_fRVRGameProj` analog = our FrameDesc).
+   thirdparty-vr’s split maps to: CE memory hooks for cam/FOV vs DXVK interop Submit (`g_RVRData` / `g_fRVRGameProj` analog = our FrameDesc).
 
 4. **Render-time view fix > fighting gameplay cam**  
    `AdjustViewInverse` / `FoldWorldRotIntoRenderPose` family — our CopyMat / DRAW-PATH seated 6DoF.
 
 5. **Do not expect a Luke “true stereo” switch to copy**  
    He has **no** Halo/same-frame option. Presence for him = AER (+ AER v2 OF on NVIDIA, which we cannot port) + FOV + pose-stamped Submit.  
-   **Our Mode74 AER path is the honest RealVR analog.**  
+   **Our Mode74 AER path is the honest thirdparty-vr analog.**  
    **Our dual×2 / same-frame** is a *different* ambition (Halo/L4D2 class) — optional, not “what Luke ships.”
 
 6. **If we ever want AER-v2-class comfort** without CUDA OF: improve held-eye pose stamp, soft motion guard, and FOV — not invent a fake “Luke dual mode.”
@@ -333,7 +333,7 @@ Plus runtime helpers: `SetCamMetadataPitch`, world-rotation tracking for vehicle
 - `dumpbin` (VS 18) — exports/imports/dependents/headers  
 - Python 3.13 + `pefile` + Capstone — strings, RVA↔offset, disasm, LEA xrefs  
 - Manual correlation with OpenVR `Submit` flags / `IVRCompositor_022` vtable layout  
-- Cross-check: RealVR64 render-mode string table + public Patreon/press (AER v2 lists)
+- Cross-check: thirdparty-vr64 render-mode string table + public Patreon/press (AER v2 lists)
 
 Scratch artifacts under `docs/_re_scratch/` are disposable local dumps (not required to rediscover the above).
 
@@ -341,7 +341,7 @@ Scratch artifacts under `docs/_re_scratch/` are disposable local dumps (not requ
 
 ## References (public)
 
-- https://github.com/LukeRoss00/gta5-real-mod (FAQ)  
+-  (FAQ)  
 - https://github.com/ValveSoftware/openvr/issues/1253 (Submit_TextureWithPose / AER)  
 - https://www.patreon.com/posts/score-one-for-129841705 (Render mode → Legacy AER on AMD; AER v2 = NVIDIA OF)  
 - Project docs: `docs/INSPIRATION_NOTES.md`, `docs/REFERENCES.md`, `docs/STEREO_EYE_OFFSET.md`

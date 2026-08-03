@@ -51,7 +51,7 @@ Consequences:
 - The black bars are mainly TOP/BOTTOM (game fills ~100% horizontally, only ~53%
   vertically of the G2 frustum).
 - **Square resolution (`-width 1080 -height 1080`) will NOT remove the bars** — at 1:1
-  the game would shrink tanH to 0.562 and the image gets smaller. The Luke-Ross square
+  the game would shrink tanH to 0.562 and the image gets smaller. The closed-VR square
   trick does not transfer without his engine FOV fix. Don't burn a session on it.
 - The correct lever is **raising the vertical FOV of the source render**.
 

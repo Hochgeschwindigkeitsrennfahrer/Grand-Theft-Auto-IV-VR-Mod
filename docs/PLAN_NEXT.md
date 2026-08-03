@@ -23,7 +23,7 @@ Read with `docs/CURRENT-STATE.md`, **`docs/RE_OFFSETS.md`**, **`docs/MAPPED_RVA_
 
 ## Session note 2026-07-25 — Mode74 AER presence (mainline)
 
-**User:** smoother not priority — need **proper VR / presence inside the world**. Port RealVR RE ideas.
+**User:** smoother not priority — need **proper VR / presence inside the world**. Port thirdparty-vr RE ideas.
 
 **Shipped AER strategy:**
 - One engine eye/frame (L/R) + Submit both `TextureWithPose` (held = last tex + capture pose)
@@ -682,7 +682,7 @@ forbidden RVA or Mode-34 dual.
 
 ## Session note 2026-07-24 ~19:15 — Mode 38 AER pose submit
 
-User: Mode 37 still monitor/huge/jump/FPS; F7 ≠ presence; Luke AER v2 Patreon.  
+User: Mode 37 still monitor/huge/jump/FPS; F7 ≠ presence; optical-flow AER synthesis Patreon.  
 **Shipped Mode 38:** Mode 37 + capture-time HMD pose + `Submit_TextureWithPose`. Not AER v2 OF.  
 Kill → **37** or **30**. Presence still deferred (independent cam / same-frame).
 
@@ -718,7 +718,7 @@ Also: ParseModeFile max 36; idempotent ADD; ADD only if base FOV ≤55°.
 
 ## Session note 2026-07-24 ~18:20 — Mode 35 FOV recompute spike
 
-Research (Luke/Halo/L4D2/UEVR/FusionFix): **true engine FOV** kills monitor-on-face; canvas zoom / claimed FOV warp = REJECTED.  
+Research (Halo/L4D2/UEVR/UEVR/FusionFix): **true engine FOV** kills monitor-on-face; canvas zoom / claimed FOV warp = REJECTED.  
 **Shipped:** Mode **35** = Mode 30 pair-hold + chain-hook FusionFix Custom FOV CALL → ADD at `CCam+0x60` via `gtaiv_dxvk_vr.fovadd`.  
 Playable fallback stays **30**. Independent VR cam still deferred.
 
@@ -737,7 +737,7 @@ Do **not** re-enable canvas zoom or FusionFix FieldOfView for size.
 ### Independent VR camera vs game-camera wall collision
 
 **User ask:** look sideways/up near walls → game cam collides / stops; want VR view independent of game cam.  
-**Verdict:** **Yes, sound idea — deferred.** See `docs/INSPIRATION_NOTES.md` (Luke Ross pitch override + render-time view fix).  
+**Verdict:** **Yes, sound idea — deferred.** See `docs/INSPIRATION_NOTES.md` ( pitch override + render-time view fix).  
 Invasive: culling, weapons, shadows, HUD. Keep PedHide + eyefwd for head embed; revisit after same-frame or when wall-look is the #1 complaint.
 
 ### Mode 34 dual
@@ -746,7 +746,7 @@ COUNT may probe; **dual stays DISABLED** (`0x4DDAD0` vsPatch=0). New read-only `
 
 ### Mode 35 theater/quad A/B
 
-Research: theater = menus/cutscenes only (Luke/VC VR). Not the presence fix. Skip unless FOV site fails.
+Research: theater = menus/cutscenes only (community VR notes). Not the presence fix. Skip unless FOV site fails.
 
 ---
 

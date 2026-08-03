@@ -179,7 +179,7 @@ enum class StereoMode : int {
   // gameTan for L+R rects, WorldScale lever for "huge world" (not IPD).
   // Protect: Mode 36 / 35. Kill: stereo=30 + delete fovadd.
   FovCanvasComfort = 37,
-  // Mode 37 + Luke Ross AER lesson: stamp each eye RT with the HMD pose from
+  // Mode 37 + pose-stamped AER lesson: stamp each eye RT with the HMD pose from
   // capture time and Submit via Submit_TextureWithPose so SteamVR can reproject
   // the stale eye. Not AER v2 optical-flow. Kill: stereo=37 or 30.
   AerPoseSubmit = 38,

@@ -42,7 +42,7 @@ float GetBackbufferAspect();
 // Mode 85/86 A/B: SteamVR recommended eye RT size (not Mode88 default).
 bool GetRecommendedEyeRtSize(uint32_t* outW, uint32_t* outH);
 
-// Mode 13: game BB aspect + optional center-square crop (Luke Ross style) + HMD inset.
+// Mode 13: game BB aspect + optional center-square crop (square-aspect) + HMD inset.
 // Does NOT render at SteamVR recommended res — Submit uses the game backbuffer as-is.
 bool GetNativeFovInsetBounds(vr::EVREye eye, vr::VRTextureBounds_t* out);
 

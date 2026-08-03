@@ -668,7 +668,7 @@ CamFovSite_t g_origCamFovSite = nullptr;
 std::atomic<bool> g_fovSiteOk{false};
 std::atomic<uint32_t> g_fovSiteCalls{0};
 
-// Mode74: CCam degrees so engine FOV covers HMD (RealVR UniversalFOVFix class).
+// Mode74: CCam degrees so engine FOV covers HMD (thirdparty-vr UniversalFOVFix class).
 // Mode16 probe: rendered vertical ≈ ccam * (58.7/45). Match BOTH cover V and the
 // V implied by cover H at backbuffer aspect (giant-screen killer). Returns 0 if unknown.
 float Mode74HmdTargetCcamDegrees() {

@@ -576,7 +576,7 @@ std::atomic<uint32_t> g_mode77DualN{0};
 std::atomic<bool> g_mode77DualDead{false};
 std::atomic<uint32_t> g_mode79FovProofN{0};
 
-// Shared pose/FOV/eye (RealVR g_RVRData / RVRGetFrameDesc analog) — cam glue + submit.
+// Shared pose/FOV/eye (thirdparty-vr g_RVRData / RVRGetFrameDesc analog) — cam glue + submit.
 struct Mode74FrameDesc {
   bool rightEye = false;
   vr::HmdMatrix34_t pose{};
@@ -8475,7 +8475,7 @@ void TemporalCapturePairHold(IDirect3DDevice9* device) {
         g_holdPoseLValid ? 1 : 0, g_holdPoseRValid ? 1 : 0);
 }
 
-// Mode74 AER (RealVR pattern): one engine eye per EndScene into THAT eye's submit RT.
+// Mode74 AER (thirdparty-vr pattern): one engine eye per EndScene into THAT eye's submit RT.
 // Every Present still Submits L+R with Submit_TextureWithPose:
 //   - fresh eye: this frame texture + capture-time (WaitGetPoses) pose
 //   - held eye: last texture + its capture-time pose (SteamVR ASW/timewarp)
@@ -8707,7 +8707,7 @@ bool InstallStereoRenderHooks() {
     if (mode == StereoMode::AerPoseSubmit) {
       const bool fovOk = InstallFovRecomputeSiteHook();
       Log("StereoRender: mode 38 AER-POSE SUBMIT (Mode37 true-FOV + pair-hold + "
-          "Submit_TextureWithPose per eye; Luke AER lesson; no OF/v2) ok=%d fovSite=%d",
+          "Submit_TextureWithPose per eye; pose-stamped AER lesson; no OF/v2) ok=%d fovSite=%d",
           g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
       Log("StereoRender: kill-switch - stereo=37 or 30 (+ delete fovadd)");
     } else if (mode == StereoMode::FovCanvasComfort) {

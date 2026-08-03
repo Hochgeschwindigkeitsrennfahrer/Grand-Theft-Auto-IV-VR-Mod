@@ -476,7 +476,7 @@ User on `mode74-aer`: 3D maybe better, but **heavy jumping** and **perf way wors
 
 AER-as-default on stereo=74. User: jumping + worse perf → remapped above (74 hitchcut / 75 dual / 76 AER).
 
-### RealVR ideas still available (mode 76 + shared DRAW path)
+### thirdparty-vr ideas still available (mode 76 + shared DRAW path)
 
 1. AER + `Submit_TextureWithPose` (mode **76**)
 2. Engine FOV = HMD cover
@@ -486,21 +486,21 @@ AER-as-default on stereo=74. User: jumping + worse perf → remapped above (74 h
 
 ---
 
-## Prior: Research 2026-07-25 — Luke Ross RealVR RE (certainty ≥98%)
+## Prior: Research 2026-07-25 —  thirdparty-vr RE (certainty ≥98%)
 
 Full write-up: **`docs/LUKE_ROSS_REALVR_RE.md`** (GTA5 + CP2077 mode matrix).
 
-**Does he only use AER?** **Yes for stereo.** No Halo / same-frame dual mode in GTA5 *or* modern RealVR64 (CP2077).
+**Does he only use AER?** **Yes for stereo.** No Halo / same-frame dual mode in GTA5 *or* modern thirdparty-vr64 (CP2077).
 
 | | GTA5 folder | CP2077 folder |
 |--|-------------|---------------|
-| Renderer | forked `d3d11.dll` | pack-root `RealVR64.dll` |
+| Renderer | forked `d3d11.dll` | pack-root `thirdparty-vr.dll` |
 | Stereo | `Stereo=1` = **alternate eyes** only | Overlay **Render mode**: Legacy AER / AER v2 / 1/2…1/6 rate / Mono |
 | Same-frame dual | **No** | **No** |
 | AER v2 (CUDA OF) | **No** | **Yes** (NVIDIA) |
 
 - GTA5 Submit = OpenVR ×2 + `Submit_TextureWithPose` (8); eye bit `'L'`/`'R'` in `RVRGetFrameDesc`.
-- **Mode74 implication:** our AER + pose Submit **is** the RealVR analog. Dual×2 is *our* Halo-class experiment — Luke has nothing to port there.
+- **Mode74 implication:** our AER + pose Submit **is** the thirdparty-vr analog. Dual×2 is *our* Halo-class experiment — Luke has nothing to port there.
 
 ---
 
@@ -1531,7 +1531,7 @@ Kill: **`50`** (CopyMat-only parallax) or **`45`** if regress.
 ---
 
 **One behavior change (deployed):** Mode **51** = Mode 50 always-distinct temporal L/R +
-capture-time `Submit_TextureWithPose` (Luke AER lesson). IPD bumped **`2` → `3` cm** for stronger
+capture-time `Submit_TextureWithPose` (pose-stamped AER lesson). IPD bumped **`2` → `3` cm** for stronger
 cam-matrix parallax (`CamMatrix ipd≈±0.016` vs ±0.009 at 2 cm).
 
 **Also shipped (not deployed):** Mode **53** = Mode 51 + soft motion guard: **8°/6 cm** → keep
@@ -1837,7 +1837,7 @@ VR camera.
 
 ### Session 2026-07-24 ~19:10 (Mode 38 AER pose submit)
 
-**User:** Mode 37 still huge/monitor, jump, bad FPS; F7 doesn’t feel like being in the world; read Luke AER v2 Patreon.  
+**User:** Mode 37 still huge/monitor, jump, bad FPS; F7 doesn’t feel like being in the world; read optical-flow AER synthesis Patreon.  
 **Takeaway:** AER v2 = optical-flow intermediates (skip). Transferable = stamp each eye with capture-time pose (`Submit_TextureWithPose`, OpenVR #1253).  
 **Shipped Mode 38:** Mode 37 path + pose cache on L/R capture + pose promote with pair-hold + `Submit_TextureWithPose`. Fallback to `Submit_Default` if pose missing/err.  
 **Deploy verified (`ASI_BUILD_ID 20260724-191333`):** `StereoMode: 38`, `mode 38 AER-POSE SUBMIT … ok=1`, pair promote `poseL=1 poseR=1`, `AERPose: eye=L/R submitWithPose=1 err=0`, `StereoSubmit … mode=38`. Kill **37** / **30**.  
@@ -1863,7 +1863,7 @@ VR camera.
 ### Session 2026-07-24 ~18:10–18:25 (Mode 35 FOV recompute — research + spike)
 
 **User ask:** feel inside the game with real 6DoF; Mode 30 fusion OK but warping + screen-on-face.  
-**Research:** Luke Ross / Halo / L4D2 / UEVR / FusionFix — kill monitor-on-face with **true engine FOV**, not canvas zoom / theater. FusionFix `fixes.ixx` = cam process CALL then `*(CCam+0x60) += n*5` = our Mode 17 recompute site.  
+**Research:**  / Halo / L4D2 / UEVR / FusionFix — kill monitor-on-face with **true engine FOV**, not canvas zoom / theater. FusionFix `fixes.ixx` = cam process CALL then `*(CCam+0x60) += n*5` = our Mode 17 recompute site.  
 **Shipped Mode 35:** Mode 30 pair-hold + chain-hook that CALL; `gtaiv_dxvk_vr.fovadd` ADD degrees (deployed **15**). Additive preserves aim zoom.  
 **Log proof:** 45→60 stable; thousands of FovSite calls; submits mode=35; game stayed up.  
 **Headset check:** less black-bar / monitor feel? No look-warp? If warp/bad → kill to 30 + delete fovadd. Keep FusionFix menu FOV at **0**.
@@ -1877,9 +1877,9 @@ VR camera.
 - Canvas zoom **forced OFF** in `vr_display.cpp` (always true FOV; file ignored). Game `zoom=100`.
 - Mode **30** + **`ipd=1`** redeploy (preserve scale/stereoscale/eyefwd/pedhide).
 - Read-only `VsRetStatic:` PE scan E8→`0x2C73E` on Mode 30 arm — live **`callSites=0`** (indirect callers only; dual stays off).
-- Docs: REFERENCES (OpenVR/Meta/parallel proj/Luke Ross), INSPIRATION_NOTES (R.E.A.L. pack), PLAN_NEXT (deferred independent cam).
+- Docs: REFERENCES (OpenVR/Meta/parallel proj/), INSPIRATION_NOTES (flat-to-VR pack), PLAN_NEXT (deferred independent cam).
 
-**Opinion on independent VR cam:** **Agree — defer.** Game cam collision/pitch clamps fight HMD look near walls; Luke Ross uses pitch overrides + render-time view fixes. Invasive; not this session.
+**Opinion on independent VR cam:** **Agree — defer.** Game cam collision/pitch clamps fight HMD look near walls;  uses pitch overrides + render-time view fixes. Invasive; not this session.
 
 ### Session 2026-07-24 ~17:30–17:40 (canvas zoom — REJECTED)
 
@@ -2181,7 +2181,7 @@ Mode 14 run (same rects, stable tangents, no FOV change) — and the user STILL 
 jumping left/right. → **The jumping is the inherent temporal alternating-eye artifact**, not a
 bug: at 30–50 game FPS each eye updates at 15–25 Hz, one frame apart; any motion (driving,
 walking, head turns) displaces the two eyes' images against each other. The first Mode 14 test
-was calm/standing, so it went unnoticed. Luke Ross needs high FPS + own motion compensation
+was calm/standing, so it went unnoticed.  needs high FPS + own motion compensation
 for exactly this reason. Mitigation: more FPS (lower resolution/settings). **Real fix: render
 both eyes in the SAME frame.**
 
@@ -2294,7 +2294,7 @@ overwritten** on mode enter. Next: Mode 28 dynamic caller of `0x2C6AC` for same-
 
 **Insight for full vertical fill later:** at 16:9 the horizontal hits the frustum limit long
 before the vertical fills. The proper endgame is SQUARE aspect (`commandline` 1080×1080) +
-engine FOV — Luke Ross' square+FOV combo now makes sense for us; canvas adapts automatically.
+engine FOV — ' square+FOV combo now makes sense for us; canvas adapts automatically.
 
 **New config toggles (all OFF by default, read once at start):**
 - `gtaiv_dxvk_vr.eyefwd` (cm, default 38) — smaller = less camera swing on head turns (comfort).

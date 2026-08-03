@@ -751,7 +751,7 @@ Three **independent** levers — do not combine aggressively in one test:
 | **F6 stereoscale** | `gtaiv_dxvk_vr.stereoscale` | Soft IPD/disparity multiplier (100–130%) | Can affect fusion if too high |
 | **fovadd** | `gtaiv_dxvk_vr.fovadd` | Engine FOV ADD at **`0x706F7C`** site → true canvas fill | Kills black bars; wide FOV can add temporal stress |
 
-**Rule:** F7 ≠ Halo/Luke “world scale”. Real building size needs engine FOV (`fovadd`) + eventual same-frame stereo. Mode **45** keeps all three decoupled.
+**Rule:** F7 ≠ Halo/L4D2 “world scale”. Real building size needs engine FOV (`fovadd`) + eventual same-frame stereo. Mode **45** keeps all three decoupled.
 
 **F7 preset ladder (Mode 45, 11 steps to 30.0):**  
 `1.0 → 1.25 → 1.5 → 2.0 → 2.5 → 3.0 → 4.0 → 5.0 → 8.0 → 12.0 → 30.0`  
