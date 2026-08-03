@@ -6,7 +6,7 @@ Read with `docs/CURRENT-STATE.md`, **`docs/RE_OFFSETS.md`**, **`docs/MAPPED_RVA_
 
 ## Session note 2026-07-26 — Mode **88** DEFAULT (nap marathon)
 
-**Shipped:** EyeProj ON + DrawScene dual every-N HOLD + eyert 1440 + Reset-safe RTs + buffered/quieter logs + DEVICELOST Submit skip + QPC dualMs + WaitGetPoses stall probe.  
+**Shipped:** EyeProj ON + DrawScene dual every-N HOLD + eyert 1440 + Reset-safe RTs + buffered/quieter logs + DEVICELOST Submit skip + QPC dualMs + WaitGetPoses stall probe. 
 **Build:** `20260726-191037-mode88-final90` · stereo **`88`** · eyert **`1440`** · dualn **`2`** · kill **`45`**.
 
 **Next (one thing per session):**
@@ -33,7 +33,7 @@ Read with `docs/CURRENT-STATE.md`, **`docs/RE_OFFSETS.md`**, **`docs/MAPPED_RVA_
 
 **Ask:** turn head → world stable? lean / near objects → inside VR or still cinema?
 
-**Honest gaps vs Luke GTA5:** no 3DMigoto Unmap FOV rewrite; no CUDA AER v2; no ScriptHookV cam natives; no same-tick L+R; GTA IV Rage seams ≠ GTA5.
+**Honest gaps vs GTA5:** no 3DMigoto Unmap FOV rewrite; no CUDA AER v2; no ScriptHookV cam natives; no same-tick L+R; GTA IV Rage seams ≠ GTA5.
 
 ---
 
@@ -51,27 +51,27 @@ Superseded by **hitchcut**. Build was `20260725-171527-mode74-temporalfirst`.
 
 ## Session note 2026-07-25 ~17:09 — Mode74 sessionlatch
 
-HARD OFF → SESSION OFF. Superseded by **temporalfirst**.  
+HARD OFF → SESSION OFF. Superseded by **temporalfirst**. 
 Build was `20260725-170927-mode74-sessionlatch`.
 
 ---
 
 ## Session note 2026-07-25 ~17:01 — Mode74 fpsfix
 
-HOLD-only-while-OPEN + temporal on HARD OFF. User thrash → superseded by **sessionlatch**.  
+HOLD-only-while-OPEN + temporal on HARD OFF. User thrash → superseded by **sessionlatch**. 
 Build was `20260725-170139-mode74-fpsfix`.
 
 ---
 
 ## Session note 2026-07-25 ~16:55 — Mode74 sparsedual
 
-Sparse 1/8 + HOLD + HARD OFF. User: better stereo, headset FPS bad → superseded by **fpsfix**.  
+Sparse 1/8 + HOLD + HARD OFF. User: better stereo, headset FPS bad → superseded by **fpsfix**. 
 Build was `20260725-165539-mode74-sparsedual`.
 ---
 
 ## Session note 2026-07-25 ~16:41 — Mode74 hmdfov
 
-**User:** still giant TV after worldlook. FOV→HMD helped a bit → still fake 3D.  
+**User:** still giant TV after worldlook. FOV→HMD helped a bit → still fake 3D. 
 buildid was **`20260725-164113-mode74-hmdfov`**. Superseded by **sparsedual**.
 
 ---
@@ -86,8 +86,8 @@ HMD look stamp; dual OFF. Superseded by hmdfov → sparsedual.
 
 **Checkpoint:** `d5bb0ec` / `checkpoint-mode74-contentinj-20260725`
 
-**RE:** UploadFn `0x2A1E10` silent in-world; hot path = ReplayDispatch **`ret=0x30D13`** → SetVSConstF.  
-**Shipped:** Mode72 ±IPD **+ toe-in @2m**; UploadFn hook kept; CamMatrix IPD on; StereoDiff; dual 1/8 opt-in still OFF.  
+**RE:** UploadFn `0x2A1E10` silent in-world; hot path = ReplayDispatch **`ret=0x30D13`** → SetVSConstF. 
+**Shipped:** Mode72 ±IPD **+ toe-in @2m**; UploadFn hook kept; CamMatrix IPD on; StereoDiff; dual 1/8 opt-in still OFF. 
 buildid: **`20260725-155908-mode74-toein`** · stereo **`74`** · kill **`45`**.
 
 **Superseded by worldlook** (head-lock root).
@@ -100,8 +100,8 @@ buildid: **`20260725-155908-mode74-toein`** · stereo **`74`** · kill **`45`**.
 
 **Root (crashsafe):** 1 inject/ES + CamMatrix `ipd=0` while Mode74 “owned” IPD via VS — weak parallax.
 
-**Shipped:** DualViewBudget=12 multi-inject; forced ±half on src-copy when dualEn=0; near-cam contentHit armed; CamMatrix IPD on when dualEn=0; never view+0x80 / dual×2 off.  
-buildid: **`20260725-154721-mode74-contentinj`** · stereo **`74`** · kill **`45`**.  
+**Shipped:** DualViewBudget=12 multi-inject; forced ±half on src-copy when dualEn=0; near-cam contentHit armed; CamMatrix IPD on when dualEn=0; never view+0x80 / dual×2 off. 
+buildid: **`20260725-154721-mode74-contentinj`** · stereo **`74`** · kill **`45`**. 
 Agent: `eyeSep=5.0cm` injects↑; CamMatrix `ipd≠0`; `dualEn=0`; `contentInj=0` (ptr hits).
 
 **Headset:** lean near car/wall. Still flat → hook upload fn **`0x2A1E10`** prologue next (prefer over sparse dual).
@@ -114,8 +114,8 @@ Agent: `eyeSep=5.0cm` injects↑; CamMatrix `ipd≠0`; `dualEn=0`; `contentInj=0
 
 **Part B:** Still-monitor after CamIPD. Root: dual VIEW inject **eyeSep=0** (skipped sep); inject budget never reset while gate OPEN (injects stuck ~90); build-thread SetVSConstF → 45.
 
-**Shipped:** dual src-copy ±half when inject fires; CamMatrix→D3DTS_VIEW per eye; EndScene budget reset + VS c0 from CamMatrix; never view+0x80.  
-buildid: **`20260725-1518-mode74-dualsep`** · stereo **`74`** · kill **`45`**.  
+**Shipped:** dual src-copy ±half when inject fires; CamMatrix→D3DTS_VIEW per eye; EndScene budget reset + VS c0 from CamMatrix; never view+0x80. 
+buildid: **`20260725-1518-mode74-dualsep`** · stereo **`74`** · kill **`45`**. 
 Agent: injects climb with ES; L/R VIEW push differ; 0 EXCEPTION; launch OK.
 
 **Headset:** lean near car/wall. Still monitor → capture after replay upload / `0x2A1E10` draw-thread seam. Not more IPD alone.
@@ -128,8 +128,8 @@ Agent: injects climb with ES; L/R VIEW push differ; 0 EXCEPTION; launch OK.
 
 **Audit:** PubProj HOOK L/R ox OK; StereoDiff≠0; **Mode72 VIEW inject silent in dual** (`contentInj=0`); CamMatrix had **ipd=0 during dual** because Mode74 skipped it for VS-owned sep.
 
-**Shipped:** CamMatrix applies IPD while `StereoInDualPass()`; outside dual Mode74 VS still owns e2h. PubProj HOLD +0x180 for eye walk kept.  
-buildid: **`20260725-1425-mode74-camipd`** · stereo **`74`** · kill **`45`**.  
+**Shipped:** CamMatrix applies IPD while `StereoInDualPass()`; outside dual Mode74 VS still owns e2h. PubProj HOLD +0x180 for eye walk kept. 
+buildid: **`20260725-1425-mode74-camipd`** · stereo **`74`** · kill **`45`**. 
 Superseded by dualsep above for inject/budget/launch.
 
 ---
@@ -138,14 +138,14 @@ Superseded by dualsep above for inject/budget/launch.
 
 **User:** EyeProj still flat — need to be **IN** the game (not monitor-in-face).
 
-**Shipped then:** MinHook **PublishProj `0x31BA0`** → `+0x308`. Smooth PASS; presence FAIL → CamIPD above.  
+**Shipped then:** MinHook **PublishProj `0x31BA0`** → `+0x308`. Smooth PASS; presence FAIL → CamIPD above. 
 buildid was: **`20260725-1404-mode74-pubproj`**.
 
 ---
 
 ## Session note 2026-07-25 ~13:52 — Mode74 EyeProj (superseded — still flat)
 
-`GetProjectionRaw` → `+0x180` + c4 push. Armed in log; headset still flat.  
+`GetProjectionRaw` → `+0x180` + c4 push. Armed in log; headset still flat. 
 buildid was: **`20260725-1352-mode74-eyeproj`**.
 
 ---
@@ -156,7 +156,7 @@ buildid was: **`20260725-1352-mode74-eyeproj`**.
 
 **Root:** double HMD path (CamMatrix 6DoF+IPD + Mode74 seated-6DoF+live e2h) + mid-dual pose resample.
 
-**Shipped:** frozen pose/dual; EyeToHead cache-only; Mode74 no seated-6DoF; Mode74 owns IPD (CamMatrix skips while 74); light pose EMA. Sticky every-frame dual kept.  
+**Shipped:** frozen pose/dual; EyeToHead cache-only; Mode74 no seated-6DoF; Mode74 owns IPD (CamMatrix skips while 74); light pose EMA. Sticky every-frame dual kept. 
 buildid: **`20260725-0708-mode74-stable`** · stereo **`74`** · kill **`45`**.
 
 **Superseded for 3D feel by EyeProj above.** Do **not** reopen dual seam.
@@ -171,7 +171,7 @@ buildid: **`20260725-0708-mode74-stable`** · stereo **`74`** · kill **`45`**.
 
 **Hypothesis:** HMD rotation on src-copy without **EyeToHead** (+ seated) → shear; asymmetric proj still missing (Mode15 dead).
 
-**Shipped then:** Mode74 src-copy = HMD pose × `GetEyeToHeadTransform` + seated 6DoF — **headset: half FPS / jumpy / flicker** → superseded by **stable** above.  
+**Shipped then:** Mode74 src-copy = HMD pose × `GetEyeToHeadTransform` + seated 6DoF — **headset: half FPS / jumpy / flicker** → superseded by **stable** above. 
 buildid was: **`20260725-0654-mode74-hmd6dof`**.
 
 ---
@@ -182,11 +182,11 @@ buildid was: **`20260725-0654-mode74-hmd6dof`**.
 
 **Root cause (log):** gate miss-close → Mode72 temporal. ~**55 CLOSE / 56 OPEN** on `20260725-0635-mode74-every` (`streaming gate CLOSED after 60 miss… back to Mode72 temporal`).
 
-**Part A shipped:** sticky gate OPEN (no miss re-close) + no `TemporalCapturePairHold` while OPEN.  
-buildid: **`20260725-0644-mode74-noflicker`** · stereo **`74`** · kill **`45`**.  
+**Part A shipped:** sticky gate OPEN (no miss re-close) + no `TemporalCapturePairHold` while OPEN. 
+buildid: **`20260725-0644-mode74-noflicker`** · stereo **`74`** · kill **`45`**. 
 Agent: 0 further CLOSE, `stickyOpen=1`, `liveStreak` 1000+, `StereoDiff≠0`.
 
-**Part B shipped:** Mode74 HMD orient on SetVSConstF **src-copy** (never view+0x80) + `HmdLook: ACTIVE/ENABLED` logs.  
+**Part B shipped:** Mode74 HMD orient on SetVSConstF **src-copy** (never view+0x80) + `HmdLook: ACTIVE/ENABLED` logs. 
 buildid: **`20260725-0648-mode74-hmdlook`** · stereo **`74`** · kill **`45`** — **git fallback** above.
 
 **User test:** load world → stable stereo (no jump) → turn head (view follows) → F9 recenter. Kill file **`45`**.
@@ -251,7 +251,7 @@ buildid: **`20260725-0615-mode74-sparse`** · kill **`45`** · soft **`72`**.
 
 ## Session note 2026-07-25 ~06:15 — Mode 74 sparse after freeze (shipped; PASS above)
 
-**Evidence then:** continuous Mode74 gate OPEN → dual #1–#5 → hard hang.  
+**Evidence then:** continuous Mode74 gate OPEN → dual #1–#5 → hard hang. 
 **Shipped:** gated + dual **1/8** + inject only while `g_inDual`. Remap **73→72**, **71→45**.
 
 ---
@@ -426,7 +426,7 @@ buildid was **`20260725-0609-mode74-gated`**.
 
 **Shipped:**
 - **`docs/RE_OFFSETS.md`** — disasm notes for CopyMat/FovSite/VS wrapper/BuildRootA; corrected
-  indirect anchor **`0x3010D`** (`call [eax+0x178]`); view-const candidate **`0x3187C`**
+ indirect anchor **`0x3010D`** (`call [eax+0x178]`); view-const candidate **`0x3187C`**
 - **`scripts/offline-re-scan.py`** — linear disasm, E8 caller graphs, VS-region scan, anchor verify
 - **`re_validate.cpp`** — 4 CopyMat AOBs + anchor byte checks + polished summary
 - **F7** 11-step leanGain to **30.0** on Mode 45 path (`eyeDelta = hmdDelta / leanGain`)
@@ -451,11 +451,11 @@ buildid was **`20260725-0609-mode74-gated`**.
 
 **Shipped:**
 - **`docs/RE_OFFSETS.md`** — durable CE 1.2.0.59 RVA/AOB map, forbidden sites, VsRet chain,
-  re-find procedure
+ re-find procedure
 - **`scripts/offline-re-scan.py`** — PE scan without Steam/GTA
 - **`re_validate.cpp`** — runtime AOB drift check (`ReValidate:` in log)
 - **Mode 62** (`RePatternValidate`) / **Mode 63** (`SameFrameSeamGate`) — Mode 45 renderer +
-  RE logging; **default stays 45**
+ RE logging; **default stays 45**
 - **F7** 8-step leanGain (1.0…5.0); stereo file **46–61 → 45** remap
 
 **RE conclusion:** Same-frame distinct eyes still need a **replay-thread draw owner** (~1×/frame,
@@ -476,17 +476,17 @@ live **`eax`/vtable** capture (Mode 42 follow-up) — do not hook yet.
 
 **Shipped:**
 - **Mode 61** (`HeadOwnedCamRendererSoft`) — Mode **45** camera unchanged; renderer = RT lock +
-  pair-hold + AER pose submit + soft guard (no Mode-40 1.5° flatten). **SameFrame=0** (replay seam
-  still blocked).
+ pair-hold + AER pose submit + soft guard (no Mode-40 1.5° flatten). **SameFrame=0** (replay seam
+ still blocked).
 - **`gtaiv_dxvk_vr.worldsize`** — single visual-scale knob (75–125). **100** = fovadd 18 +
-  stereoscale 125. Deployed **110** with default stereo **45**.
+ stereoscale 125. Deployed **110** with default stereo **45**.
 
 **Default deploy:** `stereo=45`, `worldsize=110`, `ipd=3`, `scale=100`.
 
 **Test Mode 61:** write `61` to stereo file, restart, headset-check jump vs 45. Kill **`45`**.
 
 **Test worldsize:** restart after editing worldsize file; verify log line. Kill: delete worldsize +
-  restore `fovadd=18` / `stereoscale=125` individually if needed.
+ restore `fovadd=18` / `stereoscale=125` individually if needed.
 
 **Still deferred:** safe same-tick distinct-eye replay seam — no new hooks this session.
 
@@ -682,8 +682,8 @@ forbidden RVA or Mode-34 dual.
 
 ## Session note 2026-07-24 ~19:15 — Mode 38 AER pose submit
 
-User: Mode 37 still monitor/huge/jump/FPS; F7 ≠ presence; optical-flow AER synthesis Patreon.  
-**Shipped Mode 38:** Mode 37 + capture-time HMD pose + `Submit_TextureWithPose`. Not AER v2 OF.  
+User: Mode 37 still monitor/huge/jump/FPS; F7 ≠ presence; optical-flow AER synthesis Patreon. 
+**Shipped Mode 38:** Mode 37 + capture-time HMD pose + `Submit_TextureWithPose`. Not AER v2 OF. 
 Kill → **37** or **30**. Presence still deferred (independent cam / same-frame).
 
 ---
@@ -703,31 +703,31 @@ same head turns/walk against 38. Kill → **38** (restore pose/full FOV), **37**
 
 ## Session note 2026-07-24 ~19:00 — Mode 37 comfort retune
 
-Mode 36 killed bars but cost **jump + FPS + huge world**. Pair-hold was still active.  
+Mode 36 killed bars but cost **jump + FPS + huge world**. Pair-hold was still active. 
 **Shipped Mode 37:** true-FOV canvas kept + Mode30 pair-hold; fovadd **18**; canvas **1536 locked** (no RT flap); pair-latch rects; WorldScale **100**. Protect 36/35; fallback 30.
 
 ---
 
 ## Session note 2026-07-24 ~18:45 — Mode 36 true-canvas FOV
 
-Mode 35 engine FOV worked but **canvas still used stale D3DTS_PROJECTION** → black bars remained.  
-**Shipped Mode 36:** publish post-`fovadd` CCam FOV → canvas tangents (no CanvasZoom). Deployed **fovadd=22** (~90% v fill). Mode **35** protected as kill.  
+Mode 35 engine FOV worked but **canvas still used stale D3DTS_PROJECTION** → black bars remained. 
+**Shipped Mode 36:** publish post-`fovadd` CCam FOV → canvas tangents (no CanvasZoom). Deployed **fovadd=22** (~90% v fill). Mode **35** protected as kill. 
 Also: ParseModeFile max 36; idempotent ADD; ADD only if base FOV ≤55°.
 
 ---
 
 ## Session note 2026-07-24 ~18:20 — Mode 35 FOV recompute spike
 
-Research (Halo/L4D2/UEVR/UEVR/FusionFix): **true engine FOV** kills monitor-on-face; canvas zoom / claimed FOV warp = REJECTED.  
-**Shipped:** Mode **35** = Mode 30 pair-hold + chain-hook FusionFix Custom FOV CALL → ADD at `CCam+0x60` via `gtaiv_dxvk_vr.fovadd`.  
+Research (Halo/L4D2/UEVR/UEVR/FusionFix): **true engine FOV** kills monitor-on-face; canvas zoom / claimed FOV warp = REJECTED. 
+**Shipped:** Mode **35** = Mode 30 pair-hold + chain-hook FusionFix Custom FOV CALL → ADD at `CCam+0x60` via `gtaiv_dxvk_vr.fovadd`. 
 Playable fallback stays **30**. Independent VR cam still deferred.
 
 ---
 
 ## Session note 2026-07-24 ~18:00 — canvas zoom KILLED
 
-Headset: `gtaiv_dxvk_vr.zoom` claimed-FOV warp made every head move warp the world (same class as FusionFix FOV look-up warp).  
-**Code:** zoom path forced no-op (true FOV). **Deploy:** Mode **30**, `ipd=1`, `zoom=100` (ignored).  
+Headset: `gtaiv_dxvk_vr.zoom` claimed-FOV warp made every head move warp the world (same class as FusionFix FOV look-up warp). 
+**Code:** zoom path forced no-op (true FOV). **Deploy:** Mode **30**, `ipd=1`, `zoom=100` (ignored). 
 Do **not** re-enable canvas zoom or FusionFix FieldOfView for size.
 
 ---
@@ -736,8 +736,8 @@ Do **not** re-enable canvas zoom or FusionFix FieldOfView for size.
 
 ### Independent VR camera vs game-camera wall collision
 
-**User ask:** look sideways/up near walls → game cam collides / stops; want VR view independent of game cam.  
-**Verdict:** **Yes, sound idea — deferred.** See `docs/INSPIRATION_NOTES.md` ( pitch override + render-time view fix).  
+**User ask:** look sideways/up near walls → game cam collides / stops; want VR view independent of game cam. 
+**Verdict:** **Yes, sound idea — deferred.** See `docs/INSPIRATION_NOTES.md` ( pitch override + render-time view fix). 
 Invasive: culling, weapons, shadows, HUD. Keep PedHide + eyefwd for head embed; revisit after same-frame or when wall-look is the #1 complaint.
 
 ### Mode 34 dual
@@ -770,14 +770,14 @@ Research: theater = menus/cutscenes only (community VR notes). Not the presence 
 
 Three separate effects stack:
 
-1. **Letterbox / window (Mode 14 canvas)**  
-   Game FOV (~59° vertical) inside G2 (~94°+). Black bars top/bottom = you look through a smaller window. Brain often reads that as “giant world / drone / monitor on face”, even when stereo geometry is right.
+1. **Letterbox / window (Mode 14 canvas)** 
+ Game FOV (~59° vertical) inside G2 (~94°+). Black bars top/bottom = you look through a smaller window. Brain often reads that as “giant world / drone / monitor on face”, even when stereo geometry is right.
 
-2. **Temporal stereo**  
-   L and R from different frames. Motion (look around) → smear. Large disparity → jump. Halo explicitly disables **motion blur** for the same “stereo echo” reason.
+2. **Temporal stereo** 
+ L and R from different frames. Motion (look around) → smear. Large disparity → jump. Halo explicitly disables **motion blur** for the same “stereo echo” reason.
 
-3. **No same-frame dual eye** yet  
-   Halo MCC VR, L4D2VR, BotW BetterVR all render **both eyes in one tick** with per-eye pose/FOV. We still alternate frames (Mode 14/26/30). That is why jump/smear/“half FPS feel” remain.
+3. **No same-frame dual eye** yet 
+ Halo MCC VR, L4D2VR, BotW BetterVR all render **both eyes in one tick** with per-eye pose/FOV. We still alternate frames (Mode 14/26/30). That is why jump/smear/“half FPS feel” remain.
 
 IPD alone cannot fix (1). Scale×IPD “fixed” (1) by fake size cues and broke fusion. Canvas zoom “fixed” (1) by lying about FOV and broke head stability.
 
@@ -806,7 +806,7 @@ Do **not** copy their OpenXR/D3D11 code 1:1. Copy the **priority order**: FOV fi
 
 **A1. Soft stereo scale** — shipped (`stereoscale`). Keep.
 
-**A2. Engine FOV (Halo lesson)** — Mode **35** FOV recompute site + `fovadd`. Headset-verify.  
+**A2. Engine FOV (Halo lesson)** — Mode **35** FOV recompute site + `fovadd`. Headset-verify. 
 **A2-REJECTED:** canvas `zoom` claimed-FOV (warp).
 
 **A3. Motion blur off** — FusionFix. Keep.
@@ -819,28 +819,28 @@ Do **not** copy their OpenXR/D3D11 code 1:1. Copy the **priority order**: FOV fi
 
 ### Phase C — After fusion + size + no jump
 
-- Independent VR cam vs game-cam collision (**deferred** — see above).  
+- Independent VR cam vs game-cam collision (**deferred** — see above). 
 - HUD inward, aim-cam, third-person, OpenXR only if OpenVR solid.
 
 ---
 
 ## 5. What we will *not* do next
 
-- Re-enable canvas zoom / FusionFix FieldOfView for “less telephoto”.  
-- Stack VS patch + CCam IPD again.  
-- Multiply F8 IPD by F7 WorldScale.  
-- Square `commandline` without FOV fix.  
-- `D3DTS_PROJECTION` widen / blind `CCam+0x60`.  
-- Mode 34 dual arm without a proven VS-upload walker.  
+- Re-enable canvas zoom / FusionFix FieldOfView for “less telephoto”. 
+- Stack VS patch + CCam IPD again. 
+- Multiply F8 IPD by F7 WorldScale. 
+- Square `commandline` without FOV fix. 
+- `D3DTS_PROJECTION` widen / blind `CCam+0x60`. 
+- Mode 34 dual arm without a proven VS-upload walker. 
 - Invasive independent VR cam this session.
 
 ---
 
 ## 6. Suggested next session (pick ONE)
 
-→ **Headset:** Mode **37** + `fovadd=18` + `scale=100` — bars still gone? Less jump than 36? Better FPS? World less huge?  
-→ Soft kill → stereo **36** or **35** (keep fovadd). Hard kill → **30** + delete `fovadd`.  
-→ If still huge: F7 to **125/150** (6DoF only) — do **not** touch IPD.  
+→ **Headset:** Mode **37** + `fovadd=18` + `scale=100` — bars still gone? Less jump than 36? Better FPS? World less huge? 
+→ Soft kill → stereo **36** or **35** (keep fovadd). Hard kill → **30** + delete `fovadd`. 
+→ If still huge: F7 to **125/150** (6DoF only) — do **not** touch IPD. 
 → If still jump: try fovadd **15**; same-frame remains the real jump kill.
 
 Protect playable: **`stereo=30`** fallback, Mode **36/35** protect, **`ipd≥1`**, pedhide/eyefwd/stereoscale.
