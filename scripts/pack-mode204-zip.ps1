@@ -95,7 +95,7 @@ if ($cacheSrc) {
 dxvk.enableAsync = true
 "@ | Set-Content -LiteralPath (Join-Path $Drop "dxvk.conf") -Encoding ASCII
 
-# Luke Ross-style square aspect (inactive by default — rename to commandline.txt to use)
+# square-aspect square aspect (inactive by default — rename to commandline.txt to use)
 $squareCmd = @"
 -windowed
 -width 1440

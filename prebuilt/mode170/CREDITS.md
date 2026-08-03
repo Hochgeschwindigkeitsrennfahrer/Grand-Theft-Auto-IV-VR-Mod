@@ -37,11 +37,11 @@ This project is experimental community glue. Credit goes to the people and repos
 |--------|------|----------|
 | OpenVR compositor overview | [IVRCompositor_Overview](https://github.com/ValveSoftware/openvr/wiki/IVRCompositor_Overview) | WaitGetPoses → render → Submit |
 | OpenVR `#1253` (pose submit) | [issue 1253](https://github.com/ValveSoftware/openvr/issues/1253) | `Submit_TextureWithPose` / per-eye pose stamping |
-| Luke Ross public AER notes | [Patreon post](https://www.patreon.com/posts/gaming-in-vr-at-76076877) | Legacy AER = alt-eye + reproject; **AER v2 OF not copied** |
-| GTA V R.E.A.L. FAQ (public) | [LukeRoss00/gta5-real-mod](https://github.com/LukeRoss00/gta5-real-mod) | FOV match HMD; body/helmet class problems — inspiration only |
+|  public AER notes | [Patreon post]() | Legacy AER = alt-eye + reproject; **AER v2 OF not copied** |
+| GTA V flat-to-VR FAQ (public) | []() | FOV match HMD; body/helmet class problems — inspiration only |
 | Meta render / compositor docs | Meta Horizon docs | Predicted poses, timewarp concepts |
 
-**We do not redistribute** closed Luke Ross / R.E.A.L. / HL2VR binaries or packs.
+**We do not redistribute** closed HL2VR / third-party VR binaries or packs.
 
 ## Optional / local inspiration (not dependencies)
 
