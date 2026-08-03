@@ -4,7 +4,7 @@
 
 - **Square UV crop on Submit** → black bar, blur, no fusion.  
 - **Engine `commandline.txt` 1080×1080** → desktop OK, VR double + stretched. Disabled for now.  
-  (Luke Ross needs square **plus** his FOV/stereo pipeline; square alone is not enough for us.)
+  ( needs square **plus** his FOV/stereo pipeline; square alone is not enough for us.)
 
 ## Current Mode 13
 

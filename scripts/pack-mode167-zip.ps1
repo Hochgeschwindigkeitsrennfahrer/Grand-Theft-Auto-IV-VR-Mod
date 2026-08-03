@@ -266,7 +266,7 @@ NOT INCLUDED
 - FusionFix binaries, configuration, or update tree
 - Complete Edition Hook
 - Game-generated runtime files
-- Closed Luke Ross, R.E.A.L., or HL2VR binaries
+- Closed , flat-to-VR, or HL2VR binaries
 
 Install Ultimate ASI Loader and FusionFix directly from their upstream releases
 listed in INSTALL.txt.

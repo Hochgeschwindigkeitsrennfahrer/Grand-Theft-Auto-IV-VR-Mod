@@ -123,7 +123,7 @@ Mode 24 decision test, not a rewrite.
   otherwise incompatible code into this MIT repository without a license review.
 - FNVVR currently has no top-level license file. Until provenance is clarified, port
   concepts and small owner-approved pieces deliberately rather than bulk-copying files.
-- Do not import Rockstar assets, closed HL2VR/Luke-Ross binaries, or foreign game hooks.
+- Do not import Rockstar assets, closed HL2VR/closed-VR binaries, or foreign game hooks.
 
 ### Exact reference anchors
 

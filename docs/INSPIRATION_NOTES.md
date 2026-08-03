@@ -70,14 +70,14 @@ Local Inspiration drop (2026-07-24): `inspiration/firstperson mod/`
 
 ---
 
-## Luke Ross R.E.A.L. VR (local Inspiration drop — techniques only)
+## Third-party flat-to-VR approach VR (local Inspiration drop — techniques only)
 
-Local: `inspiration/real vr all mods/` (gitignored). Contains `RealVR.ini`, per-game folders (GTA 5, Elden, CP2077, …), `RealVR64.dll`, ASI/injectors.  
+Local: `inspiration/thirdparty-vr-inspo/` (gitignored). Contains `thirdparty-vr.ini`, per-game folders (GTA 5, Elden, CP2077, …), `thirdparty-vr.dll`, ASI/injectors.  
 **Do NOT copy or redistribute closed binaries as our product.** Learn knobs / docs / FAQ ideas only.
 
-### Transferable ideas (from GTA V RealVR.ini + public LukeRoss00/gta5-real-mod FAQ)
+### Transferable ideas (from GTA V thirdparty-vr.ini + public  FAQ)
 
-| Idea | Luke Ross | Transfer to GTA IV CE (ours) |
+| Idea |  | Transfer to GTA IV CE (ours) |
 |------|-----------|------------------------------|
 | **FOV must match HMD** | `UniversalFOVFix`; wrong FOV = warp / wrong scale / edge pop-in | Same lesson as Halo. Our Mode 17 hit recompute fight — still deferred. **Never** fake canvas FOV (zoom warp killed 2026-07-24). |
 | **Square render** | GTA5 `commandline` `-width 1080 -height 1080` | Useful **with** real engine FOV later; alone shrinks image (we already know). |
@@ -94,7 +94,7 @@ Local: `inspiration/real vr all mods/` (gitignored). Contains `RealVR.ini`, per-
 
 **User hypothesis (2026-07-24):** inject a VR view independent of the game camera, because the game cam collides with walls when looking sideways/up.
 
-**Opinion (agent):** **Sound, keep deferred.** Rage’s gameplay camera is constrained (collision, pitch clamps, animation takeovers). Driving HMD look through that object will always fight walls/ceilings. Luke Ross’s own FAQ describes the game “wrestling” for camera ownership and needing supplementary render-time view fixes + pitch overrides — same problem class. True VR decoupling = pose for **submit/view**, while game cam stays for AI/culling/collision (or a soft follow). That is invasive (culling, shadows, weapons, HUD). **Do not implement this session.** Spike later only after Mode 30 is solid and same-frame progress exists.
+**Opinion (agent):** **Sound, keep deferred.** Rage’s gameplay camera is constrained (collision, pitch clamps, animation takeovers). Driving HMD look through that object will always fight walls/ceilings. ’s own FAQ describes the game “wrestling” for camera ownership and needing supplementary render-time view fixes + pitch overrides — same problem class. True VR decoupling = pose for **submit/view**, while game cam stays for AI/culling/collision (or a soft follow). That is invasive (culling, shadows, weapons, HUD). **Do not implement this session.** Spike later only after Mode 30 is solid and same-frame progress exists.
 
 **When to revisit:** after same-frame stereo or when wall-look remains the top headset complaint with PedHide + eyefwd tuned.
 
@@ -108,13 +108,13 @@ Local: `inspiration/real vr all mods/` (gitignored). Contains `RealVR.ini`, per-
 4. Theater menu + HUD layer = later, after fusion.
 5. **Playable now:** Mode **30** pair-hold + PedHide + ipd≥1. Canvas zoom **OFF**. Independent VR cam = deferred.
 6. **Mode 35 (2026-07-24):** engine FOV via FusionFix recompute CALL + `fovadd` ADD at CCam+0x60
-   (Halo/Luke lesson). Stereo default stays **30** unless headset prefers 35.
+   (Halo/L4D2 lesson). Stereo default stays **30** unless headset prefers 35.
 
 ### More public-repo notes (2026-07-24 evening)
 
 | Repo | Monitor-on-face fix | 6DoF | Transfer |
 |------|---------------------|------|---------|
-| Luke Ross GTA5 FAQ | FOV must match HMD; UniversalFOVFix | HMD pose + pitch overrides | FOV site, not canvas lie |
+|  GTA5 FAQ | FOV must match HMD; UniversalFOVFix | HMD pose + pitch overrides | FOV site, not canvas lie |
 | Halo-MCC-VR | Engine FOV 120 | True per-eye same-frame | FOV first, then same-frame |
 | L4D2VR | GetProjectionRaw → cover FOV + TextureBounds | VRScale + eye origins | We already split F7/F8 |
 | UEVR | Per-eye projection matrices | Full 6DoF | Rage has no UE stereo path |
