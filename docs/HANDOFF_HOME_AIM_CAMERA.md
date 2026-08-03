@@ -218,7 +218,7 @@ I have Cheat Engine and can follow the recipes in DECOUPLED_AIM_PLAN.md §5.
 - No natives from raw EndScene context — use the proven PedHide invoke path.
 - Win32/x86 only; OpenVR only (no OpenXR this milestone); singleplayer offline;
   never ship/describe online use.
-- No Luke Ross / HL2VR closed binaries; techniques only.
+- No HL2VR closed binaries; techniques only.
 - Do not hard-code any address from `DECOUPLED_AIM_PLAN.md` §6 until CE-verified
   at home; label every verified value with date + game build.
 - Work-PC scaffolding (`aim_decouple.*`, `stereo_calib.*`) was NOT compiled —

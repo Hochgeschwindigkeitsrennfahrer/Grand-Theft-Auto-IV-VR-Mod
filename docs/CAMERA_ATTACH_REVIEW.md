@@ -158,7 +158,7 @@ visible model "vibration" while moving. The soft path (heading floats only,
 | **BotW BetterVR** (playbook L14-18) | Game head anchor sampled ONCE per stereo pair; HMD delta on top; body follows via game logic; render 2× per tick | Anchor = low-rate stable sample + HMD delta. Never let per-eye passes resample the body. |
 | **L4D2VR** (`GetViewOriginLeft/Right`, playbook L15) | Engine gives ONE view origin per tick; VR adds eye offsets; the body/anim never feeds the render pose directly | The render eye derives from ONE per-tick origin. Anim bob enters only if the engine's origin has it — and Source's origin is already smoothed by the engine. |
 | **HL2VR / VRIK-style** (playbook L16) | HMD OWNS the camera 1:1 (no filtering of head motion!); the BODY is IK-dragged under the head; arms via controller IK targets | Long-term correct model: never filter the HMD; filter only the *game anchor* the HMD rides on. Arms/hands = IK targets (GTA IV has `CPedIKManager` — see DECOUPLED_AIM_PLAN §4). |
-| **Luke Ross R.E.A.L.** (INSPIRATION_NOTES L73-99) | Game cam ownership fights resolved at render time; pitch clamps overridden; body hidden near cam | Same problem class we have; he also anchors to a stable head point and fixes the view during draw. |
+| **Third-party flat-to-VR approach** (INSPIRATION_NOTES L73-99) | Game cam ownership fights resolved at render time; pitch clamps overridden; body hidden near cam | Same problem class we have; he also anchors to a stable head point and fixes the view during draw. |
 
 Common denominator: **the HMD pose is applied raw; only the anchor point under it
 is stabilized, and it is stabilized ONCE per tick in body-local space.**
