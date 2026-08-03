@@ -5432,7 +5432,7 @@ bool SubmitEyeTexture(IDirect3DDevice9* dev, IDirect3DTexture9* tex, vr::EVREye 
   t.eType = vr::TextureType_Vulkan;
   t.eColorSpace = vr::ColorSpace_Gamma;
 
-  // Mode 38: Luke Ross AER — stamp capture-time HMD pose so SteamVR can
+  // Mode 38: pose-stamped AER — stamp capture-time HMD pose so SteamVR can
   // reproject the stale eye (OpenVR #1253). Mode 136/243: late-latch — sample pose
   // immediately before Submit (not capture-time). Fall back to Submit_Default
   // if pose missing. Mode 243: one shared pose for L+R (pair sync).
@@ -6783,11 +6783,11 @@ bool InstallStereoRenderHooks() {
           : (IsOursFpFlashGate(mode) && mode == StereoMode::OursFpFlashGate)
               ? "; skip small RT side-pass (water/envmap; not strict BB)"
           : IsOursFpSquareWideFov(mode)
-              ? "; Luke square + fpfov=100 zoom-out (0% OS)"
+              ? "; square-aspect + fpfov=100 zoom-out (0% OS)"
           : IsOursFpSquareZeroOverscan(mode)
-              ? "; Luke square + overscan=0% exact fit A/B"
+              ? "; square-aspect + overscan=0% exact fit A/B"
           : IsOursFpSquareLowOverscan(mode)
-              ? "; Luke square + overscan~2% (less crop)"
+              ? "; square-aspect + overscan~2% (less crop)"
           : IsOursFpStrongOverscan(mode)
               ? "; overscan~10% more bar shrink; 158=LKG"
           : IsOursFpSquareRes(mode)
@@ -7041,7 +7041,7 @@ bool InstallStereoRenderHooks() {
     if (mode == StereoMode::AerPoseSubmit) {
       const bool fovOk = InstallFovRecomputeSiteHook();
       Log("StereoRender: mode 38 AER-POSE SUBMIT (Mode37 true-FOV + pair-hold + "
-          "Submit_TextureWithPose per eye; Luke AER lesson; no OF/v2) ok=%d fovSite=%d",
+          "Submit_TextureWithPose per eye; pose-stamped AER lesson; no OF/v2) ok=%d fovSite=%d",
           g_ok.load() ? 1 : 0, fovOk ? 1 : 0);
       Log("StereoRender: kill-switch - stereo=37 or 30 (+ delete fovadd)");
     } else if (mode == StereoMode::FovCanvasComfort) {

@@ -1089,7 +1089,7 @@ void ReloadStereoMode() {
           "do NOT skip half-BB fog/LOD buffers; kill=162");
     } else if (v == static_cast<int>(StereoMode::OursFpSquareWideFov)) {
       ApplyMode162SquareWideBase();
-      Log("Mode162: OURS+SQUARE-WIDE-FOV — Luke square + overscan=0%% + fpfov=100 "
+      Log("Mode162: OURS+SQUARE-WIDE-FOV — square-aspect + overscan=0%% + fpfov=100 "
           "(zoom-out vs 161@90; no bars); kill=161/160/158");
     } else if (v == static_cast<int>(StereoMode::OursFpSquareZeroOverscan)) {
       EnsureFpProfileDefaults();
@@ -1100,7 +1100,7 @@ void ReloadStereoMode() {
       if (GetCanvasMaxDim() < 2048)
         SetCanvasMaxDim(2048, false);
       EnsureVrSquareCommandlineReady();
-      Log("Mode161: OURS+SQUARE-ZERO-OS — Luke Ross square + overscan=0%% (exact fit A/B); "
+      Log("Mode161: OURS+SQUARE-ZERO-OS — square-aspect + overscan=0%% (exact fit A/B); "
           "fpfov=90; kill=160/158/120");
     } else if (v == static_cast<int>(StereoMode::OursFpSquareLowOverscan)) {
       EnsureFpProfileDefaults();
@@ -1110,7 +1110,7 @@ void ReloadStereoMode() {
       if (GetCanvasMaxDim() < 2048)
         SetCanvasMaxDim(2048, false);
       EnsureVrSquareCommandlineReady();
-      Log("Mode160: OURS+SQUARE-LOW-OS — Luke Ross square + overscan≈2%% "
+      Log("Mode160: OURS+SQUARE-LOW-OS — square-aspect + overscan≈2%% "
           "(less crop than 159; keep commandline.txt 1440sq); kill=158/159/120");
     } else if (v == static_cast<int>(StereoMode::OursFpStrongOverscan)) {
       EnsureFpProfileDefaults();
@@ -1163,7 +1163,7 @@ void ReloadStereoMode() {
       SetEyeForwardCm(0);
       ApplyWorldScalePreset(9, false);
       Log("Mode154: OURS+FP-WIDE aspect-fit — CCam=fpfov; gameTan=FIT(BB aspect→cover); "
-          "fixes 153 squeeze/V-stretch; NOT Luke square cmdline; kill=153/152/120");
+          "fixes 153 squeeze/V-stretch; NOT square cmdline; kill=153/152/120");
     } else if (v == static_cast<int>(StereoMode::OursFpWideUnderPublish)) {
       EnsureFpProfileDefaults();
       SetEyeForwardCm(0);
@@ -2205,7 +2205,7 @@ float GetUnderPublishOverscan() {
   // Mode 161–166: exact fit (0% overscan).
   if (IsOursFpSquareZeroOverscan(sm))
     return 1.0f;
-  // Mode 160: Luke Ross square — barely any overscan.
+  // Mode 160: square-aspect — barely any overscan.
   if (IsOursFpSquareLowOverscan(sm))
     return 1.02f;
   // Mode 159: stronger bar shrink on widescreen / pre-square.
@@ -2460,7 +2460,7 @@ void GetVehicleCamOffsetMeters(float* outRight, float* outForward, float* outUp)
 }
 
 void EnsureVrSquareCommandlineReady() {
-  // Luke-style square render — with our FOV under-publish (not alone).
+  // square-aspect square render — with our FOV under-publish (not alone).
   // User renames to commandline.txt and fully restarts GTA (Steam/CE reads at boot).
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
