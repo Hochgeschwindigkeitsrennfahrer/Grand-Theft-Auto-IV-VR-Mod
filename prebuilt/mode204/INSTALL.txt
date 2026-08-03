@@ -7,7 +7,7 @@ This pack is the fused stereo milestone (Mode 204). It includes:
   - FusionFix (dinput8.dll + plugins + update assets / shaders)
   - DXVK shader cache (GTAIV.dxvk-cache) to reduce first-run stutter
   - Mode 204 knobs (fused 3D VR)
-  - commandline.txt = 1440x1440 square (Luke Ross-style aspect)
+  - commandline.txt = 1440x1440 square (square-aspect aspect)
 
 See THIRDPARTY.txt for credits. Do not redistribute Rockstar game files.
 
@@ -32,7 +32,7 @@ INSTALL (drag and drop)
    GTAIV folder. Merge folders when Windows asks. Overwrite is OK.
 
 4. Square aspect: this pack includes commandline.txt (1440x1440).
-   That is the Luke Ross-style square resolution.
+   That is the square-aspect square resolution.
    - Keep it for square VR.
    - For normal widescreen: rename commandline.txt → commandline.txt.off
      (or delete it). Backup is also named commandline.txt.vr-square.

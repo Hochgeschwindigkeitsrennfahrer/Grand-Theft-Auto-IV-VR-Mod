@@ -179,7 +179,7 @@ enum class StereoMode : int {
   // gameTan for L+R rects, WorldScale lever for "huge world" (not IPD).
   // Protect: Mode 36 / 35. Kill: stereo=30 + delete fovadd.
   FovCanvasComfort = 37,
-  // Mode 37 + Luke Ross AER lesson: stamp each eye RT with the HMD pose from
+  // Mode 37 + pose-stamped AER lesson: stamp each eye RT with the HMD pose from
   // capture time and Submit via Submit_TextureWithPose so SteamVR can reproject
   // the stale eye. Not AER v2 optical-flow. Kill: stereo=37 or 30.
   AerPoseSubmit = 38,
@@ -246,7 +246,7 @@ enum class StereoMode : int {
   // Mode 49 visuals/stability but motion-guard OFF — always promote distinct
   // temporal L/R when ipd>0. Logs StereoAudit (L≠R diff) each pair. Kill: 49/45.
   HeadOwnedCamStereoAlways = 50,
-  // Mode 50 + capture-time Submit_TextureWithPose (Luke AER). Kill: 50/49/45.
+  // Mode 50 + capture-time Submit_TextureWithPose (pose-stamped AER). Kill: 50/49/45.
   HeadOwnedCamStereoAer = 51,
   // Mode 50 + swapped L/R submit (depth inversion test). Kill: 50/49/45.
   HeadOwnedCamStereoSwap = 52,
@@ -395,7 +395,7 @@ enum class StereoMode : int {
   OursFpWideUnderPublish = 153,
   // Mode 154: Mode153 + aspect-correct under-publish fit (tanH/tanV keep BB aspect,
   // scale to touch cover on one axis). Fixes 153 vertical stretch / narrow rooms.
-  // Kill: 153 / 152 / 120. Luke Ross square commandline NOT used (already failed alone).
+  // Kill: 153 / 152 / 120. Square commandline NOT used (already failed alone).
   OursFpWideAspectFit = 154,
   // Mode 155: Mode154 FOV + ped-fixed eye-center pivot (no 6DoF lean; ped-fwd offset
   // between eyes; ignore look-axis eyefwd). Kill: 154 / 153 / 120.
@@ -406,14 +406,14 @@ enum class StereoMode : int {
   // Mode 157: Mode156 + mild under-publish overscan (~6%) to shrink black bars
   // without Mode153 aspect lie. Slight edge crop. Kill: 156 / 154 / 120.
   OursFpMildOverscan = 157,
-  // Mode 158: Mode157 + Luke-style square(ish) render path.
+  // Mode 158: Mode157 + square-aspect square(ish) render path.
   // Use commandline.txt.vr-square (1440×1440) → rename to commandline.txt + restart.
   // Closer BB aspect → fewer bars; keep aspect-fit+overscan FOV. Kill: 157 / 156 / 120.
   OursFpSquareRes = 158,
   // Mode 159: Mode158 stack + stronger overscan (~10%) to eat more black bars.
   // 158 frozen as LKG. Kill: 158 / 157 / 120.
   OursFpStrongOverscan = 159,
-  // Mode 160: Luke Ross square path + LOW overscan (~2%). Bars mostly gone from
+  // Mode 160: Square-aspect path + LOW overscan (~2%). Bars mostly gone from
   // square aspect; strong overscan no longer needed. Kill: 158 / 159 / 120.
   OursFpSquareLowOverscan = 160,
   // Mode 161: same as 160 but overscan = 1.0 (0%) for A/B vs 160. Kill: 160 / 158 / 120.
