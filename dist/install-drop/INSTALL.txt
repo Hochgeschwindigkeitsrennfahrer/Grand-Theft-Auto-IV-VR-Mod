@@ -1,0 +1,73 @@
+gtaiv-dxvk-vr — Drag-and-drop install (GTA IV Complete Edition)
+================================================================
+
+This pack includes:
+  - Stock DXVK 3.0.2 (d3d9.dll)
+  - gtaiv_dxvk_vr.asi + openvr_api.dll (SteamVR / OpenVR) — Mode 909
+  - FusionFix (ASI loader dinput8.dll + plugins + update assets)
+  - VR HUD layout (money → stars → ammo → weapon, radar inset toward center)
+  - QUICK-START.bat and FULL-RESTART.bat
+
+See THIRDPARTY.txt for credits. Do not redistribute Rockstar game files.
+
+
+BEFORE YOU COPY
+---------------
+1. Own GTA IV Complete Edition (Steam).
+2. Install SteamVR. Headset (e.g. Reverb G2) must work in SteamVR.
+3. Close GTA IV completely.
+
+
+INSTALL (drag and drop)
+-----------------------
+1. Open your game folder (contains GTAIV.exe), typically:
+
+   C:\Program Files (x86)\Steam\steamapps\common\Grand Theft Auto IV\GTAIV
+
+2. OPTIONAL: back up d3d9.dll, dinput8.dll, plugins\, update\, common\data\hud.dat.
+
+3. Copy EVERYTHING from this zip’s “drop-into-GTAIV” folder into that GTAIV folder.
+   Merge folders when Windows asks. Overwrite is OK for these mod files.
+
+4. OPTIONAL square aspect: rename commandline.txt.vr-square → commandline.txt
+   (backup old commandline.txt first). Then FULL process restart once.
+
+5. Double-click QUICK-START.bat  (or: SteamVR on → start GTA IV).
+
+6. In FusionFix graphics options: use DirectX 9 (NOT FusionFix Vulkan).
+
+7. In-game: F3 opens the VR menu. Log next to GTAIV.exe: gtaiv_dxvk_vr.log
+   Expect buildId like 20260803-909-hud4 and Mode909.
+
+
+FULL RESTART (important)
+------------------------
+Menu “Full restart” now quits the game and runs FULL-RESTART.bat
+(real process restart). “Re-read settings files” only reloads text configs
+and does NOT reload the ASI binary.
+
+
+UNINSTALL / KILL
+----------------
+- Quick kill VR: edit gtaiv_dxvk_vr.stereo → 0 → restart (flat via DXVK).
+- Remove VR only: delete gtaiv_dxvk_vr.asi and openvr_api.dll.
+
+
+HOTKEYS
+-------
+  F3  VR settings menu (Xbox Select also toggles on recent builds)
+  F5  Eye canvas resolution
+  F6  Stereo scale
+  F8  IPD / separation
+  F9  Recenter look
+  F10 Recenter seated lean baseline
+
+
+IMPORTANT
+---------
+- FirstPerson.asi should stay OFF (rename to FirstPerson.asi.off if present).
+- Win32 / x86 only. Offline / singleplayer for this WIP.
+- Do not share Rockstar game assets.
+
+
+See CONFIG-GUIDE.txt for config files.

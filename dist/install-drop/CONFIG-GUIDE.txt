@@ -1,0 +1,104 @@
+gtaiv-dxvk-vr — Config guide (resolution & knobs)
+=================================================
+
+All config files sit next to GTAIV.exe (same folder as this ASI).
+Edit with Notepad. Save as plain text. Restart the game (or use the hotkey if noted).
+
+
+1) VR EYE RESOLUTION (sharpness vs FPS)
+--------------------------------------
+File:  gtaiv_dxvk_vr.vres
+Meaning: Max size of each eye canvas (pixels on the long edge). Higher = sharper, more GPU.
+
+This pack ships:
+
+  2048
+
+That is the highest fixed step in the ASI. In-game you can also press F5 to cycle:
+
+  1024 → 1280 → 1536 → 1792 → 2048 → SteamVR recommended
+
+F5 saves the new value back into gtaiv_dxvk_vr.vres.
+
+Examples (edit file, then restart):
+
+  1024   — lightest / smoothest
+  1536   — balanced (old comfort default)
+  2048   — highest fixed (this pack default)
+  2560   — allowed up to 4096 if your PC can take it (manual only)
+
+Note: This is NOT the SteamVR “Supersampling” slider.
+SteamVR SS still applies on top when the compositor scales. For more SteamVR pixels:
+  SteamVR → Settings → Video → Resolution per eye / Custom resolution.
+
+
+2) STEREO MODE
+--------------
+File:  gtaiv_dxvk_vr.stereo
+
+  156  — Default in this pack (Mode 154 FOV + lower eye cam + F5 res)
+  154  — Aspect-correct wide FOV only (previous “best feel”)
+  120  — Frozen last-good fused stereo (safer fallback)
+  0    — Off (flat DXVK on monitor; no stereo submit)
+
+
+3) FIRST-PERSON STYLE FOV NUMBER
+--------------------------------
+File:  gtaiv_dxvk_vr.fpfov
+Format: Forward Rear Foot   (degrees)
+
+  90 90 90
+
+Change e.g. to 85 85 85 and restart. Extreme values can warp or zoom oddly.
+
+
+4) CAMERA HEIGHT / OFFSET
+-------------------------
+File:  gtaiv_dxvk_vr.eyefwd     (cm along look — Mode 156 ignores for pivot)
+File:  gtaiv_dxvk_vr.camoff     (right forward up in cm)
+
+  camoff example:  0 0 -3     → nudge camera down 3 cm
+
+Mode 156 uses a fixed ped eye height (~65 cm) + 8 cm forward.
+
+
+5) OTHER USEFUL FILES
+---------------------
+  gtaiv_dxvk_vr.ipd          — stereo separation (cm); F8 cycles
+  gtaiv_dxvk_vr.stereoscale  — soft 3D strength; F6 cycles
+  gtaiv_dxvk_vr.fovadd       — engine FOV add; F7 presets also write this
+  gtaiv_dxvk_vr.worldscale   — F7 preset index
+  gtaiv_dxvk_vr.pedhide      — 1 = hide head mesh (recommended)
+  gtaiv_dxvk_vr.buildid      — which pack build you installed
+  gtaiv_dxvk_vr.log          — runtime log (send this when reporting bugs)
+
+
+6) QUICK “MAKE IT SHARPER” CHECKLIST
+------------------------------------
+1. Confirm gtaiv_dxvk_vr.vres = 2048 (or press F5 until log says 2048 / recommended).
+2. In SteamVR, raise Video resolution / supersampling a bit.
+3. In GTA, keep a reasonable game resolution (e.g. 1920×1080 or 2560×1440).
+   Do NOT use square 1080×1080 commandline alone — it caused stretch in our tests.
+4. If FPS tanks: lower .vres to 1536, then SteamVR SS.
+
+
+7) QUICK “MAKE IT FASTER” CHECKLIST
+-----------------------------------
+1. Set gtaiv_dxvk_vr.vres to 1536 or 1280 (or F5 down).
+2. Lower SteamVR supersampling.
+3. Lower GTA graphics / resolution.
+4. Keep stereo=156 or fall back to 120 if something breaks.
+
+
+8) FIRSTPERSON.ASI
+------------------
+For Mode 156 this pack expects FirstPerson.asi OFF (rename to FirstPerson.asi.off).
+Our ASI owns the camera + FOV path. Running both can fight.
+
+
+License / credits
+-----------------
+- DXVK 3.0.2 — https://github.com/doitsujin/dxvk (MIT / Zlib)
+- OpenVR — Valve (see OpenVR license)
+- gtaiv_dxvk_vr — this project’s ASI glue
+- Do not ship Rockstar game assets with this pack
