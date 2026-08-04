@@ -2,6 +2,7 @@
 #include "log.h"
 #include "openvr_mono.h"
 #include "stereo_proj.h"
+#include "vr_menu.h"
 
 #include "../../thirdparty/minhook/include/MinHook.h"
 
@@ -43,6 +44,8 @@ bool HookFn(void* target, void* detour, void** original, const char* name) {
 }
 
 HRESULT STDMETHODCALLTYPE HookEndScene(IDirect3DDevice9* self) {
+  // Overlay first so TryMonoSubmit copies it into both eye textures.
+  asi::VrMenuOnEndScene(self);
   // Frame finished — mono Submit to SteamVR, then EndScene
   asi::TryMonoSubmit(self);
   return g_realEndScene(self);

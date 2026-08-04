@@ -75,6 +75,22 @@ Matrix44* g_liveCamMat = nullptr;
 bool g_haveLastApplied = false;
 Vec4 g_lastAppliedPos{};
 
+// Mode 271 AER: park the live camera at the true head CENTRE (no eye offset)
+// when handing it back to the game after a frame — see RefreshLiveCamCentered.
+std::atomic<bool> g_camCenterOverride{false};
+
+// Mode 271 AER: the view basis ApplyHmdToCam last WROTE, in world space
+// (RAGE convention: right, forward = mat.up, up = mat.at). The AER
+// reprojection differences two of these to get the exact rotation between the
+// frame an eye was rendered in and the frame it is submitted in. HMD poses
+// would not do: the bake also folds in stick yaw, vehicle yaw and the
+// world-up relevel, and the pixels describe the baked view, not the raw head
+// pose.
+bool g_haveLastBasis = false;
+float g_lastBasisR[3]{};
+float g_lastBasisF[3]{};
+float g_lastBasisU[3]{};
+
 // Mode 140: snapshot FirstPerson cam from CopyMat; IPD offset applied from this base
 // so L/R dual passes do not stack offsets.
 Matrix44 g_fpHostBase{};
@@ -1021,7 +1037,13 @@ void ApplyHmdToCam(Matrix44* mat) {
   float ipdX = 0.f, ipdY = 0.f, ipdZ = 0.f;
   const bool rightEye = (GetStereoEye() == StereoEye::Right);
   // Mode 172 mono-pair: center cam only (no ±IPD) — one DrawScene feeds both eyes.
-  if (GetStereoMode() >= StereoMode::DualIpd && !IsOursFpMonoPair(GetStereoMode())) {
+  // Mode 271 AER: g_camCenterOverride leaves the camera at the true head
+  // CENTRE, no eye offset. Used to park the live camera between the eyes
+  // after an AER frame — the game reads that same matrix for its aim
+  // raycast, so leaving it on one eye put the shot half an IPD off to the
+  // side ("the gun shoots slightly right of where it points").
+  if (GetStereoMode() >= StereoMode::DualIpd && !IsOursFpMonoPair(GetStereoMode()) &&
+      !g_camCenterOverride.load(std::memory_order_relaxed)) {
     const float ws =
         IsOursFpTrueWorldScale(GetStereoMode()) ? GetWorldScale() : 1.f;
     float half = 0.5f * GetStereoSepMeters() * GetStereoScale() * ws;
@@ -1161,6 +1183,12 @@ void ApplyHmdToCam(Matrix44* mat) {
 
   g_lastAppliedPos = eye;
   g_haveLastApplied = true;
+  // Mode 271 AER: remember the basis this eye was actually RENDERED with, not
+  // the HMD pose it came from — see g_lastBasisR/F/U above.
+  g_lastBasisR[0] = rx; g_lastBasisR[1] = ry; g_lastBasisR[2] = rz;
+  g_lastBasisF[0] = fx; g_lastBasisF[1] = fy; g_lastBasisF[2] = fz;
+  g_lastBasisU[0] = ux; g_lastBasisU[1] = uy; g_lastBasisU[2] = uz;
+  g_haveLastBasis = true;
 
   const uint32_t n = ++g_applyCount;
   if (n <= 5 || (n % 300) == 0) {
@@ -1598,6 +1626,17 @@ void RefreshLiveCamForStereoEye() {
   }
 }
 
+// Mode 271 AER: same as RefreshLiveCamForStereoEye(), but with NO eye offset —
+// parks the live camera at the true head centre. Call this instead when
+// handing the camera back to the game after an AER frame: the game aims,
+// raycasts and places the HUD from that same matrix, so leaving it on one eye
+// biases every shot half an IPD to one side.
+void RefreshLiveCamCentered() {
+  g_camCenterOverride.store(true, std::memory_order_relaxed);
+  RefreshLiveCamForStereoEye();
+  g_camCenterOverride.store(false, std::memory_order_relaxed);
+}
+
 void BeginStereoDualCamFreeze() {
   const StereoMode sm = GetStereoMode();
   if (!IsOursFpDualCamFreeze(sm))
@@ -1687,6 +1726,33 @@ bool GetLastStereoCamPos(float* x, float* y, float* z) {
   *x = g_lastAppliedPos.x;
   *y = g_lastAppliedPos.y;
   *z = g_lastAppliedPos.z;
+  return true;
+}
+
+// Mode 271 AER: any out pointer may be null. False until the first bake.
+bool GetLastStereoCamBasis(float outR[3], float outF[3], float outU[3], float outPos[3]) {
+  if (!g_haveLastBasis || !g_haveLastApplied)
+    return false;
+  if (outR) {
+    outR[0] = g_lastBasisR[0];
+    outR[1] = g_lastBasisR[1];
+    outR[2] = g_lastBasisR[2];
+  }
+  if (outF) {
+    outF[0] = g_lastBasisF[0];
+    outF[1] = g_lastBasisF[1];
+    outF[2] = g_lastBasisF[2];
+  }
+  if (outU) {
+    outU[0] = g_lastBasisU[0];
+    outU[1] = g_lastBasisU[1];
+    outU[2] = g_lastBasisU[2];
+  }
+  if (outPos) {
+    outPos[0] = g_lastAppliedPos.x;
+    outPos[1] = g_lastAppliedPos.y;
+    outPos[2] = g_lastAppliedPos.z;
+  }
   return true;
 }
 

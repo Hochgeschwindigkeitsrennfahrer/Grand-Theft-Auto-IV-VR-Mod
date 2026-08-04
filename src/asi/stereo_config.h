@@ -659,6 +659,23 @@ enum class StereoMode : int {
   // One shared HMD pose stamped on L+R at Submit (Mode136 lesson) — head feel without
   // losing 241 fusion. Kill: 241 / 203.
   OursFpSameTickParentDual203CamRightFlipLateLatch = 243,
+
+  // Mode 271: AER (Alternate Eye Rendering) — one origDrawWalk per frame,
+  // alternating eye L/R (same alternating cadence as the 203-dual's submit,
+  // but with a single draw instead of two — no mid-tick EndScene hazard).
+  // The stale eye's pixels are up to one frame old; corrected via a rect-shift
+  // of the canvas window before Submit_TextureWithPose (honest capture-time
+  // pose so SteamVR can reproject the head-rotation delta away). No new
+  // device state, no draw calls, no shaders — same 243/241 seam base.
+  // Kill: 243 / 241 / 203.
+  AerSingleDrawReprojected = 271,
+
+  // ---- Ported subset of experiment family 910–941 (work-test docs/MODE_EXPERIMENTS_920.md).
+  // Only 920/932/937 are ported here (RENDER ONLY) — 244–273 / 900–919 / 921–931 /
+  // 933–936 / 938–941 stay free / unused in this build.
+  ExpDirectBounds = 920,       // 243 + Direct VRTextureBounds
+  ExpAerParentAlt = 932,       // one eye/ParentDual tick, HOLD other, TextureWithPose (helper, not in F3 menu)
+  ExpAerParentExact = 937,     // 932 + frame%2 parity + OffAxis SetTransform (Guide08)
 };
 
 // Mode 40–49: rapid HMD delta → temporary mono pair. Mode 50+ never flattens.
@@ -777,6 +794,25 @@ bool IsOursFp203LateLatch(StereoMode mode);         // 243 = 241 + TextureWithPo
 bool UsesCamRightIpd(StereoMode mode);              // 239–243
 bool UsesCamRightIpdFlip(StereoMode mode);          // 240–243
 bool UsesLateLatchSubmit(StereoMode mode);          // 136 or 243
+// Ported subset of experiment family 910–941 (920/932/937 only — see
+// work-test docs/MODE_EXPERIMENTS_920.md). Other agents may add 271 / more of
+// this family separately; these predicates only ever match 920/932/937.
+bool IsExpFamily(StereoMode mode);                  // 920, 932, or 937
+bool IsExpDual243Seam(StereoMode mode);             // 920 (243 seam + Direct bounds)
+bool IsExpDirectBounds(StereoMode mode);            // 920
+bool IsExpAerParentAlt(StereoMode mode);            // 932 or 937 (ParentWalk AER)
+bool IsExpAerParentExact(StereoMode mode);          // 937 only (parity + OffAxis)
+bool IsExpFovOffAxisFull(StereoMode mode);          // 937 only (ported subset)
+// Mode 271: AER (Alternate Eye Rendering) — one origDrawWalk per frame, eye
+// alternates L/R; stale eye reprojected via rect-shift before Submit.
+bool IsAerSingleDraw(StereoMode mode);              // 271 only
+bool IsAerReproject(StereoMode mode);               // 271 only (rect-shift correction)
+// Thin 271-only aliases of the 203-dual-family helper names (244+ modes are
+// not present in this build; AER reuses the same Submit-path plumbing).
+bool IsOursFp203RenderPoseSubmit(StereoMode mode);   // 271: honest capture-time pose stamp
+bool IsOursFp203SubmitAtDualEnd(StereoMode mode);    // 271: submit from end of walk, not EndScene
+bool IsOursFp203DualDrivenVrFrame(StereoMode mode);  // 271: walk owns WaitGetPoses
+bool IsOursFp203PingPong(StereoMode mode);           // 271: ping-pong eye-raw pairs
 bool IsOursFpUiLift(StereoMode mode);              // 172–173 canvas phone lift (not 174+)
 bool IsOursFpAtomicEyePair(StereoMode mode);       // 168–173, 176, 178–180, 183–192
 bool IsOursFpAlwaysBbCapture(StereoMode mode);     // 168–173, 176, 178–180, 183–192
@@ -882,5 +918,32 @@ bool GetFovPatchConfig(int* offsetBytes, float* scale);
 // (FusionFix-style; Mode 35/36/37/38/120). Live (F7 can change). Clamp 0..40.
 // Mode 120 default via worldscale "Open12" = 12 (less H crop than old Out22/28).
 float GetFovAddDegrees();
+
+// --- F3 overlay menu accessors (same set+save as F5..F11 hotkeys) ---
+void MenuSetSepCm(int cm);
+int MenuGetSepCm();
+void MenuSetStereoScalePercent(int pct);
+int MenuGetStereoScalePercent();
+void MenuSetWorldScalePercent(int pct);
+int MenuGetWorldScalePercent();
+void MenuSetWorldScalePreset(int idx);
+int MenuGetWorldScalePreset();
+int MenuWorldScalePresetCount();
+const char* MenuWorldScalePresetName(int idx);
+void MenuSetFovAddDegrees(int deg);
+int MenuGetFovAddDegrees();
+int MenuGetEyeForwardCm();
+
+void PersistFpFovDegrees(int forward, int rear, int foot);
+void EnsureFpCamForwardDefaults();
+float GetFpFootCamForwardMeters();
+float GetFpVehCamForwardMeters();
+float GetFpBikeCamForwardMeters();
+void SetFpFootCamForwardCm(int cm);
+void SetFpVehCamForwardCm(int cm);
+void SetFpBikeCamForwardCm(int cm);
+int MenuGetFpFootCamForwardCm();
+int MenuGetFpVehCamForwardCm();
+int MenuGetFpBikeCamForwardCm();
 
 }  // namespace asi

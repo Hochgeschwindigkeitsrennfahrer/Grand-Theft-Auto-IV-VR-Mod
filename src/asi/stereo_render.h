@@ -12,6 +12,11 @@ void StereoRenderOnDevice(IDirect3DDevice9* device);
 // If mode >= 4 and RTs ready, Submit L/R from eye textures. Returns true if handled.
 bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop);
 
+// Mode 271: submit the pair the instant both eyes are captured. This is the
+// only moment in the frame where the two textures are BOTH matched and
+// fresh — EndScene always fires before a capture, never after both.
+void StereoSubmitPairAtDualEnd();
+
 // True while same-frame L/R dual pass is running (projection inject gate).
 bool StereoInDualPass();
 

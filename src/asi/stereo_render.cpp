@@ -4,6 +4,7 @@
 #include "game_timer.h"
 #include "hmd_pose.h"
 #include "log.h"
+#include "openvr_mono.h"
 #include "perf_debug.h"
 #include "stereo_calib.h"
 #include "stereo_config.h"
@@ -133,6 +134,43 @@ bool g_holdPoseLValid = false;
 bool g_holdPoseRValid = false;
 bool g_submitPoseLValid = false;
 bool g_submitPoseRValid = false;
+
+// Mode 271 AER: PING-PONG the canvas pairs. The AER walk writes one pair
+// while the compositor is handed the OTHER — the one the previous walk
+// finished. Nothing is ever submitted while it is being written, so the
+// dual-end submit needs no fence and cannot tear. Reuses the g_texL/g_texR +
+// g_holdL/g_holdR canvases that already exist for the other modes.
+std::atomic<uint32_t> g_pingPong{0};
+IDirect3DTexture9* PingPongWriteL() { return (g_pingPong.load() & 1u) ? g_holdL : g_texL; }
+IDirect3DTexture9* PingPongWriteR() { return (g_pingPong.load() & 1u) ? g_holdR : g_texR; }
+IDirect3DTexture9* PingPongReadL() { return (g_pingPong.load() & 1u) ? g_texL : g_holdL; }
+IDirect3DTexture9* PingPongReadR() { return (g_pingPong.load() & 1u) ? g_texR : g_holdR; }
+
+// Mode 271 AER: per-eye PRIVATE raw colour targets, matched to the backbuffer
+// exactly, so the kept picture used to reproject the stale eye is never the
+// same surface the canvas warp is currently reading from.
+IDirect3DTexture9* g_eyeRawL = nullptr;
+IDirect3DTexture9* g_eyeRawR = nullptr;
+uint32_t g_eyeRawW = 0, g_eyeRawH = 0;
+D3DFORMAT g_eyeRawFmt = D3DFMT_UNKNOWN;
+
+// Mode 271 AER state. The kept per-eye pictures live in g_eyeRawL/R above.
+struct AerEyeState {
+  bool valid = false;  // r/f/u/pos describe a real rendered view
+  bool raw = false;    // and its picture is in g_eyeRawL/R
+  float r[3]{};        // view basis actually rendered, world space
+  float f[3]{};        // RAGE convention: right / forward=mat.up / up=mat.at
+  float u[3]{};
+  float pos[3]{};
+};
+AerEyeState g_aerEye[2];  // [0] = Left, [1] = Right
+bool g_aerRightNext = false;
+// Both canvases of the write pair were rewritten this frame — only then may
+// the ping-pong flip and hand them to the compositor.
+bool g_aerPairOk = false;
+std::atomic<uint32_t> g_aerFrames{0};
+std::atomic<uint32_t> g_aerMonoFallbacks{0};
+std::atomic<uint32_t> g_aerShiftSkips{0};
 
 bool UsesFovComfortPath(StereoMode mode) {
   return mode == StereoMode::FovCanvasComfort || mode == StereoMode::AerPoseSubmit ||
@@ -617,6 +655,7 @@ void Mode200OnEndScene();
 void Mode200Kill(const char* why);
 bool RunMode200ParentDualGuarded(void* self, void* edx);
 bool RunMode202ParentDualVsGuarded(void* self, void* edx);
+bool RunMode932AerParentAltGuarded(void* self, void* edx);
 
 // Mode 198: at most ONE VsRet stack sample per EndScene — find rare parents above
 // hot leaf 0x220D0 without VirtualQuery storms (Mode196 1FPS lesson).
@@ -767,6 +806,23 @@ void ReleaseEyeRts() {
   g_pairAwaitingR = false;
   g_holdPoseLValid = g_holdPoseRValid = false;
   g_submitPoseLValid = g_submitPoseRValid = false;
+  // Mode 271 AER: a kept picture whose source texture just got freed can never
+  // be reprojected again — drop it in the same breath, or the next frame warps
+  // a stale/reallocated surface and the pair stops describing one view.
+  if (g_eyeRawL) {
+    g_eyeRawL->Release();
+    g_eyeRawL = nullptr;
+  }
+  if (g_eyeRawR) {
+    g_eyeRawR->Release();
+    g_eyeRawR = nullptr;
+  }
+  g_eyeRawW = g_eyeRawH = 0;
+  g_eyeRawFmt = D3DFMT_UNKNOWN;
+  g_aerEye[0] = AerEyeState{};
+  g_aerEye[1] = AerEyeState{};
+  g_pingPong.store(0);
+  g_aerPairOk = false;
 }
 
 bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
@@ -822,6 +878,54 @@ bool EnsureEyeRts(IDirect3DDevice9* dev, uint32_t w, uint32_t h) {
     Log("%s: RT lock %ux%u initialized recreates=%u", directLock ? "Mode233" : "Mode44", w, h,
         g_mode44RtRecreates.load());
   }
+  return true;
+}
+
+// Mode 271 AER: the kept per-eye pictures, private and matched to the
+// backbuffer 1:1. Cheap early-out once they already match.
+bool EnsureEyeRawRts(IDirect3DDevice9* dev) {
+  if (!dev)
+    return false;
+  IDirect3DSurface9* bb = nullptr;
+  if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb)
+    return false;
+  D3DSURFACE_DESC desc{};
+  bb->GetDesc(&desc);
+  bb->Release();
+  if (g_eyeRawL && g_eyeRawR && g_device == dev && g_eyeRawW == desc.Width &&
+      g_eyeRawH == desc.Height && g_eyeRawFmt == desc.Format)
+    return true;
+  if (g_eyeRawL) {
+    g_eyeRawL->Release();
+    g_eyeRawL = nullptr;
+  }
+  if (g_eyeRawR) {
+    g_eyeRawR->Release();
+    g_eyeRawR = nullptr;
+  }
+  if (FAILED(dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, desc.Format,
+                                D3DPOOL_DEFAULT, &g_eyeRawL, nullptr)) ||
+      FAILED(dev->CreateTexture(desc.Width, desc.Height, 1, D3DUSAGE_RENDERTARGET, desc.Format,
+                                D3DPOOL_DEFAULT, &g_eyeRawR, nullptr))) {
+    if (g_eyeRawL) {
+      g_eyeRawL->Release();
+      g_eyeRawL = nullptr;
+    }
+    if (g_eyeRawR) {
+      g_eyeRawR->Release();
+      g_eyeRawR = nullptr;
+    }
+    g_eyeRawW = g_eyeRawH = 0;
+    g_eyeRawFmt = D3DFMT_UNKNOWN;
+    Log("AER: CreateTexture raw eye RT FAIL %ux%u fmt=%u", desc.Width, desc.Height,
+        static_cast<unsigned>(desc.Format));
+    return false;
+  }
+  g_eyeRawW = desc.Width;
+  g_eyeRawH = desc.Height;
+  g_eyeRawFmt = desc.Format;
+  Log("AER: raw eye RTs %ux%u fmt=%u OK", desc.Width, desc.Height,
+      static_cast<unsigned>(desc.Format));
   return true;
 }
 
@@ -1104,7 +1208,7 @@ void ComputeCanvasSize(uint32_t bbW, uint32_t bbH, uint32_t* outW, uint32_t* out
 // Submit later uses nullptr bounds — the canvas spans the full frustum, so the
 // angular mapping is correct per eye (this is what nullptr-bounds-on-BB broke).
 bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3DTexture9* tex,
-                         vr::EVREye eye) {
+                         vr::EVREye eye, float shiftX = 0.f, float shiftY = 0.f) {
   if (!dev || !bb || !tex)
     return false;
 
@@ -1174,10 +1278,18 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
   // Where the game renders MORE than the eye sees (FOV patch), crop the SOURCE;
   // where it renders less, inset the DEST. Clamping only the dest (old code)
   // squeezed the image differently per eye → objects jumped left/right.
-  const float txLo = (std::max)(-gameH, l);
-  const float txHi = (std::min)(gameH, r);
-  const float tyLo = (std::max)(-gameV, t);
-  const float tyHi = (std::min)(gameV, b);
+  // Mode 271 AER reprojection: the picture's own window slides to
+  // (shiftX, shiftY). The source mapping subtracts the same shift, so the
+  // overlap is still read from the right pixels — the image simply lands
+  // somewhere else in the eye frustum.
+  const float gxLo = -gameH + shiftX;
+  const float gxHi = gameH + shiftX;
+  const float gyLo = -gameV + shiftY;
+  const float gyHi = gameV + shiftY;
+  const float txLo = (std::max)(gxLo, l);
+  const float txHi = (std::min)(gxHi, r);
+  const float tyLo = (std::max)(gyLo, t);
+  const float tyHi = (std::min)(gyHi, b);
   if (txHi - txLo < 0.05f || tyHi - tyLo < 0.05f) {
     dst->Release();
     bb->Release();
@@ -1185,10 +1297,10 @@ bool CopySurfToEyeCanvas(IDirect3DDevice9* dev, IDirect3DSurface9* bb, IDirect3D
   }
 
   RECT src{};
-  src.left = static_cast<LONG>(SW * (txLo + gameH) / (2.f * gameH));
-  src.right = static_cast<LONG>(SW * (txHi + gameH) / (2.f * gameH));
-  src.top = static_cast<LONG>(SH * (tyLo + gameV) / (2.f * gameV));
-  src.bottom = static_cast<LONG>(SH * (tyHi + gameV) / (2.f * gameV));
+  src.left = static_cast<LONG>(SW * (txLo - gxLo) / (2.f * gameH));
+  src.right = static_cast<LONG>(SW * (txHi - gxLo) / (2.f * gameH));
+  src.top = static_cast<LONG>(SH * (tyLo - gyLo) / (2.f * gameV));
+  src.bottom = static_cast<LONG>(SH * (tyHi - gyLo) / (2.f * gameV));
   RECT rc{};
   rc.left = static_cast<LONG>(W * (txLo - l) / (r - l));
   rc.right = static_cast<LONG>(W * (txHi - l) / (r - l));
@@ -2269,6 +2381,177 @@ bool CallDrawWalkOnceGuarded(void* self, void* edx) {
   }
 }
 
+// ---- Mode 271 AER: one scene draw per frame, alternating eye -------------
+// The reprojection maths: where the centre of an OLD picture now sits in the
+// CURRENT eye's tangent frame. Canvas tangent y follows the OpenVR convention
+// (negative = up) while the camera up vector points up, hence the sign flip
+// on y. AerComputeShift returns false when the two views are too far apart to
+// be a per-frame delta (a hitch, a cut-scene camera jump, a teleport) — the
+// caller then falls back to a mono pair for that frame rather than smearing a
+// stale picture across the eye.
+inline float AerDot(const float a[3], const float b[3]) {
+  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+bool AerComputeShift(const AerEyeState& oldEye, const float rN[3], const float fN[3],
+                     const float uN[3], float* outX, float* outY) {
+  if (!oldEye.valid)
+    return false;
+  const float z = AerDot(oldEye.f, fN);
+  if (!(z > 0.5f))  // > 60 deg of view change in one frame: not a frame delta
+    return false;
+  const float sx = AerDot(oldEye.f, rN) / z;
+  const float sy = -AerDot(oldEye.f, uN) / z;
+  if (!std::isfinite(sx) || !std::isfinite(sy))
+    return false;
+  // 0.6 in tangent = ~31 deg off-centre. Beyond that the reprojected picture
+  // would not cover the eye and we would submit a black wedge.
+  if (std::fabs(sx) > 0.6f || std::fabs(sy) > 0.6f)
+    return false;
+  *outX = sx;
+  *outY = sy;
+  return true;
+}
+
+IDirect3DTexture9* AerRawTex(bool rightEye) { return rightEye ? g_eyeRawR : g_eyeRawL; }
+
+// Keep this frame's picture 1:1. Full-surface StretchRect is also the legal
+// way to resolve an MSAA backbuffer, so the canvas step downstream never has to.
+bool AerCaptureRaw(IDirect3DDevice9* dev, bool rightEye) {
+  IDirect3DTexture9* tex = AerRawTex(rightEye);
+  if (!dev || !tex)
+    return false;
+  IDirect3DSurface9* bb = nullptr;
+  if (FAILED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) || !bb)
+    return false;
+  IDirect3DSurface9* dst = nullptr;
+  if (FAILED(tex->GetSurfaceLevel(0, &dst)) || !dst) {
+    bb->Release();
+    return false;
+  }
+  const HRESULT hr = dev->StretchRect(bb, nullptr, dst, nullptr, D3DTEXF_NONE);
+  dst->Release();
+  bb->Release();
+  return SUCCEEDED(hr);
+}
+
+// Canvas from a kept picture, with the AER shift applied.
+bool AerCanvasFromRaw(IDirect3DDevice9* dev, bool srcRightEye, IDirect3DTexture9* dstTex,
+                      vr::EVREye dstEye, float shiftX, float shiftY) {
+  IDirect3DTexture9* tex = AerRawTex(srcRightEye);
+  if (!dev || !tex || !dstTex)
+    return false;
+  IDirect3DSurface9* src = nullptr;
+  if (FAILED(tex->GetSurfaceLevel(0, &src)) || !src)
+    return false;
+  const bool ok = CopySurfToEyeCanvas(dev, src, dstTex, dstEye, shiftX, shiftY);
+  src->Release();
+  return ok;
+}
+
+// One AER frame: draw one eye, rebuild the other from what we kept.
+bool RunAerSingleDrawGuarded(void* self, void* edx) {
+  const StereoMode mode = GetStereoMode();
+  const bool rightEye = g_aerRightNext;
+  const int idx = rightEye ? 1 : 0;
+  const int oth = rightEye ? 0 : 1;
+  const vr::EVREye vrFresh = rightEye ? vr::Eye_Right : vr::Eye_Left;
+  const vr::EVREye vrStale = rightEye ? vr::Eye_Left : vr::Eye_Right;
+  // Both canvases are written from one latched FOV. A republish between them
+  // would give the two eyes different rects — that is the 23% per-eye scale
+  // jump the F11 dumps caught on the dual path.
+  LatchGameFovForPair();
+  bool okFresh = false;
+  bool okStale = false;
+  bool mono = false;
+  g_aerPairOk = false;
+  __try {
+    g_execViewStage = 1;
+    SetStereoEye(rightEye ? StereoEye::Right : StereoEye::Left);
+    RefreshLiveCamForStereoEye();
+    if (g_device)
+      PushLiveCamToD3D(g_device);
+
+    // The basis this eye is about to be drawn with — read here, so it is the
+    // one we pushed and not whatever a later CopyMat leaves behind.
+    AerEyeState cur;
+    cur.valid = GetLastStereoCamBasis(cur.r, cur.f, cur.u, cur.pos);
+
+    g_execViewStage = 2;
+    g_origDrawWalk(self, edx);  // THE scene draw of this frame
+
+    g_execViewStage = 3;
+    cur.raw = AerCaptureRaw(g_device, rightEye);
+
+    IDirect3DTexture9* const dstL = PingPongWriteL();
+    IDirect3DTexture9* const dstR = PingPongWriteR();
+    IDirect3DTexture9* const dstFresh = rightEye ? dstR : dstL;
+    IDirect3DTexture9* const dstStale = rightEye ? dstL : dstR;
+
+    g_execViewStage = 4;
+    okFresh = cur.raw && AerCanvasFromRaw(g_device, rightEye, dstFresh, vrFresh, 0.f, 0.f);
+
+    g_execViewStage = 5;
+    float sx = 0.f, sy = 0.f;
+    const bool wantReproj = IsAerReproject(mode);
+    const bool haveStale = g_aerEye[oth].valid && g_aerEye[oth].raw;
+    const bool shiftOk =
+        haveStale && cur.valid && AerComputeShift(g_aerEye[oth], cur.r, cur.f, cur.u, &sx, &sy);
+    if (haveStale && wantReproj && !shiftOk)
+      ++g_aerShiftSkips;  // hitch / camera cut — mono for this frame, see below
+    if (haveStale && (!wantReproj || shiftOk)) {
+      if (!wantReproj)
+        sx = sy = 0.f;  // baseline: submit the stale eye as it was drawn
+      okStale = AerCanvasFromRaw(g_device, oth == 1, dstStale, vrStale, sx, sy);
+    } else if (cur.raw) {
+      // Startup, or a view jump too large to be a frame delta: give both eyes
+      // THIS frame's picture. Flat for one frame, which is always better than
+      // submitting a stale eye pointing somewhere else.
+      mono = true;
+      ++g_aerMonoFallbacks;
+      okStale = AerCanvasFromRaw(g_device, rightEye, dstStale, vrStale, 0.f, 0.f);
+    }
+
+    g_execViewStage = 6;
+    g_aerPairOk = okFresh && okStale;
+    if (okFresh && okStale) {
+      g_haveL = g_haveR = true;
+      // The pose these two canvases really describe. Still inside the walk's
+      // latch, so this is exactly what the cam bake used.
+      vr::HmdMatrix34_t used{};
+      if (GetHmdPoseMatrix(&used))
+        PublishRenderPoseForSubmit(used);
+    }
+    // Remember this eye for next frame; drop the partner's claim if its
+    // picture is gone, so we fall back to mono instead of reprojecting a dead
+    // buffer.
+    g_aerEye[idx] = cur;
+    if (!cur.raw)
+      g_aerEye[idx].valid = false;
+
+    g_execViewStage = 7;
+    // Hand the camera back at the head CENTRE, not on the left eye. The game
+    // aims and raycasts from this matrix, so parking it on an eye put every
+    // shot half an IPD to the side — with eyeflip on, to the right.
+    SetStereoEye(StereoEye::Left);
+    RefreshLiveCamCentered();
+    ClearGameFovPairLatch();
+
+    const uint32_t n = ++g_aerFrames;
+    if (n <= 8 || (n % 300) == 0)
+      Log("Mode%d: AER #%u drew=%s okFresh=%d okStale=%d shift=(%.4f,%.4f) monoNow=%d "
+          "monoTotal=%u shiftSkip=%u sep=%.1fcm",
+          static_cast<int>(mode), n, rightEye ? "R" : "L", okFresh ? 1 : 0, okStale ? 1 : 0, sx,
+          sy, mono ? 1 : 0, g_aerMonoFallbacks.load(), g_aerShiftSkips.load(),
+          GetStereoSepMeters() * 100.f);
+    return true;
+  } __except (ExecViewFilter(GetExceptionInformation())) {
+    SetStereoEye(StereoEye::Left);
+    ClearGameFovPairLatch();
+    return false;
+  }
+}
+
 bool CallDrawWalkOnceGuarded(void* self, void* edx);
 bool RunMode31DualGuarded(void* self, void* edx);
 void Mode31FallbackPairHold(const char* why);
@@ -2283,6 +2566,100 @@ void __fastcall HookDrawWalk(void* self, void* edx) {
   if (!g_origDrawWalk)
     return;
   ++g_drawWalkEntries;
+
+  // Mode 271 AER: ONE scene draw per frame, eye alternating. Checked before
+  // the dual branch — AER is on the same seam but is not a dual (it never
+  // calls origDrawWalk twice in one tick).
+  if (IsAerSingleDraw(GetStereoMode())) {
+    // Any frame we do not own invalidates both kept pictures. Otherwise,
+    // coming back from a menu or a load, we would reproject a picture that is
+    // seconds old — AerComputeShift only rejects a big ANGLE, it cannot see a
+    // big AGE.
+    if (g_drawWalkDead.load() || g_mode200TooHot.load() || !g_device ||
+        !IsCamMatrixOverrideEnabled() || g_inDrawWalkDual.load()) {
+      g_aerEye[0].valid = g_aerEye[1].valid = false;
+      CallDrawWalkOnceGuarded(self, edx);
+      return;
+    }
+    if (!g_texL || !g_texR || !g_holdL || !g_holdR) {
+      IDirect3DSurface9* bb = nullptr;
+      if (SUCCEEDED(g_device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb) {
+        D3DSURFACE_DESC desc{};
+        bb->GetDesc(&desc);
+        bb->Release();
+        uint32_t rtW = desc.Width, rtH = desc.Height;
+        ComputeCanvasSize(desc.Width, desc.Height, &rtW, &rtH);
+        EnsureEyeRts(g_device, rtW, rtH);
+      }
+    }
+    // A canvas resize (F5, or gtaiv_dxvk_vr.vres) releases the eye RTs and,
+    // with them, the kept per-eye pictures. Drop the AER state in the same
+    // breath. Without this the next frame reprojects an eye whose source
+    // texture has been freed and reallocated at a different size: the pair
+    // stops describing one view and the stereo does not come back on its own.
+    {
+      static uint32_t s_dimGen = 0xFFFFFFFFu;
+      const uint32_t gen = GetCanvasMaxDimGeneration();
+      if (gen != s_dimGen) {
+        const bool first = (s_dimGen == 0xFFFFFFFFu);
+        s_dimGen = gen;
+        g_aerEye[0] = AerEyeState{};
+        g_aerEye[1] = AerEyeState{};
+        g_pingPong.store(0);
+        g_aerPairOk = false;
+        if (!first)
+          Log("AER: eye-canvas size changed (F5 / vres gen=%u) — kept pictures dropped, "
+              "re-priming from a mono pair", gen);
+      }
+    }
+    // The kept per-eye pictures. Cheap early-out once they match the backbuffer.
+    EnsureEyeRawRts(g_device);
+    if (!g_texL || !g_texR || !g_holdL || !g_holdR || !g_eyeRawL || !g_eyeRawR) {
+      g_aerEye[0].valid = g_aerEye[1].valid = false;
+      CallDrawWalkOnceGuarded(self, edx);
+      return;
+    }
+    // Canonical order, and with one draw per frame it really is canonical:
+    // WaitGetPoses here -> render -> Submit at the end of this function.
+    VrBeginFrameFromDual();
+    // Latch it: EndScene fires INSIDE origDrawWalk and calls UpdateHmdPose, so
+    // without the latch the pose would move between the cam bake and the stamp.
+    BeginDualHmdPoseLatch();
+    g_inDrawWalkDual.store(true);
+    const bool ok = RunAerSingleDrawGuarded(self, edx);
+    g_inDrawWalkDual.store(false);
+    EndDualHmdPoseLatch();
+    // Alternate even on a fault, so a single bad frame cannot pin one eye.
+    g_aerRightNext = !g_aerRightNext;
+    if (!ok) {
+      const uintptr_t base = reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr));
+      char buf[160];
+      sprintf_s(buf, "SEH aer stage=%ld code=0x%08X exeRva=0x%X", g_execViewStage,
+                g_execViewExcCode, static_cast<unsigned>(g_execViewExcAddr - base));
+      g_aerEye[0].valid = g_aerEye[1].valid = false;
+      Mode200Kill(buf);  // removes the hook and nulls g_origDrawWalk
+      if (g_origDrawWalk)
+        CallDrawWalkOnceGuarded(self, edx);
+      return;
+    }
+    // Only a COMPLETE pair may be handed over. On a partial frame we leave the
+    // ping-pong alone, so the submit below re-ships the last good pair instead
+    // of a half-written one — a stutter rather than a torn eye.
+    if (g_aerPairOk) {
+      g_pingPong.fetch_add(1);
+      StereoSubmitPairAtDualEnd();
+    } else {
+      static uint32_t s_part = 0;
+      if ((++s_part) <= 4 || (s_part % 300) == 0)
+        Log("AER: incomplete pair (#%u) — holding the previous one, no flip", s_part);
+      StereoSubmitPairAtDualEnd();
+    }
+    const uint32_t n = ++g_mode200DualN;  // shared counter: keeps the cadence audit honest
+    if (n <= 6 || (n % 600) == 0)
+      Log("Mode%d: AER frame #%u haveL=%d haveR=%d target=0x%X", static_cast<int>(GetStereoMode()),
+          n, g_haveL ? 1 : 0, g_haveR ? 1 : 0, ParentDualTargetRva());
+    return;
+  }
 
   // Mode 200/201: dual Mode199 RARE parent @0x4D8BF0 (single BuildRootA owns world once).
   // Mode 201: full pre-IPD cam freeze for the L/R pair (fusion / look-ghost).
@@ -2331,9 +2708,12 @@ void __fastcall HookDrawWalk(void* self, void* edx) {
       BeginDualTimeFreeze();
     }
     g_inDrawWalkDual.store(true);
-    // 202 = VS-translate (REJECT). 200/201/203 = full CCam±IPD L/R.
+    // 202 = VS-translate (REJECT). 932/937 = ParentWalk AER one-eye. 200/201/203/920 = full
+    // CCam±IPD L/R (920 stays on Mode200 body via IsExpDual243Seam predicates).
     const bool ok =
-        vsDual ? RunMode202ParentDualVsGuarded(self, edx) : RunMode200ParentDualGuarded(self, edx);
+        vsDual ? RunMode202ParentDualVsGuarded(self, edx)
+               : (IsExpAerParentAlt(GetStereoMode()) ? RunMode932AerParentAltGuarded(self, edx)
+                                                     : RunMode200ParentDualGuarded(self, edx));
     g_inDrawWalkDual.store(false);
     if (sameState) {
       EndDualTimeFreeze();
@@ -2587,6 +2967,82 @@ bool InstallDrawWalkAt(uintptr_t start) {
   g_drawWalkAddr = reinterpret_cast<void*>(start);
   g_drawWalkEntries.store(0);
   return true;
+}
+
+// Mode 932/937 ParentWalk AER: one eye per tick on the 243 seam; HOLD other eye.
+// Same technique family as AFR (1 eye/frame) — ParentWalk origin, not DrawScene.
+// 937 = + frame%2 parity + OffAxis proj (Guide08 on the safer hook).
+// Stamp capture-time pose for TextureWithPose (SteamVR reprojects the stale eye).
+bool RunMode932AerParentAltGuarded(void* self, void* edx) {
+  __try {
+    const StereoMode sm = GetStereoMode();
+    bool s_right = false;
+    if (IsExpAerParentExact(sm)) {
+      static uint32_t s_parity = 0;
+      s_right = ((s_parity++) % 2) != 0;
+    } else {
+      static bool s_toggleRight = false;
+      s_toggleRight = !s_toggleRight;
+      s_right = s_toggleRight;
+    }
+    const bool direct = IsTrueStereoDirect(sm) && TrueStereoDirectPathOk();
+
+    vr::HmdMatrix34_t pose{};
+    const bool poseOk = GetHmdPoseMatrix(&pose);
+
+    g_execViewStage = 1;
+    SetStereoEye(s_right ? StereoEye::Right : StereoEye::Left);
+    RefreshLiveCamForStereoEye();
+    if (g_device) {
+      PushLiveCamToD3D(g_device);
+      if (IsExpAerParentExact(sm))
+        StereoProjApplyForCurrentEye(g_device);
+    }
+    g_execViewStage = 2;
+    g_origDrawWalk(self, edx);
+    g_execViewStage = 3;
+
+    bool ok = false;
+    if (s_right) {
+      ok = direct ? CopyBbToEye(g_device, g_texR)
+                  : CopyBbToEyeCanvasGated(g_device, g_texR, vr::Eye_Right);
+      if (ok) {
+        g_haveR = true;
+        if (poseOk) {
+          g_submitPoseR = pose;
+          g_submitPoseRValid = true;
+          g_holdPoseR = pose;
+          g_holdPoseRValid = true;
+        }
+      }
+    } else {
+      ok = direct ? CopyBbToEye(g_device, g_texL)
+                  : CopyBbToEyeCanvasGated(g_device, g_texL, vr::Eye_Left);
+      if (ok) {
+        g_haveL = true;
+        if (poseOk) {
+          g_submitPoseL = pose;
+          g_submitPoseLValid = true;
+          g_holdPoseL = pose;
+          g_holdPoseLValid = true;
+        }
+      }
+    }
+
+    SetStereoEye(StereoEye::Left);
+    RefreshLiveCamForStereoEye();
+
+    static uint32_t s_n = 0;
+    const uint32_t n = ++s_n;
+    if (n <= 8 || (n % 300) == 0)
+      Log("Mode%d: AER-parent #%u eye=%s ok=%d haveL=%d haveR=%d pose=%d exact=%d",
+          static_cast<int>(sm), n, s_right ? "R" : "L", ok ? 1 : 0, g_haveL ? 1 : 0,
+          g_haveR ? 1 : 0, poseOk ? 1 : 0, IsExpAerParentExact(sm) ? 1 : 0);
+    return true;
+  } __except (ExecViewFilter(GetExceptionInformation())) {
+    SetStereoEye(StereoEye::Left);
+    return false;
+  }
 }
 
 bool RunMode200ParentDualGuarded(void* self, void* edx) {
@@ -7790,6 +8246,32 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
   if (!g_haveL || !g_haveR)
     return false;
 
+  // Mode 271: stamp the pose the AER walk ACTUALLY rendered with. HookDrawWalk
+  // runs before EndScene, so the walk baked the pose WaitGetPoses returned at
+  // the START of the walk — a fresh "now" sample here would claim the frame
+  // is newer than it is, collapsing the compositor's reprojection delta to ~0
+  // and leaving the render lag on screen. One pose for both eyes: the stale
+  // eye was already rect-shift corrected toward this same view, and SteamVR
+  // only honours the pose from the LAST Submit call (OpenVR #1253).
+  if (IsOursFp203RenderPoseSubmit(mode)) {
+    vr::HmdMatrix34_t renderPose{};
+    if (GetRenderPoseForSubmit(&renderPose)) {
+      g_submitPoseL = renderPose;
+      g_submitPoseR = renderPose;
+      g_submitPoseLValid = g_submitPoseRValid = true;
+      static uint32_t s_rp = 0;
+      if ((++s_rp) <= 4 || (s_rp % 300) == 0)
+        Log("Mode271: RENDER-POSE submit OK (honest AER pose stamped on L+R; "
+            "compositor may now reproject the ~1-frame lag)");
+    } else {
+      // No pair rendered yet → Submit_Default rather than a wrong pose.
+      g_submitPoseLValid = g_submitPoseRValid = false;
+      static uint32_t s_rpMiss = 0;
+      if ((++s_rpMiss) <= 4 || (s_rpMiss % 300) == 0)
+        Log("Mode271: render pose MISSING → Submit_Default");
+    }
+  }
+
   // Mode 243: sample ONE late HMD pose for both eyes before Submit (pair sync).
   if (IsOursFp203LateLatch(mode)) {
     vr::HmdMatrix34_t pairPose{};
@@ -7822,6 +8304,12 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
     okL = SubmitEyeTexture(device, g_texL, vr::Eye_Left, interop);
     okR = SubmitEyeTexture(device, g_texL, vr::Eye_Right, interop);
     g_submitSameLBoth = false;
+  } else if (IsAerSingleDraw(mode)) {
+    // Mode 271: submit the READ side of the ping-pong pair — the pair the
+    // PREVIOUS AER walk finished, never the one this walk is currently
+    // writing into.
+    okL = SubmitEyeTexture(device, PingPongReadL(), vr::Eye_Left, interop);
+    okR = SubmitEyeTexture(device, PingPongReadR(), vr::Eye_Right, interop);
   } else {
     okL = SubmitEyeTexture(device, g_texL, vr::Eye_Left, interop);
     okR = SubmitEyeTexture(device, g_texR, vr::Eye_Right, interop);
@@ -7835,6 +8323,28 @@ bool StereoTrySubmitEyes(IDirect3DDevice9* device, ID3D9VkInteropDevice* interop
         (mode == StereoMode::FusionSwap || mode == StereoMode::HeadOwnedCamStereoSwap) ? 1 : 0,
         sameL ? 1 : 0);
   return okL && okR;
+}
+
+// Mode 271: submit the pair the instant both eyes are captured. This is the
+// only moment in the frame where the two textures are BOTH matched and
+// fresh — EndScene always fires before a capture, never after both.
+void StereoSubmitPairAtDualEnd() {
+  if (!IsOursFp203SubmitAtDualEnd(GetStereoMode()))
+    return;
+  if (!g_device || !VrSubmitReady() || !vr::VRCompositor())
+    return;
+  if (!g_haveL || !g_haveR)
+    return;
+  ID3D9VkInteropDevice* interop = nullptr;
+  if (FAILED(g_device->QueryInterface(__uuidof(ID3D9VkInteropDevice),
+                                      reinterpret_cast<void**>(&interop))) ||
+      !interop)
+    return;
+  const bool ok = StereoTrySubmitEyes(g_device, interop);
+  interop->Release();
+  static uint32_t s_n = 0;
+  if ((++s_n) <= 4 || (s_n % 600) == 0)
+    Log("Mode271: submitted at walk end #%u ok=%d (eye captured this walk)", s_n, ok ? 1 : 0);
 }
 
 bool StereoInDualPass() {

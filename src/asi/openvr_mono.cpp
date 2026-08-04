@@ -126,6 +126,38 @@ bool InitOpenVrEarly() {
   return EnsureOpenVrUnlocked();
 }
 
+std::atomic<unsigned> g_esSinceDualFrame{0};
+
+unsigned VrEndScenesSinceDualFrame() {
+  return g_esSinceDualFrame.load();
+}
+
+bool VrSubmitReady() {
+  return g_vrReady.load() && !g_vrFailed.load() && !g_submitDisabled.load() &&
+         g_warmupFrames.load() == 0;
+}
+
+// Mode 271: WaitGetPoses at the START of the AER walk. The one eye rendered
+// this frame then uses this pose, and the pair is submitted at the walk's
+// end — the canonical WaitGetPoses -> render -> Submit order, which EndScene
+// (firing INSIDE origDrawWalk) can never provide.
+bool VrBeginFrameFromDual() {
+  if (!VrSubmitReady() || !vr::VRCompositor())
+    return false;
+  vr::TrackedDevicePose_t poses[vr::k_unMaxTrackedDeviceCount]{};
+  const vr::EVRCompositorError err =
+      vr::VRCompositor()->WaitGetPoses(poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
+  if (err == vr::VRCompositorError_DoNotHaveFocus)
+    vr::VRCompositor()->CompositorBringToFront();
+  UpdateHmdPose(poses, vr::k_unMaxTrackedDeviceCount);
+  AimDecoupleOnPoses(poses, vr::k_unMaxTrackedDeviceCount);
+  g_esSinceDualFrame.store(0);
+  static uint32_t s_n = 0;
+  if ((++s_n) <= 4 || (s_n % 900) == 0)
+    Log("Mode271: VR frame begun from AER walk #%u (WaitGetPoses -> render -> Submit)", s_n);
+  return true;
+}
+
 void TryMonoSubmit(IDirect3DDevice9* device) {
   if (!device || g_submitDisabled.load() || g_vrFailed.load())
     return;
@@ -139,6 +171,25 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   if (g_warmupFrames.load() > 0) {
     g_warmupFrames.fetch_sub(1);
     return;
+  }
+
+  // Mode 271: the AER walk owns the VR frame (WaitGetPoses -> render -> Submit
+  // from VrBeginFrameFromDual / StereoSubmitPairAtDualEnd). Skip the EndScene
+  // pose wait + submit WHILE the walk is actually driving frames. WATCHDOG: if
+  // the walk has not driven a frame for several EndScenes (menu, loading
+  // screen, hook removed), fall back to the full legacy path here so the
+  // compositor can never starve.
+  bool doVrFrame = true;
+  // True only while the watchdog below has taken the frame back from the walk.
+  bool walkStalled = false;
+  if (IsOursFp203DualDrivenVrFrame(GetStereoMode())) {
+    const unsigned since = VrEndScenesSinceDualFrame();
+    doVrFrame = (since >= 4u);
+    walkStalled = doVrFrame;
+    static uint32_t s_fb = 0;
+    if (doVrFrame && ((++s_fb) <= 4 || (s_fb % 600) == 0))
+      Log("Mode271: WATCHDOG — AER walk has not driven a VR frame for %u EndScenes; "
+          "running the legacy EndScene path (#%u)", since, s_fb);
   }
 
   ID3D9VkInteropDevice* interop = nullptr;
@@ -223,16 +274,28 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
     QueryPerformanceFrequency(&s_poseQpf);
   LARGE_INTEGER poseT0{}, poseT1{};
   QueryPerformanceCounter(&poseT0);
-  const vr::EVRCompositorError poseErr =
-      vr::VRCompositor()->WaitGetPoses(poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
+  // Mode 271: only take the BLOCKING wait on the EndScene that owns the VR
+  // frame. On the others, still fill `poses` with a non-blocking read —
+  // leaving it zero-initialised makes bPoseIsValid false, which drops
+  // g_valid, which makes ApplyHmdToCam bail and hands the camera back to the
+  // game (third-person flicker + dead head tracking every other frame).
+  vr::EVRCompositorError poseErr = vr::VRCompositorError_None;
+  if (doVrFrame) {
+    poseErr = vr::VRCompositor()->WaitGetPoses(poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
+  } else if (vr::VRSystem()) {
+    vr::VRSystem()->GetDeviceToAbsoluteTrackingPose(vr::TrackingUniverseStanding, 0.f, poses,
+                                                    vr::k_unMaxTrackedDeviceCount);
+  }
   QueryPerformanceCounter(&poseT1);
   const double poseMs =
       (s_poseQpf.QuadPart > 0)
           ? (1000.0 * static_cast<double>(poseT1.QuadPart - poseT0.QuadPart) /
              static_cast<double>(s_poseQpf.QuadPart))
           : 0.0;
-  PerfDebugOnPoseWait(poseMs, static_cast<int>(poseErr));
-  StereoDualNotePoseMs(poseMs);
+  if (doVrFrame) {
+    PerfDebugOnPoseWait(poseMs, static_cast<int>(poseErr));
+    StereoDualNotePoseMs(poseMs);
+  }
   if (poseErr == vr::VRCompositorError_DoNotHaveFocus) {
     vr::VRCompositor()->CompositorBringToFront();
     // One more async dashboard close if still open (max 2 total; no OpenVR
@@ -253,7 +316,24 @@ void TryMonoSubmit(IDirect3DDevice9* device) {
   // Always ask — StereoTrySubmitEyes has the full mode + haveL/R gate. A second
   // mode list here went stale (mode 26 captured canvases but never submitted →
   // mono BB, 90 FPS, no fusion / no jumping).
-  const bool stereoSubmitted = StereoTrySubmitEyes(device, interop);
+  // Mode 271: the pair was already submitted at the END of the AER walk,
+  // where the eye is captured AND fresh. Do not submit again here (and do not
+  // fall back to the mono BB path) — UNLESS the watchdog above says the walk
+  // has stalled, in which case re-submit the last completed pair from here so
+  // the compositor never starves (a menu, a loading screen, a hitch). The
+  // pair is a hold, but an honestly stamped hold is exactly what reprojection
+  // is for.
+  const bool aerHoldSubmit = IsAerSingleDraw(GetStereoMode()) && walkStalled;
+  const bool stereoSubmitted =
+      (IsOursFp203SubmitAtDualEnd(GetStereoMode()) && !aerHoldSubmit)
+          ? true
+          : (doVrFrame ? StereoTrySubmitEyes(device, interop) : true);
+  if (aerHoldSubmit) {
+    static uint32_t s_hold = 0;
+    if ((++s_hold) <= 4 || (s_hold % 600) == 0)
+      Log("AER: walk stalled — EndScene re-submitted the last completed pair (#%u ok=%d)",
+          s_hold, stereoSubmitted ? 1 : 0);
+  }
 
   vr::EVRCompositorError eL = vr::VRCompositorError_None;
   vr::EVRCompositorError eR = vr::VRCompositorError_None;

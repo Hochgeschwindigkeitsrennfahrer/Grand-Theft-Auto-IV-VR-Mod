@@ -24,6 +24,15 @@ bool IsDualHmdPoseLatchActive();
 // capture-time WaitGetPoses snapshot. Call from the Submit thread only.
 bool SampleLateLatchHmdPose(vr::HmdMatrix34_t* out);
 
+// Mode 271 AER: the pair is submitted one walk after it was rendered, at
+// which point WaitGetPoses has already moved on to a fresher sample and a
+// late-latch "now" pose would be the exact lie the honest capture-time stamp
+// is meant to avoid. Publish at the eye-pair promote (still inside the dual
+// latch), read at Submit. Same idea as UEVR's frame-indexed pose_queue /
+// get_pose_for_submit().
+void PublishRenderPoseForSubmit(const vr::HmdMatrix34_t& m);
+bool GetRenderPoseForSubmit(vr::HmdMatrix34_t* out);
+
 // Cached eye-to-head translations (updated with poses — safe for CopyMat).
 void CacheEyeToHeadFromHmd();
 bool GetCachedEyeOffset(bool rightEye, EyeOffset* out);

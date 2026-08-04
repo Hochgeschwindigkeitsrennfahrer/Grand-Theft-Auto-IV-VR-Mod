@@ -456,7 +456,9 @@ void ReloadStereoMode() {
   if (v >= 0 && (v <= 53 || IsCleanDualLookMove(static_cast<StereoMode>(v)) ||
                  IsExternalFpHost(static_cast<StereoMode>(v)) ||
                  IsHeadHideNativeOurs(static_cast<StereoMode>(v)) ||
-                 IsTrueStereoFamily(static_cast<StereoMode>(v)))) {
+                 IsTrueStereoFamily(static_cast<StereoMode>(v)) ||
+                 IsExpFamily(static_cast<StereoMode>(v)) ||
+                 IsAerSingleDraw(static_cast<StereoMode>(v)))) {
     prev = g_mode.exchange(v);
     if (!g_loggedMode.exchange(true) || prev != v)
       Log("StereoMode: %d (file gtaiv_dxvk_vr.stereo)", v);
@@ -805,6 +807,39 @@ void ReloadStereoMode() {
       SaveScaleFile(100);
       Log("Mode243: Mode241 + LATE-LATCH Submit_TextureWithPose (shared L/R pose at "
           "Submit; @0x4D8BF0 cam-right flip). kill=241 / 203");
+    } else if (v == static_cast<int>(StereoMode::AerSingleDrawReprojected)) {
+      // Mode271 AER on the 243/241 seam base — one origDrawWalk/frame instead
+      // of two; alternating eye; stale eye rect-shift reprojected + honest
+      // per-eye capture-time pose stamp at Submit.
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      Log("Mode271: AER SINGLE-DRAW REPROJECTED — one origDrawWalk/frame, eye "
+          "alternates L/R (243/241 seam); stale eye corrected via rect-shift "
+          "before Submit_TextureWithPose (honest per-eye capture-time pose, not "
+          "'now'). kill=243 / 241 / 203");
+    } else if (v == 920 || v == 932 || v == 937) {
+      // Ported subset of experiment family 910–941 (work-test docs/MODE_EXPERIMENTS_920.md).
+      // 920/932/937 build on the Mode243 seam (@0x4D8BF0) — reuse its base setup.
+      ApplyMode162SquareWideBase();
+      ForceFpFovDegrees(110, 110, 110);
+      EnsureVehicleCamOffDefaults();
+      EnsureHudOffDefaults();
+      SetWorldScalePercent(100);
+      SaveScaleFile(100);
+      if (v == 920) {
+        Log("Mode920: EXP DirectBounds — 243 + Direct VRTextureBounds; kill=243");
+      } else if (v == 932) {
+        Log("Mode932: AER ParentAlt — original ParentWalk alternate on 243 seam "
+            "(AER≈AFR technique). Capture-time TextureWithPose; helper mode, not in "
+            "F3 menu; kill=243");
+      } else {
+        Log("Mode937: AER ParentExact — 932 ParentWalk + frame%%2 parity + OffAxis "
+            "proj (Guide08 on safer hook); kill=932");
+      }
     } else if (v == static_cast<int>(StereoMode::OursFpSameTickParentDual203CamRightFlip)) {
       // Stock 203 geometry + cam-right flipped IPD only (no TrueStereo measure/Direct).
       ApplyMode162SquareWideBase();
@@ -1348,7 +1383,10 @@ void WriteStereoModeFile(int mode) {
   if (mode < 0 ||
       (mode > 53 && !IsCleanDualLookMove(static_cast<StereoMode>(mode)) &&
        !IsExternalFpHost(static_cast<StereoMode>(mode)) &&
-       !IsHeadHideNativeOurs(static_cast<StereoMode>(mode))))
+       !IsHeadHideNativeOurs(static_cast<StereoMode>(mode)) &&
+       !IsTrueStereoFamily(static_cast<StereoMode>(mode)) &&
+       !IsExpFamily(static_cast<StereoMode>(mode)) &&
+       !IsAerSingleDraw(static_cast<StereoMode>(mode))))
     return;
   char path[MAX_PATH]{};
   if (!GetAsiDir(path, MAX_PATH))
@@ -1433,10 +1471,15 @@ bool UsesAerPoseSubmit(StereoMode mode) {
   // (IsCleanDualLateLatch) separately — still Submit_TextureWithPose, but pose
   // is sampled immediately before Submit, not capture-time AER.
   // Mode 177: capture-time pose on the stale eye so SteamVR can reproject.
+  // 932/937 ParentWalk AER: capture-time pose on the stale eye (same class as 38/51/53).
+  // 271: same class again — the pair is submitted one walk after it was
+  // rendered, so an honest per-eye capture-time pose is what lets the
+  // compositor warp that frame of lag away (stamping "now" would defeat it).
   return mode == StereoMode::AerPoseSubmit ||
          mode == StereoMode::HeadOwnedCamStereoAer ||
          mode == StereoMode::HeadOwnedCamStereoSoftGuard ||
-         mode == StereoMode::OursFpAer;
+         mode == StereoMode::OursFpAer || IsExpAerParentAlt(mode) ||
+         IsOursFp203RenderPoseSubmit(mode);
 }
 
 bool UsesPedCoupledYaw(StereoMode mode) {
@@ -1832,7 +1875,9 @@ bool IsOursFpSameTickBuildDual(StereoMode mode) {
          mode == StereoMode::OursFpSameTickParentDual203CamRightFlip ||
          mode == StereoMode::OursFpSameTickParentDual204CamRightFlip ||
          mode == StereoMode::OursFpSameTickParentDual203CamRightFlipLateLatch ||
-         IsTrueStereoFamily(mode);  // 230 on 203 seam inherits Post162 / ped-hide / accept
+         IsTrueStereoFamily(mode) ||  // 230 on 203 seam inherits Post162 / ped-hide / accept
+         IsExpDual243Seam(mode) || IsExpAerParentAlt(mode) ||  // 920 / 932 / 937
+         IsAerSingleDraw(mode);  // 271
 }
 
 bool IsOursFpSameTickPhaseRight(StereoMode mode) {
@@ -1880,7 +1925,7 @@ bool IsOursFpSameTickParentDual(StereoMode mode) {
          mode == StereoMode::OursFpSameTickParentDual203CamRightFlip ||
          mode == StereoMode::OursFpSameTickParentDual204CamRightFlip ||
          mode == StereoMode::OursFpSameTickParentDual203CamRightFlipLateLatch ||
-         IsTrueStereoFamily(mode);
+         IsTrueStereoFamily(mode) || IsExpDual243Seam(mode) || IsExpAerParentAlt(mode);
 }
 
 bool IsOursFpSameTickParentDualFreeze(StereoMode mode) {
@@ -1909,7 +1954,8 @@ bool IsOursFpSameTickParentDualPose(StereoMode mode) {
          mode == StereoMode::OursFpSameTickParentDual203CamRightFlip ||
          mode == StereoMode::OursFpSameTickParentDual204CamRightFlip ||
          mode == StereoMode::OursFpSameTickParentDual203CamRightFlipLateLatch ||
-         IsTrueStereoFamily(mode);  // 203 seam + pose latch (NOT Try2/204)
+         IsTrueStereoFamily(mode) ||  // 203 seam + pose latch (NOT Try2/204)
+         IsExpDual243Seam(mode) || IsExpAerParentAlt(mode);  // 920 / 932 / 937
 }
 
 bool IsOursFpSameTickParentDualTry2(StereoMode mode) {
@@ -2009,7 +2055,8 @@ bool IsTrueStereoDirect(StereoMode mode) {
   return mode == StereoMode::TrueStereoDirect || mode == StereoMode::TrueStereoSameState ||
          mode == StereoMode::TrueStereoStablePublish || mode == StereoMode::TrueStereoLeftPublish ||
          mode == StereoMode::TrueStereoLateralIpd || mode == StereoMode::TrueStereoUevrIpd ||
-         mode == StereoMode::TrueStereoCamRightIpd || mode == StereoMode::TrueStereoCamRightIpdFlip;
+         mode == StereoMode::TrueStereoCamRightIpd || mode == StereoMode::TrueStereoCamRightIpdFlip ||
+         IsExpDirectBounds(mode);  // 920
 }
 
 bool IsTrueStereoSameState(StereoMode mode) {
@@ -2045,6 +2092,9 @@ bool IsTrueStereoCamRightIpdFlip(StereoMode mode) {
 }
 
 bool IsOursFp203CamRightFlip(StereoMode mode) {
+  // 920/932/937/271 keep the 241 cam-right flip (243 seam base).
+  if (IsExpDual243Seam(mode) || IsExpAerParentAlt(mode) || IsAerSingleDraw(mode))
+    return true;
   return mode == StereoMode::OursFpSameTickParentDual203CamRightFlip ||
          mode == StereoMode::OursFpSameTickParentDual203CamRightFlipLateLatch;
 }
@@ -2054,6 +2104,11 @@ bool IsOursFp204CamRightFlip(StereoMode mode) {
 }
 
 bool IsOursFp203LateLatch(StereoMode mode) {
+  // 932/937 ParentWalk AER: capture-time per-eye pose — do NOT overwrite at Submit.
+  if (IsExpAerParentAlt(mode))
+    return false;
+  if (IsExpDual243Seam(mode))  // 920: late-latch like 243
+    return true;
   return mode == StereoMode::OursFpSameTickParentDual203CamRightFlipLateLatch;
 }
 
@@ -2069,6 +2124,71 @@ bool UsesCamRightIpdFlip(StereoMode mode) {
 
 bool UsesLateLatchSubmit(StereoMode mode) {
   return IsCleanDualLateLatch(mode) || IsOursFp203LateLatch(mode);
+}
+
+// ---- Ported subset of experiment family 910–941 (work-test docs/MODE_EXPERIMENTS_920.md).
+// Only 920 (DirectBounds), 932 (AER ParentAlt) and 937 (AER ParentExact) are ported —
+// RENDER ONLY. Other agents may add 271 / more of this family separately; these
+// predicates only ever match 920/932/937 in this build.
+bool IsExpFamily(StereoMode mode) {
+  return mode == StereoMode::ExpDirectBounds || mode == StereoMode::ExpAerParentAlt ||
+         mode == StereoMode::ExpAerParentExact;
+}
+
+bool IsExpDual243Seam(StereoMode mode) {
+  return mode == StereoMode::ExpDirectBounds;  // 920
+}
+
+bool IsExpDirectBounds(StereoMode mode) {
+  return mode == StereoMode::ExpDirectBounds;  // 920
+}
+
+bool IsExpAerParentAlt(StereoMode mode) {
+  return mode == StereoMode::ExpAerParentAlt || mode == StereoMode::ExpAerParentExact;  // 932/937
+}
+
+bool IsExpAerParentExact(StereoMode mode) {
+  return mode == StereoMode::ExpAerParentExact;  // 937
+}
+
+bool IsExpFovOffAxisFull(StereoMode mode) {
+  return IsExpAerParentExact(mode);  // 937 only (ported subset)
+}
+
+// Mode 271: AER (Alternate Eye Rendering) — one origDrawWalk per frame,
+// alternating eye L/R; stale eye reprojected via rect-shift before Submit.
+bool IsAerSingleDraw(StereoMode mode) {
+  return mode == StereoMode::AerSingleDrawReprojected;
+}
+
+// 271 only: rotate the stale eye into the current view before submit.
+bool IsAerReproject(StereoMode mode) {
+  return mode == StereoMode::AerSingleDrawReprojected;
+}
+
+// 271-only alias of the 203-dual-family "244 = honest capture-time pose"
+// helper — the 244–270 modes it originally covered are not present in this
+// build, so this is a thin wrapper around IsAerSingleDraw.
+bool IsOursFp203RenderPoseSubmit(StereoMode mode) {
+  return IsAerSingleDraw(mode);
+}
+
+// 271-only alias of the 203-dual-family "259/260 = submit at dual end"
+// helper — see IsOursFp203RenderPoseSubmit for why this is a thin wrapper.
+bool IsOursFp203SubmitAtDualEnd(StereoMode mode) {
+  return IsAerSingleDraw(mode);
+}
+
+// 271-only alias of the 203-dual-family "260/261 = dual owns WaitGetPoses"
+// helper — see IsOursFp203RenderPoseSubmit for why this is a thin wrapper.
+bool IsOursFp203DualDrivenVrFrame(StereoMode mode) {
+  return IsAerSingleDraw(mode);
+}
+
+// 271-only alias of the 203-dual-family "264 = ping-pong eye-raw pairs"
+// helper — see IsOursFp203RenderPoseSubmit for why this is a thin wrapper.
+bool IsOursFp203PingPong(StereoMode mode) {
+  return IsAerSingleDraw(mode);
 }
 
 bool IsOursFpHeadBoneCam(StereoMode mode) {
@@ -2946,6 +3066,197 @@ void PollVrResHotkey() {
   SetCanvasMaxDim(next, true);
   if (idx >= kFixedN)
     Log("VrRes: F5 picked SteamVR recommended maxDim=%u", next);
+}
+
+// --- in-game overlay menu accessors ----------------------------------------
+
+void MenuSetSepCm(int cm) {
+  SetSepCm(cm);
+  SaveIpdFile(MenuGetSepCm());
+  Log("StereoSep: %d cm (menu) — L4D2 IpdScale knob", MenuGetSepCm());
+}
+
+int MenuGetSepCm() {
+  return static_cast<int>(g_sepM.load() * 100.f + 0.5f);
+}
+
+void MenuSetStereoScalePercent(int pct) {
+  SetStereoScalePercent(pct);
+  const int applied = MenuGetStereoScalePercent();
+  SaveStereoScaleFile(applied);
+  Log("StereoScale: %.2f (menu) — HIGHER = stronger 3D / smaller world", applied / 100.f);
+}
+
+int MenuGetStereoScalePercent() {
+  return static_cast<int>(g_stereoScale.load() * 100.f + 0.5f);
+}
+
+void MenuSetWorldScalePercent(int pct) {
+  SetWorldScalePercent(pct);
+  const int applied = MenuGetWorldScalePercent();
+  SaveScaleFile(applied);
+  Log("TrueWorldScale: %d%% (menu) — HIGHER = smaller world; fusion may break above ~150%%",
+      applied);
+}
+
+int MenuGetWorldScalePercent() {
+  return static_cast<int>(g_worldScale.load() * 100.f + 0.5f);
+}
+
+void MenuSetWorldScalePreset(int idx) {
+  if (idx < 0 || idx >= kWorldScalePresetN)
+    return;
+  ApplyWorldScalePreset(idx, true);
+}
+
+int MenuGetWorldScalePreset() {
+  const int idx = g_worldScalePreset.load();
+  return (idx < 0 || idx >= kWorldScalePresetN) ? kWorldScaleDefaultIdx : idx;
+}
+
+int MenuWorldScalePresetCount() {
+  return kWorldScalePresetN;
+}
+
+const char* MenuWorldScalePresetName(int idx) {
+  if (idx < 0 || idx >= kWorldScalePresetN)
+    return "?";
+  return kWorldScalePresets[idx].name;
+}
+
+void MenuSetFovAddDegrees(int deg) {
+  if (deg < 0)
+    deg = 0;
+  if (deg > 40)
+    deg = 40;
+  SetFovAddDegrees(static_cast<float>(deg));
+  SaveFovAddFile(deg);
+  Log("FovAdd: %d deg (menu) — HIGHER = more canvas crop / zoom-IN", deg);
+}
+
+int MenuGetFovAddDegrees() {
+  return static_cast<int>(GetFovAddDegrees() + 0.5f);
+}
+
+int MenuGetEyeForwardCm() {
+  return static_cast<int>(GetEyeForwardMeters() * 100.f + 0.5f);
+}
+
+void PersistFpFovDegrees(int forward, int rear, int foot) {
+  if (forward < 40)
+    forward = 40;
+  if (forward > 120)
+    forward = 120;
+  if (rear < 40)
+    rear = 40;
+  if (rear > 120)
+    rear = 120;
+  if (foot < 40)
+    foot = 40;
+  if (foot > 120)
+    foot = 120;
+  char line[32]{};
+  sprintf_s(line, "%d %d %d\n", forward, rear, foot);
+  WriteSmallConfigAlways("gtaiv_dxvk_vr.fpfov", line);
+  FpCache().loaded = false;
+  LoadFpProfileOnce();
+  Log("Config: saved fpfov %d %d %d (menu/user)", forward, rear, foot);
+}
+
+namespace {
+std::atomic<int> g_fpFootFwdCm{-1};
+std::atomic<int> g_fpVehFwdCm{-1};
+std::atomic<int> g_fpBikeFwdCm{-1};
+constexpr int kFpFootFwdDefaultCm = 10;
+constexpr int kFpVehFwdDefaultCm = 18;
+constexpr int kFpBikeFwdDefaultCm = 28;
+
+int ClampFpCamFwdCm(int cm) {
+  if (cm < 0)
+    return 0;
+  if (cm > 40)
+    return 40;
+  return cm;
+}
+
+int LoadFpCamFwdCmOnce(std::atomic<int>* slot, const char* file, int defCm, const char* tag) {
+  int cm = slot->load();
+  if (cm >= 0)
+    return cm;
+  cm = defCm;
+  char buf[32]{};
+  int v = 0;
+  if (ReadSmallFile(file, buf, sizeof(buf)) > 0 && sscanf_s(buf, "%d", &v) == 1 && v >= 0 &&
+      v <= 40) {
+    cm = v;
+  }
+  slot->store(cm);
+  Log("Config: %s=%d cm (%s) — FP eye past HEAD bone", tag, cm, file);
+  return cm;
+}
+
+void SaveFpCamFwdCm(std::atomic<int>* slot, const char* file, int cm, const char* tag) {
+  cm = ClampFpCamFwdCm(cm);
+  char path[MAX_PATH]{};
+  if (GetAsiDir(path, MAX_PATH)) {
+    strcat_s(path, file);
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "wb") == 0 && f) {
+      std::fprintf(f, "%d\n", cm);
+      std::fclose(f);
+    }
+  }
+  slot->store(cm);
+  Log("Config: %s set live=%d cm (%s)", tag, cm, file);
+}
+}  // namespace
+
+void EnsureFpCamForwardDefaults() {
+  WriteSmallConfigIfMissing("gtaiv_dxvk_vr.fpcamfwd", "10\n");
+  WriteSmallConfigIfMissing("gtaiv_dxvk_vr.vehcamfwd", "18\n");
+  WriteSmallConfigIfMissing("gtaiv_dxvk_vr.bikecamfwd", "28\n");
+}
+
+float GetFpFootCamForwardMeters() {
+  return static_cast<float>(LoadFpCamFwdCmOnce(&g_fpFootFwdCm, "gtaiv_dxvk_vr.fpcamfwd",
+                                               kFpFootFwdDefaultCm, "fpcamfwd")) /
+         100.f;
+}
+
+float GetFpVehCamForwardMeters() {
+  return static_cast<float>(LoadFpCamFwdCmOnce(&g_fpVehFwdCm, "gtaiv_dxvk_vr.vehcamfwd",
+                                               kFpVehFwdDefaultCm, "vehcamfwd")) /
+         100.f;
+}
+
+float GetFpBikeCamForwardMeters() {
+  return static_cast<float>(LoadFpCamFwdCmOnce(&g_fpBikeFwdCm, "gtaiv_dxvk_vr.bikecamfwd",
+                                               kFpBikeFwdDefaultCm, "bikecamfwd")) /
+         100.f;
+}
+
+void SetFpFootCamForwardCm(int cm) {
+  SaveFpCamFwdCm(&g_fpFootFwdCm, "gtaiv_dxvk_vr.fpcamfwd", cm, "fpcamfwd");
+}
+
+void SetFpVehCamForwardCm(int cm) {
+  SaveFpCamFwdCm(&g_fpVehFwdCm, "gtaiv_dxvk_vr.vehcamfwd", cm, "vehcamfwd");
+}
+
+void SetFpBikeCamForwardCm(int cm) {
+  SaveFpCamFwdCm(&g_fpBikeFwdCm, "gtaiv_dxvk_vr.bikecamfwd", cm, "bikecamfwd");
+}
+
+int MenuGetFpFootCamForwardCm() {
+  return static_cast<int>(GetFpFootCamForwardMeters() * 100.f + 0.5f);
+}
+
+int MenuGetFpVehCamForwardCm() {
+  return static_cast<int>(GetFpVehCamForwardMeters() * 100.f + 0.5f);
+}
+
+int MenuGetFpBikeCamForwardCm() {
+  return static_cast<int>(GetFpBikeCamForwardMeters() * 100.f + 0.5f);
 }
 
 }  // namespace asi

@@ -1,0 +1,5 @@
+# F3 / F4 LIVE render profiles. Start with stereo=243 so dual hooks arm.
+0 = 243
+1 = 271
+2 = 920
+3 = 937

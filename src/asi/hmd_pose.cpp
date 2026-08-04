@@ -14,6 +14,10 @@ std::atomic<bool> g_valid{false};
 vr::HmdMatrix34_t g_latchMat{};
 std::atomic<bool> g_latchActive{false};
 
+// Mode 271 AER: pose the eye textures now awaiting Submit were rendered with.
+vr::HmdMatrix34_t g_renderPose{};
+std::atomic<bool> g_renderPoseValid{false};
+
 EyeOffset g_eyeL{};
 EyeOffset g_eyeR{};
 std::atomic<bool> g_eyeOk{false};
@@ -114,6 +118,22 @@ bool SampleLateLatchHmdPose(vr::HmdMatrix34_t* out) {
   if (!poses[hmd].bPoseIsValid || !poses[hmd].bDeviceIsConnected)
     return false;
   *out = poses[hmd].mDeviceToAbsoluteTracking;
+  return true;
+}
+
+void PublishRenderPoseForSubmit(const vr::HmdMatrix34_t& m) {
+  {
+    std::lock_guard<std::mutex> lock(g_mu);
+    g_renderPose = m;
+  }
+  g_renderPoseValid.store(true);
+}
+
+bool GetRenderPoseForSubmit(vr::HmdMatrix34_t* out) {
+  if (!out || !g_renderPoseValid.load())
+    return false;
+  std::lock_guard<std::mutex> lock(g_mu);
+  *out = g_renderPose;
   return true;
 }
 

@@ -10,6 +10,7 @@
 #include "../../thirdparty/minhook/include/MinHook.h"
 
 #include <d3d9.h>
+#include <openvr.h>
 
 #include <atomic>
 #include <cmath>
@@ -41,7 +42,7 @@ bool ModeWantsCoverFov() {
 // Outcome tells us if Rage consumes D3DTS_PROJECTION: border shrinks with correct
 // proportions = yes; image vertically stretched = no (then mode 15 is dead, use 14).
 bool ModeWantsProjWiden() {
-  return GetStereoMode() == StereoMode::CanvasWide;
+  return GetStereoMode() == StereoMode::CanvasWide || IsExpFovOffAxisFull(GetStereoMode());
 }
 
 std::atomic<uint32_t> g_widenCount{0};
@@ -86,17 +87,52 @@ bool WidenToCoverFov(float* m16) {
   return true;
 }
 
+// Mode 937: full asymmetric off-axis from GetProjectionRaw (vrframework Guide 08).
+// Keeps engine near/far (m[10]/m[14]) — only replaces scale + skew.
+bool ApplyOffAxisFromHmd(float* m16, vr::EVREye eye) {
+  if (!LooksLikeProjectionScales(m16))
+    return false;
+  float L = 0.f, R = 0.f, T = 0.f, B = 0.f;
+  if (!GetEyeRawProjection(eye, &L, &R, &T, &B))
+    return false;
+  const float rl = R - L;
+  const float tb = T - B;
+  if (rl < 1e-5f || tb < 1e-5f)
+    return false;
+  const float invRL = 1.f / rl;
+  const float invTB = 1.f / tb;
+  // D3D row-major: m00=scaleX, m11=scaleY, m20=skewX, m21=skewY (typical).
+  m16[0] = 2.f * invRL;
+  m16[5] = 2.f * invTB;
+  m16[8] = (R + L) * invRL;
+  m16[9] = (T + B) * invTB;
+  return true;
+}
+
 HRESULT STDMETHODCALLTYPE HookSetTransform(IDirect3DDevice9* self, D3DTRANSFORMSTATETYPE state,
                                            const D3DMATRIX* matrix) {
-  if (state == D3DTS_PROJECTION && matrix &&
-      (ModeWantsCoverFov() || ModeWantsProjWiden()) && IsCamMatrixOverrideEnabled()) {
+  if (state == D3DTS_PROJECTION && matrix && ModeWantsProjWiden() &&
+      (IsCamMatrixOverrideEnabled() || IsExpFovOffAxisFull(GetStereoMode()))) {
     D3DMATRIX m = *matrix;
-    if (WidenToCoverFov(&m.m[0][0])) {
+    bool ok = false;
+    if (IsExpFovOffAxisFull(GetStereoMode())) {
+      const vr::EVREye eye = (GetStereoEye() == StereoEye::Right) ? vr::Eye_Right : vr::Eye_Left;
+      ok = ApplyOffAxisFromHmd(&m.m[0][0], eye);
+      if (ok) {
+        const uint32_t n = ++g_widenCount;
+        if (n <= 3 || (n % 600) == 0)
+          Log("Mode%d: OffAxis SetTransform #%u eye=%s m00=%.3f m20=%.3f",
+              static_cast<int>(GetStereoMode()), n, eye == vr::Eye_Right ? "R" : "L", m.m[0][0],
+              m.m[2][0]);
+      }
+    } else if (WidenToCoverFov(&m.m[0][0])) {
+      ok = true;
       const uint32_t n = ++g_widenCount;
       if (n <= 3 || (n % 600) == 0)
         Log("StereoProj: widen SetTransform #%u (mode 15)", n);
-      return g_origSetTransform(self, state, &m);
     }
+    if (ok)
+      return g_origSetTransform(self, state, &m);
   }
   return g_origSetTransform(self, state, matrix);
 }
