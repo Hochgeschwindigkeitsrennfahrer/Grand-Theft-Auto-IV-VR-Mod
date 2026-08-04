@@ -1,6 +1,6 @@
 <img width="2560" height="1707" alt="image" src="https://github.com/user-attachments/assets/4a9ccf21-f484-4f07-b106-7419fead62b3" />
 
-# gtaiv-dxvk-vr
+# Grand Theft Auto IV - VR mod
 
 **WIP** VR glue for **GTA IV Complete Edition** (Steam): stock **DXVK** `d3d9.dll` + our **Win32 ASI** + **OpenVR / SteamVR**.
 
